@@ -86,21 +86,37 @@ class PlotPanel(QGroupBox):
         self._t0 = None
         self._paused = False
         self._window_seconds = 20
+        self._syncing_x = False
+        self._plot_states = {}
         self._buffers = {
             'pos': _SeriesBuffer(self.MAX_POINTS),
             'vel': _SeriesBuffer(self.MAX_POINTS),
+            'id': _SeriesBuffer(self.MAX_POINTS),
             'iq': _SeriesBuffer(self.MAX_POINTS),
             'ibus': _SeriesBuffer(self.MAX_POINTS),
+            'ia': _SeriesBuffer(self.MAX_POINTS),
+            'ib': _SeriesBuffer(self.MAX_POINTS),
+            'ic': _SeriesBuffer(self.MAX_POINTS),
             'angle': _SeriesBuffer(self.MAX_POINTS),
         }
         self._plots = {}
         self._extra_buffers = {}
+        self._current_series_order = ('id', 'iq', 'ibus', 'ia', 'ib', 'ic')
+        self._current_series_labels = {
+            'id': 'Id',
+            'iq': 'Iq',
+            'ibus': 'IBus',
+            'ia': 'Ia',
+            'ib': 'Ib',
+            'ic': 'Ic',
+        }
+        self._current_checks = {}
         self._build()
 
     def _build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
 
         if pg is None:
             hint = QLabel(
@@ -115,11 +131,11 @@ class PlotPanel(QGroupBox):
         toolbar = QWidget()
         bar = QHBoxLayout(toolbar)
         bar.setContentsMargins(0, 0, 0, 0)
-        bar.setSpacing(6)
+        bar.setSpacing(4)
 
         self._btn_pause = QPushButton("暂停")
         self._btn_pause.setCheckable(True)
-        self._btn_pause.setFixedHeight(24)
+        self._btn_pause.setFixedHeight(22)
         self._btn_pause.clicked.connect(self._on_pause_toggled)
         bar.addWidget(self._btn_pause)
 
@@ -135,27 +151,25 @@ class PlotPanel(QGroupBox):
         self._spin_window = QSpinBox()
         self._spin_window.setRange(5, 120)
         self._spin_window.setValue(self._window_seconds)
-        self._spin_window.setFixedWidth(64)
+        self._spin_window.setFixedWidth(58)
         self._spin_window.valueChanged.connect(self._on_window_changed)
         bar.addWidget(self._spin_window)
 
-        self._chk_iq = QCheckBox("Iq")
-        self._chk_iq.setChecked(True)
-        self._chk_iq.toggled.connect(self._sync_toolbar_state)
-        bar.addWidget(self._chk_iq)
-
-        self._chk_ibus = QCheckBox("Ibus")
-        self._chk_ibus.setChecked(False)
-        self._chk_ibus.toggled.connect(self._sync_toolbar_state)
-        bar.addWidget(self._chk_ibus)
+        bar.addWidget(QLabel("电流:"))
+        for name in self._current_series_order:
+            chk = QCheckBox(self._current_series_labels[name])
+            chk.setChecked(True)
+            chk.toggled.connect(self._sync_current_visibility)
+            self._current_checks[name] = chk
+            bar.addWidget(chk)
 
         self._btn_reset = QPushButton("重置视图")
-        self._btn_reset.setFixedHeight(24)
+        self._btn_reset.setFixedHeight(22)
         self._btn_reset.clicked.connect(self._reset_view)
         bar.addWidget(self._btn_reset)
 
         self._btn_clear = QPushButton("清空")
-        self._btn_clear.setFixedHeight(24)
+        self._btn_clear.setFixedHeight(22)
         self._btn_clear.clicked.connect(self.clear)
         bar.addWidget(self._btn_clear)
 
@@ -165,10 +179,16 @@ class PlotPanel(QGroupBox):
         self._glw = pg.GraphicsLayoutWidget()
         self._glw.setBackground('#202020')
         self._glw.ci.layout.setContentsMargins(0, 0, 0, 0)
-        self._glw.ci.layout.setSpacing(4)
+        self._glw.ci.layout.setSpacing(2)
+        self._glw.ci.layout.setRowStretchFactor(0, 1)
+        self._glw.ci.layout.setRowStretchFactor(1, 1)
+        self._glw.ci.layout.setColumnStretchFactor(0, 1)
+        self._glw.ci.layout.setColumnStretchFactor(1, 1)
         layout.addWidget(self._glw, 1)
 
         self._build_plots()
+        for cfg in self._plots.values():
+            cfg['plot'].vb.sigXRangeChanged.connect(self._on_plot_x_range_changed)
         self._mouse_proxy = pg.SignalProxy(
             self._glw.scene().sigMouseMoved, rateLimit=60, slot=self._on_mouse_moved)
         self._click_proxy = pg.SignalProxy(
@@ -179,44 +199,73 @@ class PlotPanel(QGroupBox):
         self._timer.timeout.connect(self._refresh)
         self._timer.start()
 
-        self._sync_toolbar_state()
+        self._sync_current_visibility()
 
     def _build_plots(self):
         pos_pen = pg.mkPen('#00BCD4', width=2)
         vel_pen = pg.mkPen('#4CAF50', width=2)
+        id_pen = pg.mkPen('#26C6DA', width=2)
         iq_pen = pg.mkPen('#FF9800', width=2)
-        ibus_pen = pg.mkPen('#E91E63', width=2, style=Qt.PenStyle.DashLine)
+        ibus_pen = pg.mkPen('#AB47BC', width=2, style=Qt.PenStyle.DashLine)
+        ia_pen = pg.mkPen('#66BB6A', width=2)
+        ib_pen = pg.mkPen('#29B6F6', width=2)
+        ic_pen = pg.mkPen('#FFEE58', width=2)
         angle_pen = pg.mkPen('#FFC107', width=2)
 
         self._plots['pos'] = self._create_plot(
-            0, 0, "位置 pos (rad)", "位置", "rad",
-            [('pos', pos_pen, '位置')])
+            0, 0, "位置", "位置", "rad",
+            [('pos', pos_pen, '位置')], show_bottom=True, show_left=True,
+            menu_profile={'auto_y': True, 'legend': False, 'series': False})
         self._plots['vel'] = self._create_plot(
-            0, 1, "速度 vel (rad/s)", "速度", "rad/s",
-            [('vel', vel_pen, '速度')], link_x=self._plots['pos']['plot'])
+            0, 1, "速度", "速度", "rad/s",
+            [('vel', vel_pen, '速度')], show_bottom=True, show_left=True,
+            menu_profile={'auto_y': True, 'legend': False, 'series': False})
         self._plots['current'] = self._create_plot(
-            1, 0, "电流 (A)", "电流", "A",
-            [('iq', iq_pen, 'Iq'), ('ibus', ibus_pen, 'Ibus')],
-            link_x=self._plots['pos']['plot'])
+            1, 0, "电流", "电流", "A",
+            [
+                ('id', id_pen, 'Id'),
+                ('iq', iq_pen, 'Iq'),
+                ('ibus', ibus_pen, 'IBus'),
+                ('ia', ia_pen, 'Ia'),
+                ('ib', ib_pen, 'Ib'),
+                ('ic', ic_pen, 'Ic'),
+            ],
+            show_bottom=True, show_left=True,
+            menu_profile={'auto_y': True, 'legend': True, 'series': True})
         self._plots['angle'] = self._create_plot(
-            1, 1, "机械角度 angle (rad)", "机械角度", "rad",
+            1, 1, "机械角度", "机械角度", "rad",
             [('angle', angle_pen, '机械角度')],
-            link_x=self._plots['pos']['plot'])
+            show_bottom=True, show_left=True,
+            menu_profile={'auto_y': True, 'legend': False, 'series': False})
 
-    def _create_plot(self, row, col, title, y_label, unit, series_defs, link_x=None):
+        anchor = self._plots['pos']['plot']
+        for key in ('vel', 'current', 'angle'):
+            self._plots[key]['plot'].setXLink(anchor)
+
+    def _create_plot(self, row, col, title, y_label, unit, series_defs,
+                     show_bottom=True, show_left=True, menu_profile=None):
+        menu_profile = dict(menu_profile or {})
+        menu_profile.setdefault('auto_y', True)
+        menu_profile.setdefault('legend', False)
+        menu_profile.setdefault('series', False)
+
         plot = self._glw.addPlot(row=row, col=col, title=title)
-        plot.setTitle(title, color='#D8D8D8', size='10pt')
+        plot.setTitle(title, color='#D8D8D8', size='8pt')
+        plot.layout.setContentsMargins(0, 0, 0, 0)
+        plot.layout.setSpacing(0)
         plot.showGrid(x=True, y=True, alpha=0.25)
         plot.setLabel('left', y_label, units=unit)
         plot.setLabel('bottom', '时间', units='s')
+        plot.showAxis('bottom', show_bottom)
+        plot.showAxis('left', show_left)
+        plot.getAxis('left').setWidth(50)
+        plot.getAxis('bottom').setHeight(20)
         plot.setMenuEnabled(False)
         plot.vb.setMenuEnabled(False)
         plot.setClipToView(True)
         plot.setDownsampling(auto=True, mode='peak')
-        plot.setDefaultPadding(0.02)
-        plot.addLegend(offset=(6, 6))
-        if link_x is not None:
-            plot.setXLink(link_x)
+        plot.setDefaultPadding(0.01)
+        plot.addLegend(offset=(4, 4))
 
         vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen((180, 180, 180, 160), style=Qt.PenStyle.DashLine))
         hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen((180, 180, 180, 160), style=Qt.PenStyle.DashLine))
@@ -234,6 +283,10 @@ class PlotPanel(QGroupBox):
             curve = plot.plot([], [], pen=pen, name=curve_label)
             curves[name] = curve
 
+        legend_visible = bool(menu_profile.get('legend', False))
+        if plot.legend is not None:
+            plot.legend.setVisible(legend_visible)
+
         return {
             'plot': plot,
             'vline': vline,
@@ -241,6 +294,9 @@ class PlotPanel(QGroupBox):
             'label': label,
             'curves': curves,
             'legend': plot.legend,
+            'series_defs': series_defs,
+            'menu_profile': menu_profile,
+            'auto_y': True,
         }
 
     def _on_mouse_clicked(self, evt):
@@ -282,28 +338,31 @@ class PlotPanel(QGroupBox):
         act_follow = menu.addAction("跟随尾部")
         act_follow.setCheckable(True)
         act_follow.setChecked(self._chk_follow.isChecked())
-        act_autoy = menu.addAction("Y轴自适应")
-        act_autoy.setCheckable(True)
-        act_autoy.setChecked(self._chk_auto_y.isChecked())
         menu.addSeparator()
         act_pause = menu.addAction("暂停更新" if not self._paused else "继续更新")
         act_clear = menu.addAction("清空曲线")
 
-        if key == 'current':
-            menu.addSeparator()
-            act_iq = menu.addAction("显示 Iq")
-            act_iq.setCheckable(True)
-            act_iq.setChecked(self._chk_iq.isChecked())
-            act_ibus = menu.addAction("显示 Ibus")
-            act_ibus.setCheckable(True)
-            act_ibus.setChecked(self._chk_ibus.isChecked())
+        profile = cfg.get('menu_profile', {})
+        if profile.get('auto_y', True):
+            act_autoy = menu.addAction("本图Y轴自适应")
+            act_autoy.setCheckable(True)
+            act_autoy.setChecked(cfg.get('auto_y', True))
         else:
-            act_iq = act_ibus = None
+            act_autoy = None
+
+        if key == 'current' and profile.get('series', True):
+            menu.addSeparator()
+            for name in self._current_series_order:
+                act = menu.addAction(f"显示 {self._current_series_labels[name]}")
+                act.setCheckable(True)
+                act.setChecked(self._current_checks[name].isChecked())
+                act.toggled.connect(
+                    lambda checked, series=name: self._current_checks[series].setChecked(checked))
 
         act_legend = None
-        if cfg.get('legend') is not None:
+        if profile.get('legend', True) and cfg.get('legend') is not None:
             menu.addSeparator()
-            act_legend = menu.addAction("显示图例")
+            act_legend = menu.addAction("显示本图图例")
             act_legend.setCheckable(True)
             act_legend.setChecked(cfg['legend'].isVisible())
 
@@ -320,15 +379,12 @@ class PlotPanel(QGroupBox):
         act_auto.triggered.connect(lambda: self._refresh(force=True))
         act_reset.triggered.connect(self._reset_view)
         act_follow.toggled.connect(self._chk_follow.setChecked)
-        act_autoy.toggled.connect(self._chk_auto_y.setChecked)
         act_pause.triggered.connect(lambda: self._btn_pause.click())
         act_clear.triggered.connect(self.clear)
-        if act_iq is not None:
-            act_iq.toggled.connect(self._chk_iq.setChecked)
-        if act_ibus is not None:
-            act_ibus.toggled.connect(self._chk_ibus.setChecked)
+        if act_autoy is not None:
+            act_autoy.toggled.connect(lambda checked, plot_key=key: self._set_plot_auto_y(plot_key, checked))
         if act_legend is not None:
-            act_legend.toggled.connect(cfg['legend'].setVisible)
+            act_legend.toggled.connect(lambda checked, plot_key=key: self._set_plot_legend(plot_key, checked))
         return menu
 
     def _on_pause_toggled(self, checked: bool):
@@ -341,9 +397,34 @@ class PlotPanel(QGroupBox):
     def _on_window_changed(self, value: int):
         self._window_seconds = max(5, int(value))
 
-    def _sync_toolbar_state(self):
-        self._plots['current']['curves']['iq'].setVisible(self._chk_iq.isChecked())
-        self._plots['current']['curves']['ibus'].setVisible(self._chk_ibus.isChecked())
+    def _set_plot_auto_y(self, plot_key: str, enabled: bool):
+        cfg = self._plots.get(plot_key)
+        if cfg is None:
+            return
+        cfg['auto_y'] = bool(enabled)
+        if enabled:
+            self._refresh(force=True)
+
+    def _set_plot_legend(self, plot_key: str, enabled: bool):
+        cfg = self._plots.get(plot_key)
+        if cfg is None or cfg.get('legend') is None:
+            return
+        cfg['legend'].setVisible(bool(enabled))
+
+    def _sync_current_visibility(self):
+        if pg is None:
+            return
+        for name in self._current_series_order:
+            curve = self._plots['current']['curves'].get(name)
+            chk = self._current_checks.get(name)
+            if curve is not None and chk is not None:
+                curve.setVisible(chk.isChecked())
+
+    def _visible_current_series(self):
+        return tuple(
+            name for name in self._current_series_order
+            if self._current_checks.get(name) is not None and self._current_checks[name].isChecked()
+        )
 
     def _reset_view(self):
         self._chk_follow.setChecked(True)
@@ -385,8 +466,12 @@ class PlotPanel(QGroupBox):
         t = ts - self._t0
         self._buffers['pos'].append(t, getattr(fb, 'pos', 0.0))
         self._buffers['vel'].append(t, getattr(fb, 'vel', 0.0))
+        self._buffers['id'].append(t, getattr(fb, 'id', 0.0))
         self._buffers['iq'].append(t, getattr(fb, 'iq', 0.0))
         self._buffers['ibus'].append(t, getattr(fb, 'ibus', 0.0))
+        self._buffers['ia'].append(t, getattr(fb, 'ia', 0.0))
+        self._buffers['ib'].append(t, getattr(fb, 'ib', 0.0))
+        self._buffers['ic'].append(t, getattr(fb, 'ic', 0.0))
         multiturn = float(getattr(fb, 'multiturn', 0))
         single = float(getattr(fb, 'single', 0.0))
         self._buffers['angle'].append(t, multiturn * (2.0 * math.pi) + single)
@@ -401,13 +486,16 @@ class PlotPanel(QGroupBox):
 
         self._update_curve('pos', t_min)
         self._update_curve('vel', t_min)
+        self._update_curve('id', t_min)
         self._update_curve('iq', t_min)
         self._update_curve('ibus', t_min)
+        self._update_curve('ia', t_min)
+        self._update_curve('ib', t_min)
+        self._update_curve('ic', t_min)
         self._update_curve('angle', t_min)
 
         if self._chk_follow.isChecked() or force:
-            for cfg in self._plots.values():
-                cfg['plot'].setXRange(t_min, max(t_end, t_min + 0.1), padding=0.02)
+            self._set_all_x_range(t_min, max(t_end, t_min + 0.1))
 
         if self._chk_auto_y.isChecked():
             self._auto_range_y(t_min)
@@ -421,12 +509,42 @@ class PlotPanel(QGroupBox):
         return latest
 
     def _update_curve(self, name: str, t_min: float):
-        cfg = self._plots.get('current') if name in ('iq', 'ibus') else self._plots.get(name)
+        cfg = self._plots.get('current') if name in self._current_series_order else self._plots.get(name)
         if cfg is None:
             return
         buf = self._buffers[name]
         ts, ys = buf.arrays(t_min)
         cfg['curves'][name].setData(ts, ys)
+
+    def _set_all_x_range(self, t_min: float, t_max: float):
+        if pg is None:
+            return
+        self._syncing_x = True
+        try:
+            for cfg in self._plots.values():
+                cfg['plot'].setXRange(t_min, t_max, padding=0.02)
+        finally:
+            self._syncing_x = False
+
+    def _on_plot_x_range_changed(self, *args):
+        if pg is None or self._syncing_x:
+            return
+        sender = self.sender()
+        if sender is None:
+            return
+        try:
+            x0, x1 = sender.viewRange()[0]
+        except Exception:
+            return
+        self._syncing_x = True
+        try:
+            for cfg in self._plots.values():
+                vb = cfg['plot'].vb
+                if vb is sender:
+                    continue
+                vb.setXRange(x0, x1, padding=0)
+        finally:
+            self._syncing_x = False
 
     def _auto_range_y(self, t_min: float):
         def _range_from(names):
@@ -449,11 +567,11 @@ class PlotPanel(QGroupBox):
         ranges = {
             'pos': _range_from(('pos',)),
             'vel': _range_from(('vel',)),
-            'current': _range_from(tuple(n for n, c in (('iq', self._chk_iq), ('ibus', self._chk_ibus)) if c.isChecked())),
+            'current': _range_from(self._visible_current_series()),
             'angle': _range_from(('angle',)),
         }
         for key, rng in ranges.items():
-            if rng is not None:
+            if rng is not None and self._plots.get(key, {}).get('auto_y', True):
                 self._plots[key]['plot'].setYRange(rng[0], rng[1], padding=0.02)
 
     def _on_mouse_moved(self, evt):
@@ -486,13 +604,14 @@ class PlotPanel(QGroupBox):
 
     def _hover_values(self, key: str, x: float, y: float) -> str:
         if key == 'current':
-            iq = self._buffers['iq'].interpolate(x)
-            ibus = self._buffers['ibus'].interpolate(x)
             parts = [f"<b>t</b> = {x:.2f} s"]
-            if self._chk_iq.isChecked() and iq is not None:
-                parts.append(f"Iq = {iq:.3f} A")
-            if self._chk_ibus.isChecked() and ibus is not None:
-                parts.append(f"Ibus = {ibus:.3f} A")
+            for name in self._current_series_order:
+                chk = self._current_checks.get(name)
+                if chk is not None and not chk.isChecked():
+                    continue
+                val = self._buffers[name].interpolate(x)
+                if val is not None:
+                    parts.append(f"{self._current_series_labels[name]} = {val:.3f} A")
             return "<div style='color:#F5F5F5;'>" + "<br/>".join(parts) + "</div>"
 
         series_name = {'pos': 'pos', 'vel': 'vel', 'angle': 'angle'}.get(key)
