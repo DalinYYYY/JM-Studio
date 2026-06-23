@@ -1,0 +1,22 @@
+# Python 字节码 / 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# 打包产物
+build/
+dist/
+*.egg-info/
+
+# 运行时日志/导出
+*.log
+*.csv

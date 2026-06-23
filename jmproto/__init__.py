@@ -1,0 +1,36 @@
+"""
+关节电机通信协议层(传输无关)
+
+子模块:
+- crc16   : CRC16-XMODEM(与固件一致)
+- frame   : 串口帧编解码 FrameCodec / FrameDecoder
+- cmd_def : JmCmd / JmErr / JmTlmBit / JmParamType 枚举
+- codec   : 小端编解码助手 + 按类型打包
+- feedback: FeedbackData + 各应答/遥测解析
+- registry: CSV 数据驱动注册表(命令表/参数表)
+"""
+
+from .crc16 import crc16_calc
+from .frame import FrameCodec, FrameDecoder, STX_H, STX_L, MAX_PACK_SIZE, PACK_OVERHEAD
+from .cmd_def import (
+    JmCmd, JmErr, JmTlmBit, JmParamType,
+    cmd_name, err_name,
+    MAGIC_BOOTLOADER, MAGIC_FACTORY_RESET,
+)
+from . import codec
+from .feedback import (
+    FeedbackData, parse_state, parse_read_reply, parse_telemetry,
+)
+from .registry import (
+    ProtocolRegistry, CommandSpec, ParamSpec, Field, get_registry,
+)
+
+__all__ = [
+    'crc16_calc',
+    'FrameCodec', 'FrameDecoder', 'STX_H', 'STX_L', 'MAX_PACK_SIZE', 'PACK_OVERHEAD',
+    'JmCmd', 'JmErr', 'JmTlmBit', 'JmParamType', 'cmd_name', 'err_name',
+    'MAGIC_BOOTLOADER', 'MAGIC_FACTORY_RESET',
+    'codec',
+    'FeedbackData', 'parse_state', 'parse_read_reply', 'parse_telemetry',
+    'ProtocolRegistry', 'CommandSpec', 'ParamSpec', 'Field', 'get_registry',
+]
