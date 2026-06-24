@@ -350,7 +350,8 @@ class MainWindow(QMainWindow):
         except ValueError:
             QMessageBox.warning(self, "错误", f"参数值无效: {text}")
             return
-        self._client.param_write(param_id, value)
+        if self._client.param_write(param_id, value):
+            self._param_panel.note_write_sent(param_id)
 
     def _on_param_result(self, param_id: int, ptype: int, value_bytes: bytes):
         val = self._registry.unpack_param_value(param_id, value_bytes)
@@ -367,9 +368,13 @@ class MainWindow(QMainWindow):
 
     def _on_ack(self, cmd: int):
         self._log_panel.log(f"[RX] ACK {cmd_name(cmd)}(0x{cmd:02X})")
+        if cmd == JmCmd.PARAM_WRITE:
+            self._param_panel.confirm_pending_write()
 
     def _on_nack(self, cmd: int, err: int):
         self._log_panel.log_warn(f"NACK {cmd_name(cmd)}(0x{cmd:02X}) err={err_name(err)}(0x{err:02X})")
+        if cmd == JmCmd.PARAM_WRITE:
+            self._param_panel.reject_pending_write()
 
     def _on_dev_info(self, hw: int, fw: int, uid: bytes):
         uid_hex = uid.hex(':').upper()
