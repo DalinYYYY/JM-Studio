@@ -191,6 +191,132 @@ class JmParamType(IntEnum):
     STR = 7
 
 
+class TopFsm(IntEnum):
+    """系统顶层主状态, 与固件 state_define.h:top_fsm_e 严格一致(数值即上报 top_fsm)"""
+    INIT = 0        # 系统初始化
+    SAFETY = 1      # 安全/急停(最高优先级, 任意态可进入)
+    FAULT = 2       # 故障(任意态可进入)
+    IDLE = 3        # 待机(伺服失能)
+    READY = 4       # 就绪(已使能, 等待运行指令, 电机不动)
+    RUN = 5         # 运行(运行子状态生效)
+    CALIB = 6       # 校准
+    CONFIG = 7      # 配置
+    BOOTLOADER = 8  # 固件升级
+
+
+# 顶层状态中文名(供 UI 显示)
+TOP_FSM_CN = {
+    TopFsm.INIT: "初始化",
+    TopFsm.SAFETY: "急停/安全",
+    TopFsm.FAULT: "故障",
+    TopFsm.IDLE: "待机",
+    TopFsm.READY: "就绪",
+    TopFsm.RUN: "运行",
+    TopFsm.CALIB: "校准",
+    TopFsm.CONFIG: "配置",
+    TopFsm.BOOTLOADER: "升级",
+}
+
+
+class RunState(IntEnum):
+    """电机运行子状态, 与固件 state_define.h:run_state_e 严格一致(数值即上报 run_state)"""
+    IDLE = 0
+    OPEN_LOOP = 1
+    CURRENT = 2
+    TORQUE = 3
+    MIT = 4
+    VELOCITY = 5
+    POSITION = 6
+    POSITION_VELOCITY = 7
+    POSITION_TORQUE = 8
+    VELOCITY_TORQUE = 9
+    DUTY_CYCLE = 10
+    VOLTAGE_VECTOR = 11
+    FIELD_WEAKENING = 12
+    SENSORLESS = 13
+    IMPEDANCE = 14
+    ADMITTANCE = 15
+    FORCE_CONTROL = 16
+    FORCE_POSITION_HYBRID = 17
+    GRAVITY_COMPENSATION = 18
+    COLLISION_DETECTION = 19
+    ZERO_FORCE = 20
+    CONSTANT_FORCE = 21
+    VARIABLE_IMPEDANCE = 22
+    ADAPTIVE_GRAVITY_COMP = 23
+    LANDING_BUFFER = 24
+    PVT = 25
+    CUBIC_SPLINE = 26
+    TRAPEZOIDAL_TRAJ = 27
+    S_CURVE_TRAJ = 28
+    HOMING = 29
+    ELECTRONIC_GEAR = 30
+    ELECTRONIC_CAM = 31
+    STEP_DIR = 32
+    ANALOG_INPUT = 33
+    PWM_INPUT = 34
+    JOG = 35
+    SAFE_TEACH = 36
+    TEST_AGING = 37
+    TEST_SWEEP_FREQ = 38
+    TEST_COGGING = 39
+    TEST_FRICTION = 40
+    TEST_INERTIA = 41
+    DIAGNOSTIC = 42
+    HIGH_SPEED_DAQ = 43
+    SINGLE_STEP = 44
+
+
+# 运行子状态中文名(供 UI 显示)
+RUN_STATE_CN = {
+    RunState.IDLE: "空闲",
+    RunState.OPEN_LOOP: "开环",
+    RunState.CURRENT: "电流环",
+    RunState.TORQUE: "力矩环",
+    RunState.MIT: "MIT",
+    RunState.VELOCITY: "速度环",
+    RunState.POSITION: "位置环",
+    RunState.POSITION_VELOCITY: "位置+速度",
+    RunState.POSITION_TORQUE: "位置+力矩",
+    RunState.VELOCITY_TORQUE: "速度+力矩",
+    RunState.DUTY_CYCLE: "占空比",
+    RunState.VOLTAGE_VECTOR: "电压矢量",
+    RunState.FIELD_WEAKENING: "弱磁",
+    RunState.SENSORLESS: "无感FOC",
+    RunState.IMPEDANCE: "阻抗",
+    RunState.ADMITTANCE: "导纳",
+    RunState.FORCE_CONTROL: "力控",
+    RunState.FORCE_POSITION_HYBRID: "力位混合",
+    RunState.GRAVITY_COMPENSATION: "重力补偿",
+    RunState.COLLISION_DETECTION: "碰撞检测",
+    RunState.ZERO_FORCE: "零力",
+    RunState.CONSTANT_FORCE: "恒力",
+    RunState.VARIABLE_IMPEDANCE: "变阻抗",
+    RunState.ADAPTIVE_GRAVITY_COMP: "自适应重力补偿",
+    RunState.LANDING_BUFFER: "落地缓冲",
+    RunState.PVT: "PVT",
+    RunState.CUBIC_SPLINE: "三次样条",
+    RunState.TRAPEZOIDAL_TRAJ: "梯形轨迹",
+    RunState.S_CURVE_TRAJ: "S曲线",
+    RunState.HOMING: "回零",
+    RunState.ELECTRONIC_GEAR: "电子齿轮",
+    RunState.ELECTRONIC_CAM: "电子凸轮",
+    RunState.STEP_DIR: "脉冲方向",
+    RunState.ANALOG_INPUT: "模拟量",
+    RunState.PWM_INPUT: "PWM输入",
+    RunState.JOG: "点动",
+    RunState.SAFE_TEACH: "安全示教",
+    RunState.TEST_AGING: "老化测试",
+    RunState.TEST_SWEEP_FREQ: "扫频测试",
+    RunState.TEST_COGGING: "齿槽测试",
+    RunState.TEST_FRICTION: "摩擦测试",
+    RunState.TEST_INERTIA: "惯量测试",
+    RunState.DIAGNOSTIC: "诊断",
+    RunState.HIGH_SPEED_DAQ: "高速采集",
+    RunState.SINGLE_STEP: "单步调试",
+}
+
+
 # 防误触魔数
 MAGIC_BOOTLOADER = 0xB00710AD
 MAGIC_FACTORY_RESET = 0xFAC70F5F
@@ -210,3 +336,19 @@ def err_name(err: int) -> str:
         return JmErr(err).name
     except ValueError:
         return f"0x{err:02X}"
+
+
+def top_fsm_name(top_fsm: int) -> str:
+    """返回顶层状态中文名, 未知则返回 (数值)"""
+    try:
+        return TOP_FSM_CN[TopFsm(top_fsm)]
+    except (ValueError, KeyError):
+        return f"({top_fsm})"
+
+
+def run_state_name(run_state: int) -> str:
+    """返回运行子状态中文名, 未知则返回 (数值)"""
+    try:
+        return RUN_STATE_CN[RunState(run_state)]
+    except (ValueError, KeyError):
+        return f"({run_state})"

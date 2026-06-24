@@ -14,7 +14,8 @@ from .crc16 import crc16_calc
 from .frame import FrameCodec, FrameDecoder, STX_H, STX_L, MAX_PACK_SIZE, PACK_OVERHEAD
 from .cmd_def import (
     JmCmd, JmErr, JmTlmBit, JmParamType,
-    cmd_name, err_name,
+    TopFsm, RunState, TOP_FSM_CN, RUN_STATE_CN,
+    cmd_name, err_name, top_fsm_name, run_state_name,
     MAGIC_BOOTLOADER, MAGIC_FACTORY_RESET,
 )
 from . import codec
@@ -28,7 +29,9 @@ from .registry import (
 __all__ = [
     'crc16_calc',
     'FrameCodec', 'FrameDecoder', 'STX_H', 'STX_L', 'MAX_PACK_SIZE', 'PACK_OVERHEAD',
-    'JmCmd', 'JmErr', 'JmTlmBit', 'JmParamType', 'cmd_name', 'err_name',
+    'JmCmd', 'JmErr', 'JmTlmBit', 'JmParamType',
+    'TopFsm', 'RunState', 'TOP_FSM_CN', 'RUN_STATE_CN',
+    'cmd_name', 'err_name', 'top_fsm_name', 'run_state_name',
     'MAGIC_BOOTLOADER', 'MAGIC_FACTORY_RESET',
     'codec',
     'FeedbackData', 'parse_state', 'parse_read_reply', 'parse_telemetry',

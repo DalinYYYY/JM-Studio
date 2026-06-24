@@ -30,6 +30,7 @@ from ui.panels.feedback_panel import FeedbackPanel
 from ui.panels.telemetry_panel import TelemetryPanel
 from ui.panels.plot_panel import PlotPanel
 from ui.panels.log_panel import LogPanel
+from ui.panels.state_machine_panel import StateMachinePanel
 
 
 class MainWindow(QMainWindow):
@@ -118,6 +119,7 @@ class MainWindow(QMainWindow):
             self._registry, title="电机配置", source="motor_config",
             show_save=True, save_text="保存配置到Flash/EEPROM")
         self._plot_panel = PlotPanel()
+        self._state_panel = StateMachinePanel()
         self._log_panel = LogPanel()
         self._log_panel_visible = True
 
@@ -135,6 +137,7 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         tabs.addTab(self._feedback_panel, "实时反馈")
+        tabs.addTab(self._state_panel, "状态机")
         tabs.addTab(self._param_panel, "电机参数")
         tabs.addTab(self._config_panel, "电机配置")
         tabs.addTab(self._plot_panel, "实时曲线")
@@ -370,6 +373,9 @@ class MainWindow(QMainWindow):
         c.dev_name_received.connect(self._on_dev_name)
         c.param_read_result.connect(self._on_param_result)
 
+        # 状态机面板: 周期请求 -> 拉取 READ_STATE
+        self._state_panel.poll_state.connect(self._on_poll_state)
+
         # 面板 -> 客户端
         self._conn_panel.connect_requested.connect(self._on_connect)
         self._conn_panel.disconnect_requested.connect(self._on_disconnect)
@@ -417,6 +423,7 @@ class MainWindow(QMainWindow):
 
     def _on_connected(self, connected: bool):
         self._conn_panel.set_connected(connected)
+        self._state_panel.set_link_active(connected)
         if connected:
             self._sb_link.setText(f"● {getattr(self, '_cur_port', '')}")
             self._sb_link.setStyleSheet(
@@ -437,6 +444,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请先连接串口")
             return False
         return True
+
+    def _on_poll_state(self):
+        """状态机面板周期请求: 静默拉取 READ_STATE(不弹窗)。"""
+        if self._client.is_open():
+            self._client.query_state()
 
     def _on_control_command(self, cmd: int):
         if self._ensure_open():
@@ -573,6 +585,7 @@ class MainWindow(QMainWindow):
     def _on_ui_tick(self):
         if self._latest_state is not None:
             self._feedback_panel.update_state(*self._latest_state)
+            self._state_panel.update_state(*self._latest_state)
             self._latest_state = None
 
         pending_count = len(self._feedback_pending)

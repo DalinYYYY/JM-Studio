@@ -4,6 +4,8 @@ from PyQt6.QtWidgets import QGroupBox, QGridLayout, QLabel
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
+from jmproto import top_fsm_name, run_state_name, cmd_name
+
 
 class FeedbackPanel(QGroupBox):
     """实时反馈数据 + 状态机显示。update_feedback(fb) / update_state(...) 由主窗口调用。"""
@@ -26,10 +28,6 @@ class FeedbackPanel(QGroupBox):
         ("多圈计数", "", "multiturn", "{}"),
         ("单圈位置", "rad", "single", "{:.4f}"),
     ]
-
-    FSM_NAMES = ["未知", "初始化", "待机", "校准中", "运行中", "故障"]
-    RUN_NAMES = ["空闲", "运行", "停止", "错误"]
-    CTRL_NAMES = ["无", "开环", "电流", "力矩", "速度", "位置", "MIT", "阻抗"]
 
     def __init__(self, parent=None):
         super().__init__("", parent)
@@ -95,9 +93,9 @@ class FeedbackPanel(QGroupBox):
                 "font-family: Consolas; font-size: 13px; font-weight: bold; color: #1565C0;")
 
     def update_state(self, top_fsm, run_state, ctrl_mode, enable):
-        self._lbl_fsm.setText(self.FSM_NAMES[top_fsm] if top_fsm < len(self.FSM_NAMES) else f"({top_fsm})")
-        self._lbl_run.setText(self.RUN_NAMES[run_state] if run_state < len(self.RUN_NAMES) else f"({run_state})")
-        self._lbl_ctrl.setText(self.CTRL_NAMES[ctrl_mode] if ctrl_mode < len(self.CTRL_NAMES) else f"({ctrl_mode})")
+        self._lbl_fsm.setText(top_fsm_name(top_fsm))
+        self._lbl_run.setText(run_state_name(run_state))
+        self._lbl_ctrl.setText(cmd_name(ctrl_mode))
         if enable:
             self._lbl_enable.setText("ON")
             self._lbl_enable.setStyleSheet(
