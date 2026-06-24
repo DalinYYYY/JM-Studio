@@ -6,8 +6,9 @@
 
 import time
 from collections import deque
+from pathlib import Path
 
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QGroupBox, QGridLayout, QPushButton, QMessageBox, QLabel, QSplitter,
@@ -38,6 +39,9 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self._logo_path = Path(__file__).resolve().parent.parent / "resources" / "pic" / "log_ioc.png"
+        if self._logo_path.exists():
+            self.setWindowIcon(QIcon(str(self._logo_path)))
 
         # 通信客户端(串口传输)
         self._client = JmClient(SerialTransport())
@@ -69,7 +73,6 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1200, 800)
 
         self._build_ui()
-        self._build_menu()
         self._build_statusbar()
         self._connect_signals()
 
@@ -117,13 +120,13 @@ class MainWindow(QMainWindow):
         self._plot_panel = PlotPanel()
         self._log_panel = LogPanel()
         self._log_panel_visible = True
-        self._conn_panel.set_connect_row_tail_widget(self._create_log_toggle_button())
 
         left_layout.addWidget(self._conn_panel)
         left_layout.addWidget(self._control_panel)
         left_layout.addWidget(self._motion_panel)
         left_layout.addWidget(self._telemetry_panel)
         left_layout.addWidget(self._create_dev_info_group())
+        left_layout.addWidget(self._create_menu_config_group())
         left_layout.addStretch()
 
         # 右侧: 反馈/参数/绘图 选项卡 + 日志
@@ -191,7 +194,7 @@ class MainWindow(QMainWindow):
         btn.setChecked(True)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setFixedHeight(26)
-        btn.setMinimumWidth(64)
+        btn.setMinimumWidth(88)
         btn.setStyleSheet("""
             QPushButton {
                 border: 1px solid #555;
@@ -216,6 +219,28 @@ class MainWindow(QMainWindow):
         self._update_log_toggle_button()
         return btn
 
+    def _apply_menu_button_style(self, btn: QPushButton):
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFixedHeight(26)
+        btn.setMinimumWidth(88)
+        btn.setStyleSheet("""
+            QPushButton {
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 0 8px;
+                background: #2A2A2A;
+                color: #DDD;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #3A3A3A;
+                border-color: #777;
+            }
+            QPushButton:pressed {
+                background: #454545;
+            }
+        """)
+
     def _build_statusbar(self):
         """底部状态栏: 连接状态 + TX/RX 速率与累计总量"""
         sb = self.statusBar()
@@ -234,12 +259,6 @@ class MainWindow(QMainWindow):
 
         for w in (self._sb_link, self._sb_tx, self._sb_rx, self._sb_frames):
             sb.addPermanentWidget(w)
-
-    def _build_menu(self):
-        settings = self.menuBar().addMenu("设置")
-        act_display = QAction("显示刷新...", self)
-        act_display.triggered.connect(self._open_display_settings)
-        settings.addAction(act_display)
 
     def _open_display_settings(self):
         dlg = QDialog(self)
@@ -324,6 +343,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(btn_info, 0, 0)
         layout.addWidget(btn_name, 0, 1)
         layout.addWidget(btn_hb, 0, 2)
+        return grp
+
+    def _create_menu_config_group(self) -> QGroupBox:
+        grp = QGroupBox("菜单配置")
+        layout = QGridLayout(grp)
+        btn_display = QPushButton("缓存设置")
+        btn_display.clicked.connect(self._open_display_settings)
+        self._apply_menu_button_style(btn_display)
+        layout.addWidget(btn_display, 0, 0)
+        layout.addWidget(self._create_log_toggle_button(), 0, 1)
         return grp
 
     # ==================== 信号连接 ====================
@@ -460,7 +489,7 @@ class MainWindow(QMainWindow):
             queued += 1
         if queued:
             self._pump_param_read_queue()
-            self._log_panel.log(f"[TX] {panel.title()} 批量读取 {queued} 项, 应答驱动")
+            self._log_panel.log(f"[TX] {panel.panel_name()} 批量读取 {queued} 项, 应答驱动")
 
     def _on_param_write(self, panel: ParamPanel, param_id: int, text: str):
         if not self._panel_remote_supported(panel):
@@ -485,13 +514,13 @@ class MainWindow(QMainWindow):
             try:
                 value = panel.pack_value(param_id, text)
             except Exception:
-                self._log_panel.log_warn(f"{panel.title()} 参数值无效: id={param_id} value={text}")
+                self._log_panel.log_warn(f"{panel.panel_name()} 参数值无效: id={param_id} value={text}")
                 continue
             self._param_write_queue.append((panel, int(param_id), value))
             queued += 1
         if queued:
             self._pump_param_write_queue()
-            self._log_panel.log(f"[TX] {panel.title()} 批量写入 {queued} 项, 应答驱动")
+            self._log_panel.log(f"[TX] {panel.panel_name()} 批量写入 {queued} 项, 应答驱动")
 
     def _pump_param_read_queue(self):
         if self._pending_param_reads or not self._param_read_queue:
@@ -528,7 +557,7 @@ class MainWindow(QMainWindow):
         panel.set_value(param_id, disp)
         spec = panel.get_param(param_id)
         name = spec.code_name if spec else f"id={param_id}"
-        self._log_panel.log(f"[RX] {panel.title()} {name}(id={param_id}) = {disp}")
+        self._log_panel.log(f"[RX] {panel.panel_name()} {name}(id={param_id}) = {disp}")
         self._pump_param_read_queue()
 
     # ==================== 数据接收 ====================

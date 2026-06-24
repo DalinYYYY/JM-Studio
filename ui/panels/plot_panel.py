@@ -147,7 +147,7 @@ class PlotPanel(QGroupBox):
     _AUTO_RANGE_EVERY = 10       # Y 轴自适应节流: 每 N 帧执行一次
 
     def __init__(self, parent=None):
-        super().__init__("实时曲线", parent)
+        super().__init__("", parent)
         self._t0 = None
         self._paused = False
         self._window_seconds = 20

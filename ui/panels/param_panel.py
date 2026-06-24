@@ -43,7 +43,8 @@ class ParamPanel(QGroupBox):
 
     def __init__(self, registry, parent=None, title="电机参数",
                  source="motor_param", show_save=False, save_text="保存到Flash"):
-        super().__init__(title, parent)
+        super().__init__("", parent)
+        self._panel_name = title
         self._reg = registry
         self._source = source
         self._show_save = bool(show_save)
@@ -63,6 +64,7 @@ class ParamPanel(QGroupBox):
                 border-radius: 4px;
                 background: #2A2A2A;
                 color: #DDD;
+                font-size: 12px;
             }
             QPushButton:hover {
                 background: #3A3A3A;
@@ -82,6 +84,7 @@ class ParamPanel(QGroupBox):
                 background: #EF6C00;
                 color: white;
                 font-weight: bold;
+                font-size: 12px;
             }
             QPushButton:hover {
                 background: #FF8F00;
@@ -94,6 +97,9 @@ class ParamPanel(QGroupBox):
             }
         """
         self._build()
+
+    def panel_name(self) -> str:
+        return self._panel_name
 
     def _build(self):
         layout = QVBoxLayout(self)
@@ -121,9 +127,11 @@ class ParamPanel(QGroupBox):
 
         hdr = self._table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        hdr.setMinimumSectionSize(24)
+        hdr.setMinimumSectionSize(48)
         hdr.setDefaultSectionSize(120)
         hdr.setSectionResizeMode(COL_DESC, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(COL_READ, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(COL_WRITE, QHeaderView.ResizeMode.Fixed)
 
         self._table.setStyleSheet("""
             QTableWidget {
@@ -169,8 +177,8 @@ class ParamPanel(QGroupBox):
         self._table.setColumnWidth(COL_TYPE, 120)
         self._table.setColumnWidth(COL_CURRENT, 120)
         self._table.setColumnWidth(COL_EDIT, 120)
-        self._table.setColumnWidth(COL_READ, 56)
-        self._table.setColumnWidth(COL_WRITE, 56)
+        self._table.setColumnWidth(COL_READ, 72)
+        self._table.setColumnWidth(COL_WRITE, 72)
         self._update_table_layout()
 
     def _make_group_item(self, text: str) -> QTableWidgetItem:
@@ -193,10 +201,11 @@ class ParamPanel(QGroupBox):
         item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         return item
 
-    def _make_button(self, text: str, callback, width: int = 34) -> QPushButton:
+    def _make_button(self, text: str, callback, width: int = 56) -> QPushButton:
         btn = QPushButton(text)
-        btn.setFixedHeight(22)
+        btn.setFixedHeight(24)
         btn.setFixedWidth(width)
+        btn.setMinimumWidth(width)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(callback)
         btn.setStyleSheet(self._btn_base_style)
@@ -205,7 +214,7 @@ class ParamPanel(QGroupBox):
     def _make_button_cell(self, button: QPushButton) -> QWidget:
         cell = QWidget()
         layout = QHBoxLayout(cell)
-        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(button, 0, Qt.AlignmentFlag.AlignCenter)
         return cell
@@ -245,9 +254,9 @@ class ParamPanel(QGroupBox):
         self._table.setSpan(row, COL_NAME, 1, COL_READ)
 
         read_btn = self._make_button(
-            "全读", lambda _=False, ids=tuple(param_ids): self.read_params.emit(list(ids)), width=48)
+            "全读", lambda _=False, ids=tuple(param_ids): self.read_params.emit(list(ids)), width=64)
         write_btn = self._make_button(
-            "全写", lambda _=False, ids=tuple(param_ids): self._on_write_group_clicked(ids), width=48)
+            "全写", lambda _=False, ids=tuple(param_ids): self._on_write_group_clicked(ids), width=64)
         writable = any(getattr(p, 'writable', False) for p in params)
         write_btn.setEnabled(writable)
         self._table.setCellWidget(row, COL_READ, self._make_button_cell(read_btn))
@@ -273,8 +282,8 @@ class ParamPanel(QGroupBox):
         self._table.setItem(row, COL_EDIT, edit_item)
         self._table.setItem(row, COL_DESC, desc_item)
 
-        read_btn = self._make_button("读", lambda _=False, pid=p.param_id: self.read_param.emit(int(pid)))
-        write_btn = self._make_button("写", lambda _=False, pid=p.param_id: self._on_write_clicked(int(pid)))
+        read_btn = self._make_button("读", lambda _=False, pid=p.param_id: self.read_param.emit(int(pid)), width=52)
+        write_btn = self._make_button("写", lambda _=False, pid=p.param_id: self._on_write_clicked(int(pid)), width=52)
         write_btn.setEnabled(p.writable)
         self._table.setCellWidget(row, COL_READ, self._make_button_cell(read_btn))
         self._table.setCellWidget(row, COL_WRITE, self._make_button_cell(write_btn))

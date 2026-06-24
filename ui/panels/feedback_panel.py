@@ -32,7 +32,7 @@ class FeedbackPanel(QGroupBox):
     CTRL_NAMES = ["无", "开环", "电流", "力矩", "速度", "位置", "MIT", "阻抗"]
 
     def __init__(self, parent=None):
-        super().__init__("实时反馈", parent)
+        super().__init__("", parent)
         self._val_labels = {}
         self._build()
 
