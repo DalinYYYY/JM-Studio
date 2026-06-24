@@ -33,18 +33,26 @@ COL_WRITE = 7
 
 
 class ParamPanel(QGroupBox):
-    """参数表格面板。发出 read_param(id) / write_param(id, text) / save_all() 信号。"""
+    """参数表格面板。发出 read_param/write_param/read_params/write_params/save_all 信号。"""
 
     read_param = pyqtSignal(int)
     write_param = pyqtSignal(int, str)
+    read_params = pyqtSignal(object)
+    write_params = pyqtSignal(object)
     save_all = pyqtSignal()
 
-    def __init__(self, registry, parent=None):
-        super().__init__("参数读写", parent)
+    def __init__(self, registry, parent=None, title="电机参数",
+                 source="motor_param", show_save=False, save_text="保存到Flash"):
+        super().__init__(title, parent)
         self._reg = registry
+        self._source = source
+        self._show_save = bool(show_save)
+        self._save_text = save_text
         self._current_items = {} # param_id -> QTableWidgetItem
         self._edit_items = {}    # param_id -> QTableWidgetItem
         self._write_buttons = {} # param_id -> QPushButton
+        self._param_specs = {}    # param_id -> ParamSpec
+        self._group_param_ids = {} # group -> [param_id]
         self._row_state = {}     # param_id -> {'synced': str, 'dirty': bool, 'pending': bool}
         self._pending_writes = deque()  # (param_id, sent_text)
         self._syncing_table = False
@@ -147,8 +155,9 @@ class ParamPanel(QGroupBox):
         btn_layout = QHBoxLayout(btn_row)
         btn_layout.setContentsMargins(0, 0, 0, 0)
 
-        self._btn_save = QPushButton("保存到Flash")
+        self._btn_save = QPushButton(self._save_text)
         self._btn_save.clicked.connect(self.save_all)
+        self._btn_save.setVisible(self._show_save)
         btn_layout.addWidget(self._btn_save)
         btn_layout.addStretch()
         layout.addWidget(btn_row)
@@ -160,8 +169,8 @@ class ParamPanel(QGroupBox):
         self._table.setColumnWidth(COL_TYPE, 120)
         self._table.setColumnWidth(COL_CURRENT, 120)
         self._table.setColumnWidth(COL_EDIT, 120)
-        self._table.setColumnWidth(COL_READ, 44)
-        self._table.setColumnWidth(COL_WRITE, 44)
+        self._table.setColumnWidth(COL_READ, 56)
+        self._table.setColumnWidth(COL_WRITE, 56)
         self._update_table_layout()
 
     def _make_group_item(self, text: str) -> QTableWidgetItem:
@@ -184,10 +193,10 @@ class ParamPanel(QGroupBox):
         item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         return item
 
-    def _make_button(self, text: str, callback) -> QPushButton:
+    def _make_button(self, text: str, callback, width: int = 34) -> QPushButton:
         btn = QPushButton(text)
         btn.setFixedHeight(22)
-        btn.setFixedWidth(34)
+        btn.setFixedWidth(width)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(callback)
         btn.setStyleSheet(self._btn_base_style)
@@ -207,12 +216,14 @@ class ParamPanel(QGroupBox):
         self._current_items.clear()
         self._edit_items.clear()
         self._write_buttons.clear()
+        self._param_specs.clear()
+        self._group_param_ids.clear()
         self._row_state.clear()
         self._pending_writes.clear()
 
-        groups = self._reg.params_by_group()
+        groups = self._params_by_group()
         for group, params in groups.items():
-            self._append_group_row(group)
+            self._append_group_row(group, params)
             for p in params:
                 self._append_param_row(p)
 
@@ -222,26 +233,38 @@ class ParamPanel(QGroupBox):
     def _update_table_layout(self):
         self._table.horizontalHeader().setStretchLastSection(False)
 
-    def _append_group_row(self, group: str):
+    def _append_group_row(self, group: str, params):
         row = self._table.rowCount()
         self._table.insertRow(row)
         self._table.setRowHeight(row, 24)
+        param_ids = [int(p.param_id) for p in params]
+        self._group_param_ids[group] = param_ids
 
         item = self._make_group_item(group)
         self._table.setItem(row, COL_NAME, item)
-        self._table.setSpan(row, COL_NAME, 1, self._table.columnCount())
+        self._table.setSpan(row, COL_NAME, 1, COL_READ)
+
+        read_btn = self._make_button(
+            "全读", lambda _=False, ids=tuple(param_ids): self.read_params.emit(list(ids)), width=48)
+        write_btn = self._make_button(
+            "全写", lambda _=False, ids=tuple(param_ids): self._on_write_group_clicked(ids), width=48)
+        writable = any(getattr(p, 'writable', False) for p in params)
+        write_btn.setEnabled(writable)
+        self._table.setCellWidget(row, COL_READ, self._make_button_cell(read_btn))
+        self._table.setCellWidget(row, COL_WRITE, self._make_button_cell(write_btn))
 
     def _append_param_row(self, p):
         row = self._table.rowCount()
         self._table.insertRow(row)
 
         unit = f" ({p.unit})" if p.unit and p.unit != '-' else ""
+        desc = p.desc or p.cn_name
         name_item = self._make_cell_item(p.code_name)
         id_item = self._make_cell_item(str(p.param_id))
         type_item = self._make_cell_item(f"{p.dtype}{unit}")
         current_item = self._make_cell_item("--")
         edit_item = self._make_cell_item("--", editable=p.writable)
-        desc_item = self._make_cell_item(p.cn_name)
+        desc_item = self._make_cell_item(desc)
 
         self._table.setItem(row, COL_NAME, name_item)
         self._table.setItem(row, COL_ID, id_item)
@@ -259,6 +282,7 @@ class ParamPanel(QGroupBox):
         self._current_items[p.param_id] = current_item
         self._edit_items[p.param_id] = edit_item
         self._write_buttons[p.param_id] = write_btn
+        self._param_specs[p.param_id] = p
         self._row_state[p.param_id] = {
             'synced': current_item.text().strip(),
             'dirty': False,
@@ -278,6 +302,19 @@ class ParamPanel(QGroupBox):
         text = item.text().strip()
         if text and text != "--":
             self.write_param.emit(int(param_id), text)
+
+    def _on_write_group_clicked(self, param_ids):
+        writes = []
+        for pid in param_ids:
+            state = self._row_state.get(int(pid))
+            item = self._edit_items.get(int(pid))
+            if not state or not state.get('writable') or item is None:
+                continue
+            text = item.text().strip()
+            if text and text != "--":
+                writes.append((int(pid), text))
+        if writes:
+            self.write_params.emit(writes)
 
     def _set_write_button_state(self, param_id: int, dirty: bool, pending: bool = False):
         btn = self._write_buttons.get(int(param_id))
@@ -368,3 +405,21 @@ class ParamPanel(QGroupBox):
                     self._syncing_table = False
             dirty = bool(edit_item and edit_item.text().strip() != text)
             self._set_write_button_state(pid, dirty, False)
+
+    def _params_by_group(self):
+        if self._source == "motor_config":
+            return self._reg.motor_config_by_group()
+        return self._reg.params_by_group()
+
+    def get_param(self, param_id: int):
+        return self._param_specs.get(int(param_id))
+
+    def pack_value(self, param_id: int, text: str) -> bytes:
+        if self._source == "motor_config":
+            return self._reg.pack_motor_config_value(param_id, text)
+        return self._reg.pack_param_value(param_id, text)
+
+    def unpack_value(self, param_id: int, value_bytes: bytes):
+        if self._source == "motor_config":
+            return self._reg.unpack_motor_config_value(param_id, value_bytes)
+        return self._reg.unpack_param_value(param_id, value_bytes)

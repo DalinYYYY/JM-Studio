@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QGridLayout, QLabel, QComboBox, QPushButton,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QIntValidator
 
 from transport.serial_transport import SerialTransport
 
@@ -36,9 +37,11 @@ class ConnectionPanel(QGroupBox):
         self._layout.addWidget(QLabel("波特率:"), 1, 0)
         self._combo_baud = QComboBox()
         self._combo_baud.addItems(["9600", "19200", "38400", "57600", "115200",
-                                   "230400", "460800", "921600"])
+                                   "230400", "460800", "921600", "2000000",
+                                   "5000000", "10000000"])
         self._combo_baud.setCurrentText("115200")
         self._combo_baud.setEditable(True)
+        self._combo_baud.lineEdit().setValidator(QIntValidator(1, 10000000, self))
         self._layout.addWidget(self._combo_baud, 1, 1, 1, 2)
 
         self._btn_connect = QPushButton("连接")
@@ -57,6 +60,8 @@ class ConnectionPanel(QGroupBox):
         self._layout.addWidget(widget, 2, 2, Qt.AlignmentFlag.AlignVCenter)
 
     def refresh_ports(self):
+        if self._connected:
+            return
         self._combo_port.clear()
         ports = SerialTransport.list_ports()
         if not ports:
@@ -77,11 +82,15 @@ class ConnectionPanel(QGroupBox):
             baud = int(self._combo_baud.currentText())
         except ValueError:
             baud = 115200
+        baud = max(1, min(10000000, baud))
         self.connect_requested.emit(port, baud)
 
     def set_connected(self, connected: bool):
         """由主窗口在连接状态确认后调用, 更新按钮外观"""
         self._connected = connected
+        self._combo_port.setEnabled(not connected)
+        self._combo_baud.setEnabled(not connected)
+        self._btn_refresh.setEnabled(not connected)
         if connected:
             self._btn_connect.setText("断开")
             self._btn_connect.setStyleSheet(

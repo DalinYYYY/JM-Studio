@@ -16,6 +16,7 @@ from .cmd_def import JmCmd
 _RES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'resources')
 _CMD_CSV = os.path.join(_RES_DIR, 'joint_motor_command_list.csv')
 _PARAM_CSV = os.path.join(_RES_DIR, 'joint_motor_param_index.csv')
+_MOTOR_INFO_CSV = os.path.join(_RES_DIR, 'motor_info.csv')
 
 # 载荷字段解析: 形如 pos:f32 / magic:u32=0xB00710AD / param_id:u16
 _FIELD_RE = re.compile(r'([A-Za-z_]\w*)\s*:\s*([A-Za-z]\w*(?:\[\d+\])?)\s*(?:=\s*([^;]+))?')
@@ -63,9 +64,9 @@ class CommandSpec:
 class ParamSpec:
     """单个参数规格(来自参数索引表 CSV)"""
     __slots__ = ['param_id', 'code_name', 'cn_name', 'dtype', 'nbytes',
-                 'unit', 'group', 'rw']
+                 'unit', 'group', 'rw', 'desc']
 
-    def __init__(self, param_id, code_name, cn_name, dtype, nbytes, unit, group, rw):
+    def __init__(self, param_id, code_name, cn_name, dtype, nbytes, unit, group, rw, desc=''):
         self.param_id = param_id
         self.code_name = code_name
         self.cn_name = cn_name
@@ -74,6 +75,7 @@ class ParamSpec:
         self.unit = unit
         self.group = group
         self.rw = rw
+        self.desc = desc
 
     @property
     def writable(self):
@@ -105,15 +107,39 @@ def _parse_payload_desc(desc: str):
     return fields
 
 
+def _normalize_dtype(dtype: str) -> str:
+    """把固件/C 表类型名归一到 codec 使用的短类型名。"""
+    d = (dtype or '').strip().lower()
+    aliases = {
+        'uint8': 'u8',
+        'uint8_t': 'u8',
+        'int8': 'i8',
+        'int8_t': 'i8',
+        'uint16': 'u16',
+        'uint16_t': 'u16',
+        'int16': 'i16',
+        'int16_t': 'i16',
+        'uint32': 'u32',
+        'uint32_t': 'u32',
+        'int32': 'i32',
+        'int32_t': 'i32',
+        'float': 'f32',
+        'single': 'f32',
+    }
+    return aliases.get(d, d)
+
+
 class ProtocolRegistry:
     """命令/参数注册表"""
 
     def __init__(self):
         self.commands = {}    # cmd(int) -> CommandSpec
         self.params = {}      # param_id(int) -> ParamSpec
+        self.motor_config_params = {}  # param_id(int) -> ParamSpec, 来自 motor_info.csv
         self.warnings = []    # 加载告警(供日志显示)
         self._load_commands()
         self._load_params()
+        self._load_motor_config_params()
 
     # ---------------- 加载 ----------------
     def _load_commands(self):
@@ -183,16 +209,55 @@ class ProtocolRegistry:
                         param_id=pid,
                         code_name=(row.get('参数名(代码字段)') or '').strip(),
                         cn_name=(row.get('中文含义') or '').strip(),
-                        dtype=(row.get('数据类型') or '').strip(),
+                        dtype=_normalize_dtype(row.get('数据类型') or ''),
                         nbytes=nbytes,
                         unit=(row.get('单位') or '').strip(),
                         group=(row.get('所属分组') or '其他').strip(),
                         rw=(row.get('读写') or 'RW').strip(),
+                        desc=(row.get('中文含义') or '').strip(),
                     )
         except FileNotFoundError:
             self.warnings.append(f"参数表 CSV 未找到, 参数面板将为空: {_PARAM_CSV}")
         except Exception as e:
             self.warnings.append(f"参数表解析失败({e})")
+
+    def _load_motor_config_params(self):
+        try:
+            with open(_MOTOR_INFO_CSV, encoding='utf-8-sig', newline='') as f:
+                reader = csv.DictReader(f)
+                for idx, row in enumerate(reader):
+                    name = (row.get('VariableName') or '').strip()
+                    if not name:
+                        continue
+                    index_text = (row.get('Index') or '').strip()
+                    try:
+                        pid = int(index_text, 0) if index_text else idx
+                    except ValueError:
+                        pid = idx
+                    dtype = _normalize_dtype(row.get('DataType') or '')
+                    nbytes = codec.type_nbytes(dtype)
+                    remarks = (row.get('Remarks') or '').strip()
+                    default = (row.get('DefaultValue') or '').strip()
+                    desc_parts = []
+                    if default:
+                        desc_parts.append(f"默认: {default}")
+                    if remarks:
+                        desc_parts.append(remarks)
+                    self.motor_config_params[pid] = ParamSpec(
+                        param_id=pid,
+                        code_name=name,
+                        cn_name=(row.get('NameZh') or '').strip(),
+                        dtype=dtype,
+                        nbytes=nbytes,
+                        unit=(row.get('Unit') or '').strip(),
+                        group=(row.get('Category') or '其他').strip(),
+                        rw=(row.get('Access') or 'RW').strip(),
+                        desc='; '.join(desc_parts),
+                    )
+        except FileNotFoundError:
+            self.warnings.append(f"电机配置表 CSV 未找到, 电机配置面板将为空: {_MOTOR_INFO_CSV}")
+        except Exception as e:
+            self.warnings.append(f"电机配置表解析失败({e})")
 
     # ---------------- 查询 ----------------
     def get_command(self, cmd: int):
@@ -200,6 +265,9 @@ class ProtocolRegistry:
 
     def get_param(self, param_id: int):
         return self.params.get(int(param_id))
+
+    def get_motor_config_param(self, param_id: int):
+        return self.motor_config_params.get(int(param_id))
 
     def commands_by_category(self, *categories):
         """按功能类别返回命令列表(按 cmd 升序)"""
@@ -209,8 +277,16 @@ class ProtocolRegistry:
 
     def params_by_group(self):
         """返回 OrderedDict 风格: {group: [ParamSpec...]}, 保持 param_id 升序"""
+        return self._params_by_group(self.params)
+
+    def motor_config_by_group(self):
+        """返回电机配置参数分组, 来自 motor_info.csv。"""
+        return self._params_by_group(self.motor_config_params)
+
+    @staticmethod
+    def _params_by_group(params: dict):
         groups = {}
-        for p in sorted(self.params.values(), key=lambda x: x.param_id):
+        for p in sorted(params.values(), key=lambda x: x.param_id):
             groups.setdefault(p.group, []).append(p)
         return groups
 
@@ -231,17 +307,37 @@ class ProtocolRegistry:
         spec = self.get_param(param_id)
         if spec is None:
             raise ValueError(f"未知 param_id={param_id}")
+        return self._pack_spec_value(spec, text)
+
+    def pack_motor_config_value(self, param_id: int, text: str) -> bytes:
+        spec = self.get_motor_config_param(param_id)
+        if spec is None:
+            raise ValueError(f"未知 motor_config param_id={param_id}")
+        return self._pack_spec_value(spec, text)
+
+    @staticmethod
+    def _pack_spec_value(spec: ParamSpec, text: str) -> bytes:
         dtype = spec.dtype
         if dtype.startswith('char['):
             return codec.pack_value(dtype, text)
         if codec.is_float_type(dtype):
             return codec.pack_value(dtype, float(text))
         # 整数类型, 支持 0x 前缀
-        return codec.pack_value(dtype, int(text, 0))
+        try:
+            value = int(text, 0)
+        except ValueError:
+            value = int(float(text))
+        return codec.pack_value(dtype, value)
 
     def unpack_param_value(self, param_id: int, raw: bytes):
         """按参数类型解出数值"""
         spec = self.get_param(param_id)
+        if spec is None:
+            return None
+        return codec.unpack_value(spec.dtype, raw)
+
+    def unpack_motor_config_value(self, param_id: int, raw: bytes):
+        spec = self.get_motor_config_param(param_id)
         if spec is None:
             return None
         return codec.unpack_value(spec.dtype, raw)

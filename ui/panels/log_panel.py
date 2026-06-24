@@ -2,7 +2,9 @@
 
 import datetime
 import html
+from collections import deque
 
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QWidget, QPushButton,
     QCheckBox, QTextEdit, QSizePolicy,
@@ -36,10 +38,21 @@ class LogPanel(QGroupBox):
     """
 
     MAX_BLOCKS = 2000
+    DEFAULT_FLUSH_PERIOD_MS = 50
+    DEFAULT_MAX_PENDING = 2000
+    DEFAULT_MAX_LINES_PER_FLUSH = 200
 
     def __init__(self, parent=None):
         super().__init__("通信日志", parent)
+        self._pending = deque()
+        self._max_pending = self.DEFAULT_MAX_PENDING
+        self._max_lines_per_flush = self.DEFAULT_MAX_LINES_PER_FLUSH
+        self._dropped = 0
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setInterval(self.DEFAULT_FLUSH_PERIOD_MS)
+        self._flush_timer.timeout.connect(self.flush)
         self._build()
+        self._flush_timer.start()
 
     def _build(self):
         layout = QVBoxLayout(self)
@@ -85,18 +98,49 @@ class LogPanel(QGroupBox):
 
         layout.addWidget(tool_row)
 
+    # ---------------- 配置 ----------------
+    def set_flush_period_ms(self, period_ms: int):
+        self._flush_timer.setInterval(max(10, int(period_ms)))
+
+    def set_max_pending(self, max_pending: int):
+        self._max_pending = max(100, int(max_pending))
+        while len(self._pending) > self._max_pending:
+            self._pending.popleft()
+            self._dropped += 1
+
     # ---------------- 内部输出 ----------------
-    def _emit(self, kind: str, body_html: str):
-        """拼时间戳 + 着色正文, 追加一行并按需滚动"""
+    def _queue(self, kind: str, body_html: str):
+        """追加到显示队列, 由定时器批量刷新到 QTextEdit。"""
+        if len(self._pending) >= self._max_pending:
+            self._pending.popleft()
+            self._dropped += 1
+        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        self._pending.append((kind, body_html, ts))
+
+    def _append_html(self, kind: str, body_html: str, ts: str = None):
+        """拼时间戳 + 着色正文, 追加一行并按需滚动。"""
         parts = []
         if self.chk_ts.isChecked():
-            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            if ts is None:
+                ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
             parts.append(f'<span style="color:{_COLOR["ts"]}">[{ts}]</span> ')
         color = _COLOR.get(kind, _COLOR['info'])
         parts.append(f'<span style="color:{color}">{body_html}</span>')
         self._log.append("".join(parts))
         if self.chk_autoscroll.isChecked():
             self._log.moveCursor(QTextCursor.MoveOperation.End)
+
+    def flush(self):
+        """定时批量刷新日志, 避免高频 QTextEdit.append 卡住界面。"""
+        if self._dropped:
+            dropped = self._dropped
+            self._dropped = 0
+            self._append_html('warn', html.escape(f"日志显示队列已满, 丢弃 {dropped} 条旧日志"))
+
+        count = min(len(self._pending), self._max_lines_per_flush)
+        for _ in range(count):
+            kind, body_html, ts = self._pending.popleft()
+            self._append_html(kind, body_html, ts)
 
     @staticmethod
     def _hex(payload: bytes) -> str:
@@ -109,7 +153,7 @@ class LogPanel(QGroupBox):
         line = f"▲ TX  {html.escape(cmd_name(cmd))}(0x{cmd:02X})  [{len(payload)}B]"
         if self.chk_raw.isChecked():
             line += f"  {self._hex(payload)}"
-        self._emit('tx', line)
+        self._queue('tx', line)
 
     def log_rx(self, cmd: int, payload: bytes):
         if not self.chk_rx.isChecked():
@@ -117,13 +161,13 @@ class LogPanel(QGroupBox):
         line = f"▼ RX  {html.escape(cmd_name(cmd))}(0x{cmd:02X})  [{len(payload)}B]"
         if self.chk_raw.isChecked():
             line += f"  {self._hex(payload)}"
-        self._emit('rx', line)
+        self._queue('rx', line)
 
     def log(self, msg: str):
-        self._emit('info', html.escape(msg))
+        self._queue('info', html.escape(msg))
 
     def log_warn(self, msg: str):
-        self._emit('warn', "⚠ " + html.escape(msg))
+        self._queue('warn', "⚠ " + html.escape(msg))
 
     def log_err(self, msg: str):
-        self._emit('err', "✖ " + html.escape(msg))
+        self._queue('err', "✖ " + html.escape(msg))

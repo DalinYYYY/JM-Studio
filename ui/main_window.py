@@ -5,11 +5,14 @@
 """
 
 import time
+from collections import deque
 
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QGroupBox, QGridLayout, QPushButton, QMessageBox, QLabel, QSplitter,
-    QScrollArea, QLayout, QFrame,
+    QScrollArea, QLayout, QFrame, QDialog, QDialogButtonBox, QFormLayout,
+    QSpinBox,
 )
 from PyQt6.QtCore import Qt, QTimer
 
@@ -31,6 +34,8 @@ from ui.panels.log_panel import LogPanel
 class MainWindow(QMainWindow):
     """关节电机上位机主窗口"""
 
+    _MAX_FEEDBACK_BATCH_PER_TICK = 1000
+
     def __init__(self):
         super().__init__()
 
@@ -45,15 +50,30 @@ class MainWindow(QMainWindow):
         self._last_tx_bytes = 0
         self._last_rx_bytes = 0
 
+        # 高频遥测进入 UI 前先做有界缓存, 显示/绘图按固定频率刷新。
+        self._display_period_ms = 50
+        self._display_buffer_max = 2000
+        self._feedback_pending = deque()
+        self._feedback_dropped = 0
+        self._last_drop_log_time = 0.0
+        self._latest_state = None
+        self._pending_param_reads = deque()
+        self._pending_param_writes = deque()
+        self._ui_timer = QTimer(self)
+        self._ui_timer.setInterval(self._display_period_ms)
+        self._ui_timer.timeout.connect(self._on_ui_tick)
+
         self.setWindowTitle("Joint Motor Controller - 关节电机控制面板")
         self.setMinimumSize(1200, 800)
 
         self._build_ui()
+        self._build_menu()
         self._build_statusbar()
         self._connect_signals()
 
         self._client.start()
         self._stats_timer.start(self._stats_period)
+        self._ui_timer.start()
 
         # 启动告警(CSV 加载情况)
         for w in self._registry.warnings:
@@ -87,7 +107,11 @@ class MainWindow(QMainWindow):
         self._motion_panel = MotionPanel(self._registry)
         self._telemetry_panel = TelemetryPanel()
         self._feedback_panel = FeedbackPanel()
-        self._param_panel = ParamPanel(self._registry)
+        self._param_panel = ParamPanel(
+            self._registry, title="电机参数", source="motor_param", show_save=False)
+        self._config_panel = ParamPanel(
+            self._registry, title="电机配置", source="motor_config",
+            show_save=True, save_text="保存配置到Flash/EEPROM")
         self._plot_panel = PlotPanel()
         self._log_panel = LogPanel()
         self._log_panel_visible = True
@@ -106,7 +130,8 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         tabs.addTab(self._feedback_panel, "实时反馈")
-        tabs.addTab(self._param_panel, "参数读写")
+        tabs.addTab(self._param_panel, "电机参数")
+        tabs.addTab(self._config_panel, "电机配置")
         tabs.addTab(self._plot_panel, "实时曲线")
 
         self._right_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -208,6 +233,61 @@ class MainWindow(QMainWindow):
         for w in (self._sb_link, self._sb_tx, self._sb_rx, self._sb_frames):
             sb.addPermanentWidget(w)
 
+    def _build_menu(self):
+        settings = self.menuBar().addMenu("设置")
+        act_display = QAction("显示刷新...", self)
+        act_display.triggered.connect(self._open_display_settings)
+        settings.addAction(act_display)
+
+    def _open_display_settings(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("显示刷新设置")
+        layout = QFormLayout(dlg)
+
+        spin_period = QSpinBox(dlg)
+        spin_period.setRange(10, 1000)
+        spin_period.setSingleStep(10)
+        spin_period.setSuffix(" ms")
+        spin_period.setValue(self._display_period_ms)
+
+        spin_buffer = QSpinBox(dlg)
+        spin_buffer.setRange(100, 50000)
+        spin_buffer.setSingleStep(100)
+        spin_buffer.setValue(self._display_buffer_max)
+
+        layout.addRow("显示更新周期:", spin_period)
+        layout.addRow("最大缓存帧数:", spin_buffer)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel,
+            dlg,
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addRow(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self._apply_display_settings(spin_period.value(), spin_buffer.value())
+
+    def _apply_display_settings(self, period_ms: int, buffer_max: int):
+        self._display_period_ms = max(10, int(period_ms))
+        self._display_buffer_max = max(100, int(buffer_max))
+        self._ui_timer.setInterval(self._display_period_ms)
+        self._log_panel.set_flush_period_ms(self._display_period_ms)
+        self._log_panel.set_max_pending(self._display_buffer_max)
+
+        while len(self._feedback_pending) > self._display_buffer_max:
+            self._feedback_pending.popleft()
+            self._feedback_dropped += 1
+
+        self.statusBar().showMessage(
+            f"显示刷新 {self._display_period_ms}ms, 缓存 {self._display_buffer_max} 帧",
+            3000,
+        )
+
     @staticmethod
     def _fmt_bytes(n: int) -> str:
         if n < 1024:
@@ -251,8 +331,8 @@ class MainWindow(QMainWindow):
         c.error_occurred.connect(self._on_error)
         c.tx_frame.connect(self._log_panel.log_tx)
         c.raw_frame.connect(self._log_panel.log_rx)
-        c.feedback_updated.connect(self._on_feedback)
-        c.state_updated.connect(self._feedback_panel.update_state)
+        c.feedback_updated.connect(self._queue_feedback)
+        c.state_updated.connect(self._queue_state)
         c.ack_received.connect(self._on_ack)
         c.nack_received.connect(self._on_nack)
         c.dev_info_received.connect(self._on_dev_info)
@@ -265,9 +345,24 @@ class MainWindow(QMainWindow):
         self._control_panel.command.connect(self._on_control_command)
         self._motion_panel.send_command.connect(self._on_motion_command)
         self._telemetry_panel.apply_telemetry.connect(self._on_apply_telemetry)
-        self._param_panel.read_param.connect(self._on_param_read)
-        self._param_panel.write_param.connect(self._on_param_write)
-        self._param_panel.save_all.connect(lambda: self._client.param_save())
+        self._param_panel.read_param.connect(
+            lambda param_id, panel=self._param_panel: self._on_param_read(panel, param_id))
+        self._param_panel.write_param.connect(
+            lambda param_id, text, panel=self._param_panel: self._on_param_write(panel, param_id, text))
+        self._param_panel.read_params.connect(
+            lambda param_ids, panel=self._param_panel: self._on_param_read_many(panel, param_ids))
+        self._param_panel.write_params.connect(
+            lambda writes, panel=self._param_panel: self._on_param_write_many(panel, writes))
+
+        self._config_panel.read_param.connect(
+            lambda param_id, panel=self._config_panel: self._on_param_read(panel, param_id))
+        self._config_panel.write_param.connect(
+            lambda param_id, text, panel=self._config_panel: self._on_param_write(panel, param_id, text))
+        self._config_panel.read_params.connect(
+            lambda param_ids, panel=self._config_panel: self._on_param_read_many(panel, param_ids))
+        self._config_panel.write_params.connect(
+            lambda writes, panel=self._config_panel: self._on_param_write_many(panel, writes))
+        self._config_panel.save_all.connect(self._on_config_save)
 
     # ==================== 连接管理 ====================
     def _on_connect(self, port: str, baud: int):
@@ -280,6 +375,8 @@ class MainWindow(QMainWindow):
         if self._client.is_open():
             self._client.set_telemetry(False, 0, 0)
         self._telemetry_panel.set_running(False)
+        self._feedback_pending.clear()
+        self._latest_state = None
         self._client.close()
         self.statusBar().showMessage("已断开")
 
@@ -330,43 +427,116 @@ class MainWindow(QMainWindow):
             self._log_panel.log("[TX] 遥控停止")
 
     # ==================== 参数读写 ====================
-    def _on_param_read(self, param_id: int):
-        if self._ensure_open():
-            self._client.param_read(param_id)
+    def _on_param_read(self, panel: ParamPanel, param_id: int):
+        if self._ensure_open() and self._client.param_read(param_id):
+            self._pending_param_reads.append(panel)
 
-    def _on_param_write(self, param_id: int, text: str):
+    def _on_param_read_many(self, panel: ParamPanel, param_ids):
+        if not self._ensure_open():
+            return
+        sent = 0
+        for param_id in param_ids:
+            if self._client.param_read(int(param_id)):
+                self._pending_param_reads.append(panel)
+                sent += 1
+        if sent:
+            self._log_panel.log(f"[TX] {panel.title()} 批量读取 {sent} 项")
+
+    def _on_param_write(self, panel: ParamPanel, param_id: int, text: str):
         if not self._ensure_open():
             return
         try:
-            value = self._registry.pack_param_value(param_id, text)
-        except ValueError:
+            value = panel.pack_value(param_id, text)
+        except Exception:
             QMessageBox.warning(self, "错误", f"参数值无效: {text}")
             return
         if self._client.param_write(param_id, value):
-            self._param_panel.note_write_sent(param_id)
+            panel.note_write_sent(param_id)
+            self._pending_param_writes.append(panel)
+
+    def _on_param_write_many(self, panel: ParamPanel, writes):
+        if not self._ensure_open():
+            return
+        sent = 0
+        for param_id, text in writes:
+            try:
+                value = panel.pack_value(param_id, text)
+            except Exception:
+                self._log_panel.log_warn(f"{panel.title()} 参数值无效: id={param_id} value={text}")
+                continue
+            if self._client.param_write(int(param_id), value):
+                panel.note_write_sent(int(param_id))
+                self._pending_param_writes.append(panel)
+                sent += 1
+        if sent:
+            self._log_panel.log(f"[TX] {panel.title()} 批量写入 {sent} 项")
+
+    def _on_config_save(self):
+        if self._ensure_open():
+            self._client.param_save()
+            self._log_panel.log("[TX] 保存电机配置到Flash/EEPROM")
 
     def _on_param_result(self, param_id: int, ptype: int, value_bytes: bytes):
-        val = self._registry.unpack_param_value(param_id, value_bytes)
+        panel = self._pending_param_reads.popleft() if self._pending_param_reads else self._param_panel
+        val = panel.unpack_value(param_id, value_bytes)
         disp = str(val) if val is not None else value_bytes.hex(' ')
-        self._param_panel.set_value(param_id, disp)
-        spec = self._registry.get_param(param_id)
+        panel.set_value(param_id, disp)
+        spec = panel.get_param(param_id)
         name = spec.code_name if spec else f"id={param_id}"
-        self._log_panel.log(f"[RX] PARAM {name}(id={param_id}) = {disp}")
+        self._log_panel.log(f"[RX] {panel.title()} {name}(id={param_id}) = {disp}")
 
     # ==================== 数据接收 ====================
-    def _on_feedback(self, fb):
-        self._feedback_panel.update_feedback(fb)
-        self._plot_panel.feed_feedback(time.monotonic(), fb)
+    def _queue_feedback(self, fb):
+        if len(self._feedback_pending) >= self._display_buffer_max:
+            self._feedback_pending.popleft()
+            self._feedback_dropped += 1
+        self._feedback_pending.append((time.monotonic(), fb))
+
+    def _queue_state(self, top_fsm, run_state, ctrl_mode, enable):
+        self._latest_state = (top_fsm, run_state, ctrl_mode, enable)
+
+    def _on_ui_tick(self):
+        if self._latest_state is not None:
+            self._feedback_panel.update_state(*self._latest_state)
+            self._latest_state = None
+
+        pending_count = len(self._feedback_pending)
+        if pending_count:
+            if pending_count > self._MAX_FEEDBACK_BATCH_PER_TICK:
+                drop_count = pending_count - self._MAX_FEEDBACK_BATCH_PER_TICK
+                for _ in range(drop_count):
+                    self._feedback_pending.popleft()
+                self._feedback_dropped += drop_count
+
+            batch = []
+            while self._feedback_pending:
+                batch.append(self._feedback_pending.popleft())
+
+            for ts, fb in batch:
+                self._plot_panel.feed_feedback(ts, fb)
+            self._feedback_panel.update_feedback(batch[-1][1])
+
+        if self._feedback_dropped:
+            now = time.monotonic()
+            if now - self._last_drop_log_time >= 2.0:
+                dropped = self._feedback_dropped
+                self._feedback_dropped = 0
+                self._last_drop_log_time = now
+                self._log_panel.log_warn(f"遥测显示缓存已满, 丢弃 {dropped} 帧旧数据")
 
     def _on_ack(self, cmd: int):
         self._log_panel.log(f"[RX] ACK {cmd_name(cmd)}(0x{cmd:02X})")
         if cmd == JmCmd.PARAM_WRITE:
-            self._param_panel.confirm_pending_write()
+            panel = self._pending_param_writes.popleft() if self._pending_param_writes else self._param_panel
+            panel.confirm_pending_write()
 
     def _on_nack(self, cmd: int, err: int):
         self._log_panel.log_warn(f"NACK {cmd_name(cmd)}(0x{cmd:02X}) err={err_name(err)}(0x{err:02X})")
+        if cmd == JmCmd.PARAM_READ and self._pending_param_reads:
+            self._pending_param_reads.popleft()
         if cmd == JmCmd.PARAM_WRITE:
-            self._param_panel.reject_pending_write()
+            panel = self._pending_param_writes.popleft() if self._pending_param_writes else self._param_panel
+            panel.reject_pending_write()
 
     def _on_dev_info(self, hw: int, fw: int, uid: bytes):
         uid_hex = uid.hex(':').upper()
@@ -385,5 +555,7 @@ class MainWindow(QMainWindow):
         if self._client.is_open():
             self._client.set_telemetry(False, 0, 0)
         self._stats_timer.stop()
+        self._ui_timer.stop()
+        self._log_panel.flush()
         self._client.stop()
         event.accept()

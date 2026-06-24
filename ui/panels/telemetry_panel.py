@@ -64,6 +64,10 @@ class TelemetryPanel(QGroupBox):
 
     def _apply_button_style(self):
         """按当前使能态刷新按钮文案与配色"""
+        for _bit, chk in self._checks:
+            chk.setEnabled(not self._running)
+        self._spin_period.setEnabled(not self._running)
+
         if self._running:
             self._btn_toggle.setText("停止周期上报")
             self._btn_toggle.setStyleSheet(
