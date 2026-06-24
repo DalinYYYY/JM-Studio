@@ -24,6 +24,10 @@ class SerialTransport(Transport):
     """串口传输"""
 
     name = "serial"
+    _READ_TIMEOUT_S = 0.001
+    _IDLE_WAIT_S = 0.0005
+    _CLOSED_WAIT_S = 0.01
+    _WRITE_TIMEOUT_S = 0.02
 
     def __init__(self):
         super().__init__()
@@ -35,6 +39,9 @@ class SerialTransport(Transport):
         self._thread: Optional[threading.Thread] = None
 
     # ---------------- 线程生命周期 ----------------
+        self._thread: Optional[threading.Thread] = None
+        self._wake_event = threading.Event()
+
     def start(self):
         if self._thread is not None and self._thread.is_alive():
             return
@@ -60,14 +67,15 @@ class SerialTransport(Transport):
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=0.01,
-                write_timeout=0.2,
+                timeout=self._READ_TIMEOUT_S,
+                write_timeout=self._WRITE_TIMEOUT_S,
             )
             with self._io_lock:
                 self._ser = ser
                 self._decoder.reset()
                 self.reset_stats()
                 self._running = True
+            self._wake_event.set()
             self.connected.emit(True)
             return True
         except Exception as e:
@@ -83,6 +91,7 @@ class SerialTransport(Transport):
                     self._ser.close()
                 except Exception:
                     pass
+        self._wake_event.set()
         if was_running:
             self.connected.emit(False)
 
@@ -98,6 +107,7 @@ class SerialTransport(Transport):
                 self._ser.write(frame)
                 self.tx_bytes += len(frame)
                 self.tx_frames += 1
+                self._wake_event.set()
                 return True
             except Exception:
                 return False
@@ -114,22 +124,31 @@ class SerialTransport(Transport):
                             n = self._ser.in_waiting
                             if n > 0:
                                 data = self._ser.read(n)
+                            else:
+                                first = self._ser.read(1)
+                                if first:
+                                    n = self._ser.in_waiting
+                                    data = first + (self._ser.read(n) if n > 0 else b'')
                     if data:
                         self.rx_bytes += len(data)
                         for cmd, payload in self._decoder.feed(data):
                             self.rx_frames += 1
                             self.frame_received.emit(cmd, bytes(payload))
                     else:
-                        threading.Event().wait(0.002)
+                        self._wake_event.wait(self._IDLE_WAIT_S)
+                        self._wake_event.clear()
                 else:
-                    threading.Event().wait(0.01)
+                    self._wake_event.wait(self._CLOSED_WAIT_S)
+                    self._wake_event.clear()
             except serial.SerialException as e:
                 self.error_occurred.emit(f"串口异常: {e}")
                 self.close()
-                threading.Event().wait(0.01)
+                self._wake_event.wait(self._CLOSED_WAIT_S)
+                self._wake_event.clear()
             except Exception as e:
                 self.error_occurred.emit(f"未知错误: {e}")
-                threading.Event().wait(0.01)
+                self._wake_event.wait(self._CLOSED_WAIT_S)
+                self._wake_event.clear()
 
     # ---------------- 工具 ----------------
     @staticmethod

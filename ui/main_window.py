@@ -59,6 +59,8 @@ class MainWindow(QMainWindow):
         self._latest_state = None
         self._pending_param_reads = deque()
         self._pending_param_writes = deque()
+        self._param_read_queue = deque()
+        self._param_write_queue = deque()
         self._ui_timer = QTimer(self)
         self._ui_timer.setInterval(self._display_period_ms)
         self._ui_timer.timeout.connect(self._on_ui_tick)
@@ -377,6 +379,10 @@ class MainWindow(QMainWindow):
         self._telemetry_panel.set_running(False)
         self._feedback_pending.clear()
         self._latest_state = None
+        self._pending_param_reads.clear()
+        self._pending_param_writes.clear()
+        self._param_read_queue.clear()
+        self._param_write_queue.clear()
         self._client.close()
         self.statusBar().showMessage("已断开")
 
@@ -427,22 +433,38 @@ class MainWindow(QMainWindow):
             self._log_panel.log("[TX] 遥控停止")
 
     # ==================== 参数读写 ====================
+    def _panel_remote_supported(self, panel: ParamPanel) -> bool:
+        if panel is self._config_panel:
+            self._log_panel.log_warn(
+                "[SKIP] motor_info config table is not implemented in firmware yet")
+            self.statusBar().showMessage(
+                "motor_info config callbacks are not implemented in firmware yet", 3000)
+            return False
+        return True
+
     def _on_param_read(self, panel: ParamPanel, param_id: int):
-        if self._ensure_open() and self._client.param_read(param_id):
-            self._pending_param_reads.append(panel)
+        if not self._panel_remote_supported(panel):
+            return
+        if self._ensure_open():
+            self._param_read_queue.append((panel, int(param_id)))
+            self._pump_param_read_queue()
 
     def _on_param_read_many(self, panel: ParamPanel, param_ids):
+        if not self._panel_remote_supported(panel):
+            return
         if not self._ensure_open():
             return
-        sent = 0
+        queued = 0
         for param_id in param_ids:
-            if self._client.param_read(int(param_id)):
-                self._pending_param_reads.append(panel)
-                sent += 1
-        if sent:
-            self._log_panel.log(f"[TX] {panel.title()} 批量读取 {sent} 项")
+            self._param_read_queue.append((panel, int(param_id)))
+            queued += 1
+        if queued:
+            self._pump_param_read_queue()
+            self._log_panel.log(f"[TX] {panel.title()} 批量读取 {queued} 项, 应答驱动")
 
     def _on_param_write(self, panel: ParamPanel, param_id: int, text: str):
+        if not self._panel_remote_supported(panel):
+            return
         if not self._ensure_open():
             return
         try:
@@ -450,28 +472,51 @@ class MainWindow(QMainWindow):
         except Exception:
             QMessageBox.warning(self, "错误", f"参数值无效: {text}")
             return
-        if self._client.param_write(param_id, value):
-            panel.note_write_sent(param_id)
-            self._pending_param_writes.append(panel)
+        self._param_write_queue.append((panel, int(param_id), value))
+        self._pump_param_write_queue()
 
     def _on_param_write_many(self, panel: ParamPanel, writes):
+        if not self._panel_remote_supported(panel):
+            return
         if not self._ensure_open():
             return
-        sent = 0
+        queued = 0
         for param_id, text in writes:
             try:
                 value = panel.pack_value(param_id, text)
             except Exception:
                 self._log_panel.log_warn(f"{panel.title()} 参数值无效: id={param_id} value={text}")
                 continue
-            if self._client.param_write(int(param_id), value):
-                panel.note_write_sent(int(param_id))
-                self._pending_param_writes.append(panel)
-                sent += 1
-        if sent:
-            self._log_panel.log(f"[TX] {panel.title()} 批量写入 {sent} 项")
+            self._param_write_queue.append((panel, int(param_id), value))
+            queued += 1
+        if queued:
+            self._pump_param_write_queue()
+            self._log_panel.log(f"[TX] {panel.title()} 批量写入 {queued} 项, 应答驱动")
+
+    def _pump_param_read_queue(self):
+        if self._pending_param_reads or not self._param_read_queue:
+            return
+        panel, param_id = self._param_read_queue.popleft()
+        self._send_param_read_queued(panel, param_id)
+
+    def _pump_param_write_queue(self):
+        if self._pending_param_writes or not self._param_write_queue:
+            return
+        panel, param_id, value = self._param_write_queue.popleft()
+        self._send_param_write_queued(panel, param_id, value)
+
+    def _send_param_read_queued(self, panel: ParamPanel, param_id: int):
+        if self._client.is_open() and self._client.param_read(int(param_id)):
+            self._pending_param_reads.append(panel)
+
+    def _send_param_write_queued(self, panel: ParamPanel, param_id: int, value: bytes):
+        if self._client.is_open() and self._client.param_write(int(param_id), value):
+            panel.note_write_sent(int(param_id))
+            self._pending_param_writes.append(panel)
 
     def _on_config_save(self):
+        if not self._panel_remote_supported(self._config_panel):
+            return
         if self._ensure_open():
             self._client.param_save()
             self._log_panel.log("[TX] 保存电机配置到Flash/EEPROM")
@@ -484,6 +529,7 @@ class MainWindow(QMainWindow):
         spec = panel.get_param(param_id)
         name = spec.code_name if spec else f"id={param_id}"
         self._log_panel.log(f"[RX] {panel.title()} {name}(id={param_id}) = {disp}")
+        self._pump_param_read_queue()
 
     # ==================== 数据接收 ====================
     def _queue_feedback(self, fb):
@@ -529,14 +575,17 @@ class MainWindow(QMainWindow):
         if cmd == JmCmd.PARAM_WRITE:
             panel = self._pending_param_writes.popleft() if self._pending_param_writes else self._param_panel
             panel.confirm_pending_write()
+            self._pump_param_write_queue()
 
     def _on_nack(self, cmd: int, err: int):
         self._log_panel.log_warn(f"NACK {cmd_name(cmd)}(0x{cmd:02X}) err={err_name(err)}(0x{err:02X})")
         if cmd == JmCmd.PARAM_READ and self._pending_param_reads:
             self._pending_param_reads.popleft()
+            self._pump_param_read_queue()
         if cmd == JmCmd.PARAM_WRITE:
             panel = self._pending_param_writes.popleft() if self._pending_param_writes else self._param_panel
             panel.reject_pending_write()
+            self._pump_param_write_queue()
 
     def _on_dev_info(self, hw: int, fw: int, uid: bytes):
         uid_hex = uid.hex(':').upper()
