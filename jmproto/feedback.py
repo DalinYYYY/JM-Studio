@@ -15,6 +15,7 @@ class FeedbackData:
         'multiturn', 'single',
         'fault_mask', 'warn_mask',
         'top_fsm', 'run_state', 'ctrl_mode', 'enable',
+        'debug',
         'filled_fields',
     ]
 
@@ -40,6 +41,7 @@ class FeedbackData:
         self.run_state = 0      # 运行子状态
         self.ctrl_mode = 0      # 控制模式
         self.enable = 0         # 是否使能
+        self.debug = ()         # 调试通道 jm_dbg[] (f32 元组)
         self.filled_fields = ()
 
     @staticmethod
@@ -141,7 +143,7 @@ def parse_telemetry(payload: bytes):
         fb.temp_fet = take_f32(); fb.temp_motor = take_f32()
         filled += ['temp_fet', 'temp_motor']
     if mask & JmTlmBit.MULTITURN:
-        fb.multiturn = codec.rd_u32(payload, offset); offset += 4
+        fb.multiturn = codec.rd_i32(payload, offset); offset += 4
         fb.single = take_f32()
         filled += ['multiturn', 'single']
     if mask & JmTlmBit.TORQUE:
@@ -157,6 +159,13 @@ def parse_telemetry(payload: bytes):
         fb.ctrl_mode = payload[offset]; offset += 1
         fb.enable = payload[offset]; offset += 1
         filled += ['top_fsm', 'run_state', 'ctrl_mode', 'enable']
+    if mask & JmTlmBit.DEBUG:
+        # 调试通道 jm_dbg[]: 取帧内剩余字节, 每 4 字节一个 f32(通道数由固件 JM_DBG_CH 决定)
+        dbg = []
+        while offset + 4 <= len(payload):
+            dbg.append(take_f32())
+        fb.debug = tuple(dbg)
+        filled += ['debug']
 
     fb.filled_fields = tuple(filled)
     return fb, tuple(filled)

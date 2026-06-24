@@ -38,11 +38,6 @@ class MainWindow(QMainWindow):
         self._client = JmClient(SerialTransport())
         self._registry = self._client.registry
 
-        # 轮询兜底定时器
-        self._poll_timer = QTimer()
-        self._poll_timer.timeout.connect(self._on_poll_tick)
-        self._poll_period = 100
-
         # 流量统计刷新定时器(状态栏速率/总量)
         self._stats_timer = QTimer()
         self._stats_timer.timeout.connect(self._on_stats_tick)
@@ -270,7 +265,6 @@ class MainWindow(QMainWindow):
         self._control_panel.command.connect(self._on_control_command)
         self._motion_panel.send_command.connect(self._on_motion_command)
         self._telemetry_panel.apply_telemetry.connect(self._on_apply_telemetry)
-        self._telemetry_panel.poll_toggled.connect(self._on_poll_toggled)
         self._param_panel.read_param.connect(self._on_param_read)
         self._param_panel.write_param.connect(self._on_param_write)
         self._param_panel.save_all.connect(lambda: self._client.param_save())
@@ -282,7 +276,10 @@ class MainWindow(QMainWindow):
             self._cur_port = port
 
     def _on_disconnect(self):
-        self._poll_timer.stop()
+        # 断开前若仍在周期上报, 通知下位机停止, 并复位面板开关
+        if self._client.is_open():
+            self._client.set_telemetry(False, 0, 0)
+        self._telemetry_panel.set_running(False)
         self._client.close()
         self.statusBar().showMessage("已断开")
 
@@ -296,7 +293,7 @@ class MainWindow(QMainWindow):
             self._sb_link.setText("● 未连接")
             self._sb_link.setStyleSheet(
                 "font-family: Consolas; padding: 0 8px; color: #999;")
-            self._poll_timer.stop()
+            self._telemetry_panel.set_running(False)
 
     def _on_error(self, msg: str):
         self._log_panel.log_err(msg)
@@ -321,21 +318,16 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"发送异常: {e}")
 
-    def _on_apply_telemetry(self, mask: int, period_ms: int):
-        if self._ensure_open():
-            self._client.set_telemetry(mask, period_ms)
-
-    def _on_poll_toggled(self, enabled: bool, period: int):
-        self._poll_period = period
-        if enabled and self._client.is_open():
-            self._poll_timer.start(period)
+    def _on_apply_telemetry(self, enable: bool, mask: int, period_ms: int):
+        if not self._ensure_open():
+            self._telemetry_panel.set_running(False)
+            return
+        self._client.set_telemetry(enable, mask, period_ms)
+        if enable:
+            self._log_panel.log(
+                f"[TX] 遥控使能: mask=0x{mask:04X} 周期={period_ms}ms")
         else:
-            self._poll_timer.stop()
-
-    def _on_poll_tick(self):
-        if self._client.is_open():
-            self._client.query_feedback()
-            self._client.query_state()
+            self._log_panel.log("[TX] 遥控停止")
 
     # ==================== 参数读写 ====================
     def _on_param_read(self, param_id: int):
@@ -389,7 +381,9 @@ class MainWindow(QMainWindow):
 
     # ==================== 退出 ====================
     def closeEvent(self, event):
-        self._poll_timer.stop()
+        # 退出前若仍在周期上报, 通知下位机停止, 避免串口关闭后下位机继续发
+        if self._client.is_open():
+            self._client.set_telemetry(False, 0, 0)
         self._stats_timer.stop()
         self._client.stop()
         event.accept()

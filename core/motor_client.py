@@ -113,9 +113,12 @@ class JmClient(QObject):
     def param_reset(self, param_id: int = 0xFFFF):
         return self._send(JmCmd.PARAM_RESET, codec.wr_u16(param_id))
 
-    # ---- 遥测订阅 ----
-    def set_telemetry(self, mask: int, period_ms: int = 0):
-        payload = struct.pack('<HH', mask & 0xFFFF, period_ms & 0xFFFF)
+    # ---- 遥测订阅 / 遥控开关 ----
+    def set_telemetry(self, enable: bool, mask: int, period_ms: int = 0):
+        """遥控模式开关: enable=True 启动周期上报, False 停止。
+        载荷 = enable(u8) + mask(u16) + period_ms(u16), 与固件 0xCB 解析一致。
+        下位机按 mask 周期主动推送 0xCA 数据帧, 不要求逐帧应答; 0xCB 本身回单次 ACK。"""
+        payload = struct.pack('<BHH', 1 if enable else 0, mask & 0xFFFF, period_ms & 0xFFFF)
         return self._send(JmCmd.SET_TELEMETRY, payload)
 
     # ---------------- 帧分发(主线程槽) ----------------
