@@ -3,9 +3,15 @@
 使用 pyqtgraph 提供 4 组联动波形:
 位置、速度、电流、机械角度。
 支持时间窗、暂停、跟随、Y 轴自适应、曲线显隐与鼠标悬停读数。
+
+性能优化要点:
+- _SeriesBuffer 使用预分配 numpy 环形缓冲区, 零分配追加, 惰性时间顺序缓存
+- _refresh() 通过脏标记跳过无新数据时的重绘
+- _latest_t 增量更新, 避免每帧扫描全部 buffer
+- Y 轴自适应每 ~300ms 计算一次(10 帧 @ 30ms)
+- interpolate() 复用缓存数组, 避免鼠标悬停时的重复转换
 """
 
-from collections import deque
 from dataclasses import dataclass
 import math
 
@@ -29,47 +35,105 @@ if pg is not None:
 
 @dataclass
 class _SeriesBuffer:
+    """预分配 numpy 环形缓冲区, append O(1) 无内存分配, 惰性时间顺序缓存."""
+
     maxlen: int
 
     def __post_init__(self):
-        self.ts = deque(maxlen=self.maxlen)
-        self.values = deque(maxlen=self.maxlen)
+        n = int(self.maxlen)
+        self._ts = np.full(n, np.nan, dtype=np.float64)
+        self._ys = np.full(n, np.nan, dtype=np.float64)
+        self._head = 0          # 下一次写入位置
+        self._count = 0         # 当前有效元素数
+        self._maxlen = n
+        self._cache_ts = None   # 惰性: 首次读取时构建时间顺序视图
+        self._cache_ys = None
+        self.dirty = False
 
     def append(self, t: float, value: float):
-        self.ts.append(float(t))
-        self.values.append(float(value))
+        """O(1) 写入, 失效缓存, 置脏标记."""
+        self._ts[self._head] = float(t)
+        self._ys[self._head] = float(value)
+        self._head = (self._head + 1) % self._maxlen
+        if self._count < self._maxlen:
+            self._count += 1
+        self._cache_ts = None
+        self._cache_ys = None
+        self.dirty = True
 
     def clear(self):
-        self.ts.clear()
-        self.values.clear()
+        """清空缓冲并保持预分配数组."""
+        self._ts.fill(np.nan)
+        self._ys.fill(np.nan)
+        self._head = 0
+        self._count = 0
+        self._cache_ts = None
+        self._cache_ys = None
+        self.dirty = True
+
+    def _build_cache(self):
+        """惰性构建时间顺序数组(满缓冲时做一次 fancy-index copy)."""
+        c = self._count
+        if c == 0:
+            self._cache_ts = np.empty(0, dtype=np.float64)
+            self._cache_ys = np.empty(0, dtype=np.float64)
+            return
+        if c < self._maxlen:
+            self._cache_ts = self._ts[:c]
+            self._cache_ys = self._ys[:c]
+        else:
+            idx = np.arange(self._maxlen, dtype=np.intp)
+            idx = (self._head + idx) % self._maxlen
+            self._cache_ts = self._ts[idx]
+            self._cache_ys = self._ys[idx]
+
+    @property
+    def _ts_view(self):
+        """返回时间顺序数组(惰性构建, 无额外拷贝)."""
+        if self._cache_ts is None:
+            self._build_cache()
+        return self._cache_ts
+
+    @property
+    def _ys_view(self):
+        if self._cache_ys is None:
+            self._build_cache()
+        return self._cache_ys
 
     def arrays(self, t_min: float = None):
-        if not self.ts:
-            return np.empty(0, dtype=float), np.empty(0, dtype=float)
-        ts = np.asarray(self.ts, dtype=float)
-        ys = np.asarray(self.values, dtype=float)
-        if t_min is None:
+        """返回 (ts, ys) 拷贝, 安全用于 pyqtgraph setData."""
+        ts = self._ts_view
+        ys = self._ys_view
+        if len(ts) == 0:
             return ts, ys
-        idx = np.searchsorted(ts, t_min, side='left')
-        return ts[idx:], ys[idx:]
+        if t_min is None:
+            return ts.copy(), ys.copy()
+        i = int(np.searchsorted(ts, t_min, side='left'))
+        if i >= len(ts):
+            return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
+        return ts[i:].copy(), ys[i:].copy()
 
     def last_time(self):
-        return self.ts[-1] if self.ts else None
+        """返回最新时间戳, O(1)."""
+        if self._count == 0:
+            return None
+        return float(self._ts[(self._head - 1) % self._maxlen])
 
     def interpolate(self, t: float):
-        if not self.ts:
+        """在时间 t 处线性插值, 复用缓存数组."""
+        ts = self._ts_view
+        ys = self._ys_view
+        if len(ts) == 0:
             return None
-        ts = np.asarray(self.ts, dtype=float)
-        ys = np.asarray(self.values, dtype=float)
         if len(ts) == 1:
             return float(ys[0])
         if t <= ts[0]:
             return float(ys[0])
         if t >= ts[-1]:
             return float(ys[-1])
-        idx = int(np.searchsorted(ts, t, side='left'))
-        x0, x1 = ts[idx - 1], ts[idx]
-        y0, y1 = ys[idx - 1], ys[idx]
+        i = int(np.searchsorted(ts, t, side='left'))
+        x0, x1 = ts[i - 1], ts[i]
+        y0, y1 = ys[i - 1], ys[i]
         if x1 == x0:
             return float(y0)
         k = (t - x0) / (x1 - x0)
@@ -80,6 +144,7 @@ class PlotPanel(QGroupBox):
     """实时曲线面板。"""
 
     MAX_POINTS = 6000
+    _AUTO_RANGE_EVERY = 10       # Y 轴自适应节流: 每 N 帧执行一次
 
     def __init__(self, parent=None):
         super().__init__("实时曲线", parent)
@@ -111,6 +176,8 @@ class PlotPanel(QGroupBox):
             'ic': 'Ic',
         }
         self._current_checks = {}
+        self._latest_t = None          # 增量维护的最新时间戳
+        self._auto_range_counter = 0
         self._build()
 
     def _build(self):
@@ -195,7 +262,7 @@ class PlotPanel(QGroupBox):
             self._glw.scene().sigMouseClicked, rateLimit=60, slot=self._on_mouse_clicked)
 
         self._timer = QTimer(self)
-        self._timer.setInterval(50)
+        self._timer.setInterval(30)   # ~33 FPS, 优化后单次刷新极轻量
         self._timer.timeout.connect(self._refresh)
         self._timer.start()
 
@@ -444,9 +511,13 @@ class PlotPanel(QGroupBox):
             self._buffers[name].append(t, value)
         else:
             self._extra_buffers.setdefault(name, _SeriesBuffer(self.MAX_POINTS)).append(t, value)
+        if self._latest_t is None or t > self._latest_t:
+            self._latest_t = t
 
     def clear(self):
         self._t0 = None
+        self._latest_t = None
+        self._auto_range_counter = 0
         for buf in self._buffers.values():
             buf.clear()
         for buf in self._extra_buffers.values():
@@ -475,11 +546,27 @@ class PlotPanel(QGroupBox):
         multiturn = float(getattr(fb, 'multiturn', 0))
         single = float(getattr(fb, 'single', 0.0))
         self._buffers['angle'].append(t, multiturn * (2.0 * math.pi) + single)
+        if self._latest_t is None or t > self._latest_t:
+            self._latest_t = t
+
+    # ------------------------------------------------------------------
+    # 核心刷新
+    # ------------------------------------------------------------------
+
+    def _any_dirty(self) -> bool:
+        """检查任一 buffer 自上次刷新后是否有新数据."""
+        for buf in self._buffers.values():
+            if buf.dirty:
+                return True
+        return False
 
     def _refresh(self, force=False):
         if pg is None or (self._paused and not force):
             return
-        t_end = self._latest_time()
+        if not self._any_dirty() and not force:
+            return
+
+        t_end = self._latest_t
         if t_end is None:
             return
         t_min = max(0.0, t_end - float(self._window_seconds))
@@ -497,16 +584,16 @@ class PlotPanel(QGroupBox):
         if self._chk_follow.isChecked() or force:
             self._set_all_x_range(t_min, max(t_end, t_min + 0.1))
 
+        # Y 轴自适应节流: 每 _AUTO_RANGE_EVERY 帧或 force 时执行
         if self._chk_auto_y.isChecked():
-            self._auto_range_y(t_min)
+            self._auto_range_counter += 1
+            if self._auto_range_counter >= self._AUTO_RANGE_EVERY or force:
+                self._auto_range_counter = 0
+                self._auto_range_y(t_min)
 
-    def _latest_time(self):
-        latest = None
+        # 清除脏标记
         for buf in self._buffers.values():
-            t = buf.last_time()
-            if t is not None and (latest is None or t > latest):
-                latest = t
-        return latest
+            buf.dirty = False
 
     def _update_curve(self, name: str, t_min: float):
         cfg = self._plots.get('current') if name in self._current_series_order else self._plots.get(name)
