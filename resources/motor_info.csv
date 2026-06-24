@@ -1,0 +1,78 @@
+﻿VariableName,NameZh,Category,Access,DataType,DefaultValue,Unit,Index,Remarks
+config_version,配置版本号,SystemParam,RW,uint32,65536,,,主版本:次版本
+enable_uart,接口使能,SystemParam,RW,uint32,0,,,"bit0:UART
+bit1:CAN
+bit2:CANFD
+bit3:USB"
+enable_bus_sensor,总线传感器使能,SystemParam,RW,uint32,1,,,0:禁用 1:启用
+safety_limit,安全限制使能,SystemParam,RW,uint32,1,,,0:禁用 1:启用
+is_calibrated,电机是否校准,MotorCalibParam,RW,uint32,0,,,0:未校准 1:已校准
+pole_pairs,电机极对数,MotorCalibParam,RW,uint32,7,pairs,,
+calibration_current,校准电流,MotorCalibParam,RW,single,5,A,,电阻电感校准电流
+resistance_calib_max_voltage,电阻校准最大电压,MotorCalibParam,RW,single,1,V,,
+phase_inductance_d,d轴相电感,MotorCalibParam,RW,single,0.0001,H,,
+phase_inductance_q,q轴相电感,MotorCalibParam,RW,single,0.00012,H,,
+phase_resistance,相电阻,MotorCalibParam,RW,single,0.1,ohm,,
+direction,电机方向,MotorCalibParam,RW,uint32,1,,,1:正向 -1:反向
+motor_type,电机类型,MotorCalibParam,RW,uint32,0,,,0:SPMSM 1:IPMSM 2:BLDC
+current_lim,电流限制,MotorCalibParam,RW,single,15,A,,峰值电流限制
+current_control_bandwidth,电流环带宽,MotorCalibParam,RW,single,1000,Hz,,
+flux_linkage,永磁体磁链,MotorCalibParam,RW,single,0.001,Wb,,
+torque_constant,转矩常数,MotorCalibParam,RW,single,0.1,Nm/A,,
+rotor_inertia,转子惯量,MotorCalibParam,RW,single,1e-05,kg·m²,,
+friction_coulomb,库仑摩擦力矩,MotorCalibParam,RW,single,0,Nm,,
+friction_viscous,粘滞摩擦系数,MotorCalibParam,RW,single,0,Nm/(rad/s),,
+device_zero,设备零度,DeviceParam,RW,single,0,rad,,机械零点位置
+device_time,设备生产日期,DeviceParam,RW,single,0,,,YYYYMMDD格式
+kp_ld,d轴比例增益,ControlParam,RW,single,0.5,V/A,,电流环d轴P增益
+ki_ld,d轴积分增益,ControlParam,RW,single,10,V/(A·s),,电流环d轴I增益
+kp_lq,q轴比例增益,ControlParam,RW,single,0.5,V/A,,电流环q轴P增益
+ki_lq,q轴积分增益,ControlParam,RW,single,10,V/(A·s),,电流环q轴I增益
+integral_limit,积分限幅,ControlParam,RW,single,10,V,,电流环积分输出限幅
+decoupling_gain,dq轴解耦增益,ControlParam,RW,single,1,,,0~1
+comp_du_V,死区补偿电压,ControlParam,RW,single,0,V,,
+pwm_duty_max,PWM最大占空比,ControlParam,RW,single,0.9,,,0~1
+kp_s,速度环比例增益,ControlParam,RW,single,0.1,A/(rad/s),,
+ki_s,速度环积分增益,ControlParam,RW,single,1,A/rad,,
+speed_integral_limit,速度环积分限幅,ControlParam,RW,single,10,A,,
+vff,速度前馈系数,ControlParam,RW,single,1,,,0~1
+aff,加速度前馈系数,ControlParam,RW,single,0,,,0~1
+jerk_ff,加加速度前馈系数,ControlParam,RW,single,0,,,0~1
+speed_filter_alpha,速度滤波系数,ControlParam,RW,single,0.1,,,一阶低通滤波系数
+speed_filter_enable,速度滤波使能,ControlParam,RW,uint32,0,,,0:禁用 1:启用
+kp_p,位置环比例增益,ControlParam,RW,single,10,Hz,,
+ki_p,位置环积分增益,ControlParam,RW,single,0,1/s,,
+position_integral_limit,位置环积分限幅,ControlParam,RW,single,0,rad,,
+position_filter_alpha,位置滤波系数,ControlParam,RW,single,0.1,,,一阶低通滤波系数
+position_filter_enable,位置滤波使能,ControlParam,RW,uint32,0,,,0:禁用 1:启用
+following_error_limit,跟随误差限制,ControlParam,RW,single,1000,P,,位置跟随误差保护阈值
+over_current_A,过流保护阈值,ProtectCommParam,RW,single,20,A,,
+over_voltage_V,过压保护阈值,ProtectCommParam,RW,single,58,V,,
+under_voltage_V,欠压保护阈值,ProtectCommParam,RW,single,15,V,,
+over_temp_drive,驱动器过温阈值,ProtectCommParam,RW,single,85,℃,,
+over_temp_motor,电机过温阈值,ProtectCommParam,RW,single,85,℃,,
+under_temp_d,欠温保护阈值,ProtectCommParam,RW,single,-20,℃,,
+over_speed_rad_s,过速保护阈值,ProtectCommParam,RW,single,400,rad/s,,
+position_following_error_p,位置跟随误差保护,ProtectCommParam,RW,int32,1000,P,,
+pos_limit_min,位置下限,ProtectCommParam,RW,int32,-1e+06,P,,硬件位置下限
+pos_limit_max,位置上限,ProtectCommParam,RW,int32,1e+06,P,,硬件位置上限
+error_enable_mask,保护使能掩码,ProtectCommParam,RW,uint32,4.294967295e+09,,,bit0:过流 bit1:过压...
+can_id,CAN节点ID,DeviceParam,RW,uint32,1,,,
+can_baudrate,CAN波特率,DeviceParam,RW,uint32,1e+06,bps,,
+can_timeout_s,CAN通信超时,DeviceParam,RW,single,0.5,s,,0=禁用超时
+can_fd_enable,CAN FD使能,DeviceParam,RW,uint32,0,,,0:传统CAN 1:CAN FD
+can_fd_baudrate,CAN FD数据波特率,DeviceParam,RW,uint32,8e+06,bps,,
+uart_baudrate,UART波特率,DeviceParam,RW,uint32,115200,bps,,
+uart_parity,UART校验位,DeviceParam,RW,uint32,0,,,0:无 1:奇 2:偶
+uart_stop_bits,UART停止位,DeviceParam,RW,uint32,1,,,1:1位 2:2位
+mit_kp,MIT位置刚度,AdvancedAlgoParam,RW,single,10,Nm/rad,,
+mit_kd,MIT速度阻尼,AdvancedAlgoParam,RW,single,0.1,Nm/(rad/s),,
+mit_max_current,MIT最大电流,AdvancedAlgoParam,RW,single,10,A,,
+mit_feedforward_torque,MIT前馈力矩,AdvancedAlgoParam,RW,single,0,Nm,,
+force_kp,力控比例增益,AdvancedAlgoParam,RW,single,1,A/Nm,,
+force_ki,力控积分增益,AdvancedAlgoParam,RW,single,0.1,A/(Nm·s),,
+force_limit,力控力矩限制,AdvancedAlgoParam,RW,single,10,Nm,,
+force_control_enable,力控使能,AdvancedAlgoParam,RW,uint32,0,,,0:禁用 1:启用
+homing_method,回零方法,AdvancedAlgoParam,RW,uint32,0,,,0:当前位置回零 1:限位回零
+homing_speed,回零速度,AdvancedAlgoParam,RW,single,10,rad/s,,
+homing_offset,回零偏移,AdvancedAlgoParam,RW,single,0,rad,,

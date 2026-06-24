@@ -1,0 +1,106 @@
+序号,命令名称,CMD(hex),方向,功能类别,串口请求载荷(CMD后),串口应答载荷,数据长度(字节),编码格式,单位/范围,CAN_ID(ext=CMD<<8|MotorID),CAN数据区(8字节内),备注
+1,进入待机,0x00,Host->Motor,系统控制,无,ACK{state:u8},0,-,-,0x0000|ID,无,对应CONTROL_MODE_IDLE,电机进入IDLE停止输出
+2,位置保持,0x01,Host->Motor,系统控制,无,ACK{state:u8},0,-,-,0x0100|ID,无,CONTROL_MODE_HOLD,锁定当前位置
+3,机械刹车,0x02,Host->Motor,系统控制,无,ACK{state:u8},0,-,-,0x0200|ID,无,CONTROL_MODE_BRAKE,短接相线抱闸
+4,紧急停止,0x03,Host->Motor,系统控制,无,ACK{state:u8},0,-,-,0x0300|ID,无,CONTROL_MODE_ESTOP,最高优先级立即断输出
+5,上使能,0x04,Host->Motor,系统控制,无,ACK{state:u8},0,-,-,0x0400|ID,无,CONTROL_MODE_ENABLE,IDLE->READY伺服使能不运动
+6,下使能,0x05,Host->Motor,系统控制,无,ACK{state:u8},0,-,-,0x0500|ID,无,CONTROL_MODE_DISABLE,READY/RUN->IDLE伺服失能
+7,停止运行,0x06,Host->Motor,系统控制,无,ACK{state:u8},0,-,-,0x0600|ID,无,CONTROL_MODE_STOP,RUN->READY停运动保持使能
+8,开环电压,0x10,Host->Motor,运动控制,{ud:f32;uq:f32},ACK,8,小端float,V,0x1000|ID,ud[0:4]uq[4:8],CONTROL_MODE_OPEN_LOOP
+9,电流环,0x11,Host->Motor,运动控制,{id_ref:f32;iq_ref:f32},ACK,8,小端float,A,0x1100|ID,id[0:4]iq[4:8],CONTROL_MODE_CURRENT
+10,力矩环,0x12,Host->Motor,运动控制,{torque:f32},ACK,4,小端float,Nm,0x1200|ID,torque[0:4],CONTROL_MODE_TORQUE 输出端力矩
+11,MIT控制,0x13,Host->Motor,运动控制,{pos:f32;vel:f32;kp:f32;kd:f32;tff:f32},反馈帧,20,小端float,rad/rad·s⁻¹/Nm,0x1300|ID,见备注定点压缩,CONTROL_MODE_MIT CAN用5字段压缩成8字节:pos16+vel12+kp12+kd12+tff12
+12,速度环,0x14,Host->Motor,运动控制,{vel_ref:f32},ACK,4,小端float,rad/s,0x1400|ID,vel[0:4],CONTROL_MODE_VELOCITY
+13,位置环,0x15,Host->Motor,运动控制,{pos_ref:f32},ACK,4,小端float,rad,0x1500|ID,pos[0:4],CONTROL_MODE_POSITION
+14,位置+速度前馈,0x16,Host->Motor,运动控制,{pos:f32;vel_ff:f32},ACK,8,小端float,rad/rad·s⁻¹,0x1600|ID,pos[0:4]vel[4:8],CONTROL_MODE_POSITION_VELOCITY
+15,位置+力矩限幅,0x17,Host->Motor,运动控制,{pos:f32;tq_lim:f32},ACK,8,小端float,rad/Nm,0x1700|ID,pos[0:4]tq[4:8],CONTROL_MODE_POSITION_TORQUE
+16,速度+力矩限幅,0x18,Host->Motor,运动控制,{vel:f32;tq_lim:f32},ACK,8,小端float,rad·s⁻¹/Nm,0x1800|ID,vel[0:4]tq[4:8],CONTROL_MODE_VELOCITY_TORQUE
+17,占空比控制,0x19,Host->Motor,运动控制,{duty:f32},ACK,4,小端float,-1~1,0x1900|ID,duty[0:4],CONTROL_MODE_DUTY_CYCLE
+18,电压矢量,0x1A,Host->Motor,运动控制,{u_alpha:f32;u_beta:f32},ACK,8,小端float,V,0x1A00|ID,ua[0:4]ub[4:8],CONTROL_MODE_VOLTAGE_VECTOR
+19,弱磁控制,0x1B,Host->Motor,运动控制,{id_weak:f32;iq_ref:f32},ACK,8,小端float,A,0x1B00|ID,id[0:4]iq[4:8],CONTROL_MODE_FIELD_WEAKENING
+20,无感FOC,0x1C,Host->Motor,运动控制,{vel_ref:f32},ACK,4,小端float,rad/s,0x1C00|ID,vel[0:4],CONTROL_MODE_SENSORLESS
+21,阻抗控制,0x30,Host->Motor,高级力控,{pos:f32;vel:f32;kp:f32;kd:f32;tff:f32},反馈帧,20,小端float,rad/rad·s⁻¹/Nm,0x3000|ID,CAN同MIT压缩,CONTROL_MODE_IMPEDANCE
+22,导纳控制,0x31,Host->Motor,高级力控,{force:f32;mass:f32;damp:f32;stiff:f32},ACK,16,小端float,N/kg/Ns·m⁻¹/N·m⁻¹,0x3100|ID,CAN需分包,CONTROL_MODE_ADMITTANCE
+23,纯力控制,0x32,Host->Motor,高级力控,{force:f32},ACK,4,小端float,N或Nm,0x3200|ID,force[0:4],CONTROL_MODE_FORCE_CONTROL
+24,力位混合,0x33,Host->Motor,高级力控,{pos:f32;force:f32;sel_mask:u32},ACK,12,小端混合,rad/N/位掩码,0x3300|ID,CAN需分包,CONTROL_MODE_FORCE_POSITION_HYBRID
+25,重力补偿,0x34,Host->Motor,高级力控,无,ACK,0,-,-,0x3400|ID,无,CONTROL_MODE_GRAVITY_COMPENSATION
+26,碰撞检测,0x35,Host->Motor,高级力控,{threshold:f32;enable:u8},ACK,5,小端混合,Nm/bool,0x3500|ID,th[0:4]en[4],CONTROL_MODE_COLLISION_DETECTION
+27,零力模式,0x36,Host->Motor,高级力控,无,ACK,0,-,-,0x3600|ID,无,CONTROL_MODE_ZERO_FORCE 拖动示教
+28,恒力控制,0x37,Host->Motor,高级力控,{force:f32},ACK,4,小端float,N或Nm,0x3700|ID,force[0:4],CONTROL_MODE_CONSTANT_FORCE
+29,变阻抗,0x38,Host->Motor,高级力控,{kp:f32;kd:f32;rate:f32},ACK,12,小端float,Nm·rad⁻¹/阻尼/s⁻¹,0x3800|ID,CAN需分包,CONTROL_MODE_VARIABLE_IMPEDANCE
+30,自适应重力补偿,0x39,Host->Motor,高级力控,{gain:f32},ACK,4,小端float,系数,0x3900|ID,gain[0:4],CONTROL_MODE_ADAPTIVE_GRAVITY_COMP
+31,落地缓冲,0x3A,Host->Motor,高级力控,{stiffness:f32;damp:f32},ACK,8,小端float,Nm·rad⁻¹/阻尼,0x3A00|ID,kp[0:4]kd[4:8],CONTROL_MODE_LANDING_BUFFER
+32,PVT插补,0x50,Host->Motor,轨迹同步,{pos:f32;vel:f32;time_ms:u32},ACK,12,小端混合,rad/rad·s⁻¹/ms,0x5000|ID,CAN需分包,CONTROL_MODE_PVT 点位时间插补
+33,三次样条,0x51,Host->Motor,轨迹同步,{seg_idx:u16;coef[4]:f32},ACK,18,小端混合,样条系数,0x5100|ID,CAN需分包,CONTROL_MODE_CUBIC_SPLINE
+34,梯形轨迹,0x52,Host->Motor,轨迹同步,{target:f32;vmax:f32;acc:f32},ACK,12,小端float,rad/rad·s⁻¹/rad·s⁻²,0x5200|ID,CAN需分包,CONTROL_MODE_TRAPEZOIDAL_TRAJ
+35,S型轨迹,0x53,Host->Motor,轨迹同步,{target:f32;vmax:f32;acc:f32;jerk:f32},ACK,16,小端float,rad/v/a/jerk,0x5300|ID,CAN需分包,CONTROL_MODE_S_CURVE_TRAJ
+36,回零,0x54,Host->Motor,轨迹同步,{method:u8},ACK{homed:u8},1,u8,回零方式,0x5400|ID,method[0],CONTROL_MODE_HOMING 见homing_method参数
+37,CANopen同步,0x55,Host->Motor,轨迹同步,无,ACK,0,-,-,0x5500|ID,无,CONTROL_MODE_CANOPEN_SYNC SYNC对象
+38,EtherCAT CSP,0x56,Host->Motor,轨迹同步,{pos:f32},ACK,4,小端float,rad,0x5600|ID,pos[0:4],CONTROL_MODE_ETHERCAT_CSP 周期同步位置
+39,EtherCAT CSV,0x57,Host->Motor,轨迹同步,{vel:f32},ACK,4,小端float,rad/s,0x5700|ID,vel[0:4],CONTROL_MODE_ETHERCAT_CSV
+40,EtherCAT CST,0x58,Host->Motor,轨迹同步,{torque:f32},ACK,4,小端float,Nm,0x5800|ID,tq[0:4],CONTROL_MODE_ETHERCAT_CST
+41,轮廓位置PP,0x59,Host->Motor,轨迹同步,{pos:f32;vel:f32},ACK,8,小端float,rad/rad·s⁻¹,0x5900|ID,pos[0:4]vel[4:8],CONTROL_MODE_PP
+42,轮廓速度PV,0x5A,Host->Motor,轨迹同步,{vel:f32;acc:f32},ACK,8,小端float,rad·s⁻¹/rad·s⁻²,0x5A00|ID,vel[0:4]acc[4:8],CONTROL_MODE_PV
+43,轮廓力矩PT,0x5B,Host->Motor,轨迹同步,{torque:f32;slope:f32},ACK,8,小端float,Nm/Nm·s⁻¹,0x5B00|ID,tq[0:4]slp[4:8],CONTROL_MODE_PT
+44,电子齿轮,0x5C,Host->Motor,轨迹同步,{ratio_num:i32;ratio_den:i32},ACK,8,小端i32,齿轮比,0x5C00|ID,num[0:4]den[4:8],CONTROL_MODE_ELECTRONIC_GEAR
+45,电子凸轮,0x5D,Host->Motor,轨迹同步,{cam_table_id:u16},ACK,2,小端u16,表索引,0x5D00|ID,id[0:2],CONTROL_MODE_ELECTRONIC_CAM
+46,脉冲方向,0x70,Host->Motor,特殊应用,{pulse_per_rev:u32},ACK,4,小端u32,脉冲/转,0x7000|ID,ppr[0:4],CONTROL_MODE_STEP_DIR
+47,模拟量输入,0x71,Host->Motor,特殊应用,{ch:u8;scale:f32},ACK,5,小端混合,通道/系数,0x7100|ID,ch[0]scale[1:5],CONTROL_MODE_ANALOG_INPUT
+48,PWM输入,0x72,Host->Motor,特殊应用,{min_us:u16;max_us:u16},ACK,4,小端u16,us,0x7200|ID,min[0:2]max[2:4],CONTROL_MODE_PWM_INPUT
+49,点动,0x73,Host->Motor,特殊应用,{dir:i8;speed:f32},ACK,5,小端混合,方向/rad·s⁻¹,0x7300|ID,dir[0]spd[1:5],CONTROL_MODE_JOG
+50,安全示教,0x74,Host->Motor,特殊应用,无,ACK,0,-,-,0x7400|ID,无,CONTROL_MODE_SAFE_TEACH
+51,老化测试,0x75,Host->Motor,测试,{cycles:u32},ACK,4,小端u32,次数,0x7500|ID,cyc[0:4],CONTROL_MODE_TEST_AGING
+52,扫频测试,0x76,Host->Motor,测试,{f_start:f32;f_end:f32;amp:f32},ACK,12,小端float,Hz/Hz/幅值,0x7600|ID,CAN需分包,CONTROL_MODE_TEST_SWEEP_FREQ
+53,齿槽测试,0x77,Host->Motor,测试,无,ACK,0,-,-,0x7700|ID,无,CONTROL_MODE_TEST_COGGING
+54,摩擦测试,0x78,Host->Motor,测试,无,ACK,0,-,-,0x7800|ID,无,CONTROL_MODE_TEST_FRICTION
+55,惯量测试,0x79,Host->Motor,测试,无,ACK,0,-,-,0x7900|ID,无,CONTROL_MODE_TEST_INERTIA
+56,电流环测试,0x7A,Host->Motor,测试,{amp:f32;freq:f32},ACK,8,小端float,A/Hz,0x7A00|ID,amp[0:4]frq[4:8],CONTROL_MODE_TEST_CURRENT_LOOP
+57,速度环测试,0x7B,Host->Motor,测试,{amp:f32;freq:f32},ACK,8,小端float,rad·s⁻¹/Hz,0x7B00|ID,amp[0:4]frq[4:8],CONTROL_MODE_TEST_VELOCITY_LOOP
+58,电机参数校准,0x90,Host->Motor,校准,无,ACK{R:f32;Ld:f32;Lq:f32;flux:f32},0,-,-,0x9000|ID,无,CONTROL_MODE_CALIB_MOTOR_PARAM 自动辨识RLflux
+59,编码器零位校准,0x91,Host->Motor,校准,无,ACK{offset:i32;ebias:f32},0,-,-,0x9100|ID,无,CONTROL_MODE_CALIB_ENCODER_OFFSET
+60,编码器线性度校准,0x92,Host->Motor,校准,无,ACK{progress:u8},0,-,-,0x9200|ID,无,CONTROL_MODE_CALIB_ENCODER_LINEARITY
+61,力矩常数校准,0x93,Host->Motor,校准,无,ACK{kt:f32},0,-,-,0x9300|ID,无,CONTROL_MODE_CALIB_TORQUE_CONST
+62,齿槽补偿校准,0x94,Host->Motor,校准,无,ACK{progress:u8},0,-,-,0x9400|ID,无,CONTROL_MODE_CALIB_COGGING_COMP
+63,摩擦补偿校准,0x95,Host->Motor,校准,无,ACK{coulomb:f32;viscous:f32},0,-,-,0x9500|ID,无,CONTROL_MODE_CALIB_FRICTION_COMP
+64,负载惯量校准,0x96,Host->Motor,校准,无,ACK{inertia:f32},0,-,-,0x9600|ID,无,CONTROL_MODE_CALIB_INERTIA
+65,ADC偏置校准,0x97,Host->Motor,校准,无,ACK{ia_off:i16;ib_off:i16;ic_off:i16},0,-,-,0x9700|ID,无,CONTROL_MODE_CALIB_ADC_OFFSET
+66,ADC增益校准,0x98,Host->Motor,校准,无,ACK{gain:f32},0,-,-,0x9800|ID,无,CONTROL_MODE_CALIB_ADC_GAIN
+67,电流传感器校准,0x99,Host->Motor,校准,无,ACK{status:u8},0,-,-,0x9900|ID,无,CONTROL_MODE_CALIB_CURRENT_SENSOR
+68,温度传感器校准,0x9A,Host->Motor,校准,{ref_temp:f32},ACK{status:u8},4,小端float,℃,0x9A00|ID,t[0:4],CONTROL_MODE_CALIB_TEMPERATURE
+69,一键全自动校准,0x9B,Host->Motor,校准,无,ACK{progress:u8;step:u8},0,-,-,0x9B00|ID,无,CONTROL_MODE_CALIB_FULL_AUTO
+70,清除故障,0xB0,Host->Motor,系统诊断,无,ACK{state:u8},0,-,-,0xB000|ID,无,CONTROL_MODE_CLEAR_FAULT FAULT->IDLE
+71,诊断模式,0xB1,Host->Motor,系统诊断,无,ACK{diag:bytes},0,-,-,0xB100|ID,无,CONTROL_MODE_DIAGNOSTIC
+72,进入Bootloader,0xB2,Host->Motor,系统诊断,{magic:u32=0xB00710AD},ACK,4,小端u32,魔数,0xB200|ID,magic[0:4],CONTROL_MODE_ENTER_BOOTLOADER 需魔数防误触
+73,保存配置,0xB3,Host->Motor,系统诊断,无,ACK{status:u8},0,-,-,0xB300|ID,无,CONTROL_MODE_SAVE_CONFIG 参数写入Flash
+74,恢复出厂,0xB4,Host->Motor,系统诊断,{magic:u32=0xFAC70RST},ACK{status:u8},4,小端u32,魔数,0xB400|ID,magic[0:4],CONTROL_MODE_FACTORY_RESET
+75,开始日志,0xB5,Host->Motor,系统诊断,{rate_hz:u16;mask:u32},ACK,6,小端混合,Hz/通道掩码,0xB500|ID,rate[0:2]mask[2:6],CONTROL_MODE_START_LOG
+76,停止日志,0xB6,Host->Motor,系统诊断,无,ACK,0,-,-,0xB600|ID,无,CONTROL_MODE_STOP_LOG
+77,高速采集,0xB7,Host->Motor,系统诊断,{ch_mask:u32;rate_hz:u32},ACK,8,小端u32,通道/Hz,0xB700|ID,mask[0:4]rate[4:8],CONTROL_MODE_HIGH_SPEED_DAQ
+78,单步调试,0xB8,Host->Motor,系统诊断,无,ACK,0,-,-,0xB800|ID,无,CONTROL_MODE_SINGLE_STEP
+79,读实时反馈,0xC0,Host->Motor,反馈查询,无,{pos:f32;vel:f32;torque:f32;temp:f32;volt:f32;err:u16},0,-,-,0xC000|ID,CAN压缩pos16+vel16+tq16+tmp8+err8,主反馈帧 上位机轮询
+80,读电机状态,0xC1,Host->Motor,反馈查询,无,{top_fsm:u8;run_state:u8;ctrl_mode:u8;enable:u8},0,-,-,0xC100|ID,fsm[0]run[1]mode[2]en[3],对应top_fsm_e/run_state_e
+81,读相电流,0xC2,Host->Motor,反馈查询,无,{ia:f32;ib:f32;ic:f32},0,-,-,0xC200|ID,CAN分包或i16压缩,三相电流
+82,读DQ电流,0xC3,Host->Motor,反馈查询,无,{id:f32;iq:f32},0,-,-,0xC300|ID,id[0:4]iq[4:8],dq轴电流反馈
+83,读母线信息,0xC4,Host->Motor,反馈查询,无,{vbus:f32;ibus:f32;power:f32},0,-,-,0xC400|ID,CAN分包,母线电压电流功率
+84,读温度,0xC5,Host->Motor,反馈查询,无,{temp_fet:f32;temp_motor:f32},0,-,-,0xC500|ID,fet[0:4]mot[4:8],功率管/电机温度
+85,读位置速度,0xC6,Host->Motor,反馈查询,无,{pos:f32;vel:f32},0,-,-,0xC600|ID,pos[0:4]vel[4:8],输出端位置速度
+86,读多圈位置,0xC7,Host->Motor,反馈查询,无,{multiturn:i32;single:f32},0,-,-,0xC700|ID,mt[0:4]sg[4:8],多圈计数+单圈
+87,读故障码,0xC8,Host->Motor,反馈查询,无,{fault_mask:u32;warn_mask:u32},0,-,-,0xC800|ID,flt[0:4]wrn[4:8],故障/警告位掩码
+88,读设备信息,0xD0,Host->Motor,设备信息,无,{hw_ver:u32;fw_ver:u32;uid:bytes12},0,-,-,0xD000|ID,CAN分包,硬件/固件版本+UID
+89,读设备名称,0xD1,Host->Motor,设备信息,无,{name:char[16]},0,-,-,0xD100|ID,CAN分包,电机名称字符串
+90,心跳/在线,0xD2,Both,设备信息,无,{state:u8;err:u16;ts:u32},0,-,-,0xD200|ID,周期上报,在线检测 可定时主动上报
+91,读单个参数,0xE0,Host->Motor,参数读写,{param_id:u16},{param_id:u16;type:u8;value:bytes},2,小端u16,见参数索引表,0xE000|ID,pid[0:2]+应答,通用参数读 param_id见第二张表
+92,写单个参数,0xE1,Host->Motor,参数读写,{param_id:u16;value:bytes},ACK{param_id:u16;status:u8},变长,小端混合,见参数索引表,0xE100|ID,pid[0:2]val[2:],通用参数写 RAM生效
+93,批量读参数,0xE2,Host->Motor,参数读写,{start_id:u16;count:u16},{values:bytes},4,小端u16,-,0xE200|ID,CAN需分包,连续参数块读取
+94,批量写参数,0xE3,Host->Motor,参数读写,{start_id:u16;count:u16;values:bytes},ACK{status:u8},变长,小端混合,-,0xE300|ID,CAN需分包,连续参数块写入
+95,参数存Flash,0xE4,Host->Motor,参数读写,无,ACK{status:u8},0,-,-,0xE400|ID,无,所有参数固化(同0xB3)
+96,参数恢复默认,0xE5,Host->Motor,参数读写,{param_id:u16=0xFFFF全部},ACK{status:u8},2,小端u16,-,0xE500|ID,pid[0:2],单参或全部恢复默认
+97,设置CAN_ID,0xF0,Host->Motor,CAN管理,{new_id:u8},ACK{new_id:u8},1,u8,1~127,0xF000|ID,nid[0],修改本机CAN地址需保存
+98,设置波特率,0xF1,Host->Motor,CAN管理,{baud_code:u8},ACK,1,u8,枚举,0xF100|ID,baud[0],0=1M 1=500K 2=250K 3=125K
+99,广播同步,0xF2,Host->All,CAN管理,无,无,0,-,-,0xF200|0x00,无,ID=0广播 所有电机同步执行缓存指令
+100,错误应答(NACK),0xFE,Motor->Host,通用,-,{cmd:u8;err_code:u8},2,小端,错误码,0xFE00|ID,cmd[0]err[1],任意命令失败时返回
+
+
+
+
+
