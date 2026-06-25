@@ -20,6 +20,7 @@ from PyQt6.QtCore import Qt, QTimer
 import jmproto as jp
 from jmproto import JmCmd, cmd_name, err_name
 from transport.serial_transport import SerialTransport
+from transport.virtual_engine import VirtualTransport
 from core.motor_client import JmClient
 
 from ui.panels.connection_panel import ConnectionPanel
@@ -407,6 +408,18 @@ class MainWindow(QMainWindow):
 
     # ==================== 连接管理 ====================
     def _on_connect(self, port: str, baud: int):
+        # 选择虚拟数据引擎: 切换到 VirtualTransport, 无需真实串口
+        if port == "VIRTUAL":
+            if not isinstance(self._client.transport, VirtualTransport):
+                self._client.set_transport(VirtualTransport())
+            if self._client.open():
+                self.statusBar().showMessage("已连接 虚拟数据引擎 (演示)")
+                self._cur_port = "VIRTUAL"
+                self._log_panel.log("[SIM] 虚拟数据引擎已启动, 所有数据由本地仿真生成")
+            return
+        # 真实串口: 若当前是虚拟传输, 换回串口传输
+        if not isinstance(self._client.transport, SerialTransport):
+            self._client.set_transport(SerialTransport())
         if self._client.open(port=port, baudrate=baud):
             self.statusBar().showMessage(f"已连接 {port} @{baud}")
             self._cur_port = port

@@ -63,10 +63,9 @@ class ConnectionPanel(QGroupBox):
         if self._connected:
             return
         self._combo_port.clear()
+        # 始终提供虚拟数据引擎(演示, 无需硬件), 放在首位
+        self._combo_port.addItem("VIRTUAL  虚拟数据引擎 (演示, 无需硬件)")
         ports = SerialTransport.list_ports()
-        if not ports:
-            self._combo_port.addItem("(无可用串口)")
-            return
         for name, desc in ports:
             self._combo_port.addItem(f"{name}  {desc}")
 

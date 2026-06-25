@@ -47,6 +47,30 @@ class JmClient(QObject):
     def transport(self):
         return self._tp
 
+    def set_transport(self, transport: Transport):
+        """切换底层传输(如 串口<->虚拟引擎)。会断开旧传输信号并启动新传输。
+
+        UI 只连接 JmClient 的高层信号, 故切换传输对 UI 透明。"""
+        if transport is self._tp:
+            return
+        old = self._tp
+        try:
+            old.stop()
+        except Exception:
+            pass
+        for sig, slot in ((old.frame_received, self._on_frame),
+                          (old.connected, self.connected),
+                          (old.error_occurred, self.error_occurred)):
+            try:
+                sig.disconnect(slot)
+            except Exception:
+                pass
+        self._tp = transport
+        transport.frame_received.connect(self._on_frame)
+        transport.connected.connect(self.connected)
+        transport.error_occurred.connect(self.error_occurred)
+        transport.start()
+
     # ---------------- 链路 ----------------
     def start(self):
         self._tp.start()
