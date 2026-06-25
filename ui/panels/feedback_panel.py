@@ -11,14 +11,14 @@
 
 import math
 
-from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, QElapsedTimer
+from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, QElapsedTimer, pyqtSignal
 from PyQt6.QtGui import (
     QPainter, QColor, QPen, QBrush, QFont, QPainterPath, QLinearGradient,
     QRadialGradient, QConicalGradient,
 )
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame, QSizePolicy,
-    QPushButton,
+    QPushButton, QCheckBox, QSpinBox,
 )
 
 from jmproto import top_fsm_name, run_state_name, cmd_name
@@ -574,6 +574,13 @@ class _MotorView(QWidget):
         self._iq = float(iq)
         self._enabled = bool(enabled)
 
+    def set_enabled(self, enabled: bool):
+        """只更新使能高亮状态; 由状态帧驱动, 避免等待下一帧反馈才刷新边框。"""
+        new_enabled = bool(enabled)
+        if self._enabled != new_enabled:
+            self._enabled = new_enabled
+            self.update()
+
     def set_motor_params(self, params: dict):
         """电机本体参数(r/ld/lq/flux/kt/ke/pole_pairs)。极对数为0或缺失时用默认值。"""
         self._params = dict(params)
@@ -813,10 +820,16 @@ class _MotorView(QWidget):
 class FeedbackPanel(QWidget):
     """实时反馈: 上 FOC 框图 + 下系统参数分区卡片。"""
 
+    poll_state = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("fbRoot")
         self._enabled = False
+        self._last_state = (None, None, None, None)
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setSingleShot(False)
+        self._poll_timer.timeout.connect(self._on_poll_tick)
         self._build()
         self.apply_theme()
 
@@ -824,6 +837,9 @@ class FeedbackPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
+
+        self._poll_bar = self._build_poll_bar()
+        root.addWidget(self._poll_bar)
 
         # 上: FOC 框图(左, 占主) + 电机旋转示意(右)
         top = QHBoxLayout()
@@ -878,6 +894,45 @@ class FeedbackPanel(QWidget):
         cards.addWidget(self._card_state, 1)
         root.addLayout(cards, 2)
 
+    def _build_poll_bar(self) -> QFrame:
+        bar = QFrame()
+        bar.setObjectName("fbPollBar")
+        bar.setFixedHeight(46)
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(14, 0, 12, 0)
+        lay.setSpacing(10)
+
+        self._dot = QLabel("●")
+        self._dot.setStyleSheet("font-size:14px; border:none;")
+        lay.addWidget(self._dot)
+
+        self._lbl_state = QLabel("未连接")
+        lay.addWidget(self._lbl_state)
+
+        lay.addStretch()
+
+        self._chk_poll = QCheckBox("周期请求状态")
+        self._chk_poll.setStyleSheet("border:none;")
+        self._chk_poll.setChecked(True)
+        self._chk_poll.toggled.connect(self._apply_poll_settings)
+        lay.addWidget(self._chk_poll)
+
+        lbl = QLabel("周期")
+        lbl.setStyleSheet("border:none;")
+        lay.addWidget(lbl)
+
+        self._spin_period = QSpinBox()
+        self._spin_period.setRange(50, 5000)
+        self._spin_period.setSingleStep(50)
+        self._spin_period.setValue(200)
+        self._spin_period.setSuffix(" ms")
+        self._spin_period.setFixedWidth(86)
+        self._spin_period.valueChanged.connect(self._apply_poll_settings)
+        lay.addWidget(self._spin_period)
+
+        self._apply_poll_settings()
+        return bar
+
     # ---- 布局编辑(菜单门控) ----
     def set_layout_edit(self, on: bool):
         """由主窗口"菜单配置 > 布局编辑"门控: 显示/隐藏编辑按钮; 关闭时退出编辑。"""
@@ -891,9 +946,21 @@ class FeedbackPanel(QWidget):
         """启动时加载 FOC 布局(resources/ui_layout.json 的 foc 节)。"""
         self._foc.apply_dict(layout_store.load_section("foc"))
 
+    def apply_poll_config(self, enabled: bool, period_ms: int):
+        self._chk_poll.setChecked(bool(enabled))
+        self._spin_period.setValue(max(50, int(period_ms)))
+        self._apply_poll_settings()
+
+    def get_poll_period(self) -> int:
+        return int(self._spin_period.value())
+
     def apply_theme(self):
         """主题切换: 重建本面板内联样式 + 重绘自绘图。"""
         self.setStyleSheet(f"QWidget#fbRoot {{ background:{theme.hex('app_bg')}; }}")
+        self._poll_bar.setStyleSheet(
+            f"QFrame#fbPollBar {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1, "
+            f"stop:0 {theme.hex('card_top')}, stop:1 {theme.hex('card_bottom')}); "
+            f"border:1px solid {theme.hex('border')}; border-radius:8px; }}")
         border_css = f"border:1px solid {theme.hex('border')}; border-radius:8px;"
         self._foc.setStyleSheet(border_css)
         self._motor.setStyleSheet(border_css)
@@ -968,12 +1035,16 @@ class FeedbackPanel(QWidget):
             "_warn", f"0x{fb.warn_mask:04X}",
             "#FFB454" if fb.warn_mask else "#7FD4FF")
 
+        self._refresh_state_styles()
+
     def set_motor_params(self, params: dict):
         """电机本体参数(r/ld/lq/flux/kt/ke/pole_pairs), 转发到转子示意图下方显示。"""
         self._motor.set_motor_params(params)
 
     def update_state(self, top_fsm, run_state, ctrl_mode, enable):
+        self._last_state = (top_fsm, run_state, ctrl_mode, enable)
         self._enabled = bool(enable)
+        self._motor.set_enabled(self._enabled)
         is_fault = top_fsm in (1, 2)
         self._card_state.set_text("_fsm", top_fsm_name(top_fsm),
                                   "#FF6B6B" if is_fault else "#5FE6AC")
@@ -981,3 +1052,51 @@ class FeedbackPanel(QWidget):
         self._card_state.set_text("_ctrl", cmd_name(ctrl_mode))
         self._card_state.set_text("_en", "ON" if enable else "OFF",
                                   "#5FE6AC" if enable else "#8890A4")
+        self._refresh_state_styles()
+
+    def _refresh_state_styles(self):
+        top, run_state, _ctrl_mode, enable = self._last_state
+        if top is None:
+            dot, col = theme.hex("muted"), theme.hex("muted")
+            text = "未连接"
+        elif top in (1, 2):
+            dot = col = theme.hex("danger")
+            text = (f"{top_fsm_name(top)}   ·   运行子态 {run_state_name(run_state)}"
+                    f"   ·   使能 {'ON' if enable else 'OFF'}")
+        else:
+            dot = col = theme.hex("accent")
+            text = (f"{top_fsm_name(top)}   ·   运行子态 {run_state_name(run_state)}"
+                    f"   ·   使能 {'ON' if enable else 'OFF'}")
+        self._dot.setStyleSheet(f"color:{dot}; font-size:14px; border:none;")
+        self._lbl_state.setStyleSheet(
+            f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 13px; "
+            f"font-weight: bold; color: {col}; border: none;")
+        self._lbl_state.setText(text)
+
+    def set_link_active(self, active: bool):
+        if not active:
+            self._last_state = (None, None, None, None)
+            self._enabled = False
+            self._motor.set_enabled(False)
+            self._refresh_state_styles()
+
+    def _apply_poll_settings(self):
+        self._spin_period.setEnabled(self._chk_poll.isChecked())
+        self._restart_poll()
+
+    def _restart_poll(self):
+        self._poll_timer.stop()
+        if self._chk_poll.isChecked() and self.isVisible():
+            self._poll_timer.start(self._spin_period.value())
+
+    def _on_poll_tick(self):
+        if self._chk_poll.isChecked() and self.isVisible():
+            self.poll_state.emit()
+
+    def showEvent(self, evt):
+        super().showEvent(evt)
+        self._restart_poll()
+
+    def hideEvent(self, evt):
+        super().hideEvent(evt)
+        self._poll_timer.stop()

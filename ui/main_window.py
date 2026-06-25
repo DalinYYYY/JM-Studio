@@ -321,9 +321,17 @@ class MainWindow(QMainWindow):
             "baud": self._conn_panel.get_baud(),
             "display_period_ms": self._display_period_ms,
             "display_buffer_max": self._display_buffer_max,
+            "main_window": {
+                "width": int(self.width()),
+                "height": int(self.height()),
+            },
             "telemetry": {
                 "mask": self._telemetry_panel.current_mask(),
                 "period_ms": self._telemetry_panel.get_period(),
+            },
+            "feedback_poll": {
+                "enabled": self._feedback_panel._chk_poll.isChecked(),
+                "period_ms": self._feedback_panel.get_poll_period(),
             },
             "log_visible": self._log_panel_visible,
             "log_opts": self._log_panel.get_opts(),
@@ -340,10 +348,23 @@ class MainWindow(QMainWindow):
             self._apply_display_settings(
                 d.get("display_period_ms", self._display_period_ms),
                 d.get("display_buffer_max", self._display_buffer_max))
+        mw = d.get("main_window")
+        if isinstance(mw, dict):
+            try:
+                width = int(mw.get("width", self.width()))
+                height = int(mw.get("height", self.height()))
+                self.resize(max(self.minimumWidth(), width),
+                            max(self.minimumHeight(), height))
+            except Exception:
+                pass
         tlm = d.get("telemetry")
         if isinstance(tlm, dict):
             self._telemetry_panel.apply_config(
                 tlm.get("mask", 0), tlm.get("period_ms", 20))
+        fb_poll = d.get("feedback_poll")
+        if isinstance(fb_poll, dict):
+            self._feedback_panel.apply_poll_config(
+                fb_poll.get("enabled", True), fb_poll.get("period_ms", 200))
         log_opts = d.get("log_opts")
         if isinstance(log_opts, dict):
             self._log_panel.set_opts(log_opts)
@@ -451,6 +472,7 @@ class MainWindow(QMainWindow):
 
         # 状态机面板: 周期请求 -> 拉取 READ_STATE
         self._state_panel.poll_state.connect(self._on_poll_state)
+        self._feedback_panel.poll_state.connect(self._on_poll_state)
 
         # 面板 -> 客户端
         self._conn_panel.connect_requested.connect(self._on_connect)
@@ -511,6 +533,7 @@ class MainWindow(QMainWindow):
 
     def _on_connected(self, connected: bool):
         self._conn_panel.set_connected(connected)
+        self._feedback_panel.set_link_active(connected)
         self._state_panel.set_link_active(connected)
         self._link_connected = connected
         if not connected:

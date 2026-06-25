@@ -262,9 +262,17 @@
     "baud": "2000000",
     "display_period_ms": 50,
     "display_buffer_max": 20000,
+    "main_window": {
+      "width": 1512,
+      "height": 886
+    },
     "telemetry": {
-      "mask": 256,
+      "mask": 1,
       "period_ms": 20
+    },
+    "feedback_poll": {
+      "enabled": true,
+      "period_ms": 200
     },
     "log_visible": false,
     "log_opts": {
