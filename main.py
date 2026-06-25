@@ -35,6 +35,12 @@ def main():
     font = QFont("Microsoft YaHei UI", 9)
     app.setFont(font)
 
+    # 主题: 读取上次选择(默认深色)并铺设全局 QSS, 再建窗口
+    from ui.theme import theme
+    from ui import layout_store
+    theme.set(layout_store.get_meta("theme", "dark"))
+    app.setStyleSheet(theme.qss())
+
     window = MainWindow()
     window.show()
 

@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QGroupBox, QGridLayout, QPushButton, QMessageBox, QLabel, QSplitter,
     QScrollArea, QLayout, QFrame, QDialog, QDialogButtonBox, QFormLayout,
-    QSpinBox,
+    QSpinBox, QApplication,
 )
 from PyQt6.QtCore import Qt, QTimer
 
@@ -32,6 +32,8 @@ from ui.panels.telemetry_panel import TelemetryPanel
 from ui.panels.plot_panel import PlotPanel
 from ui.panels.log_panel import LogPanel
 from ui.panels.state_machine_panel import StateMachinePanel
+from ui.theme import theme
+from ui import layout_store
 
 
 class MainWindow(QMainWindow):
@@ -75,12 +77,15 @@ class MainWindow(QMainWindow):
         self._ui_timer.setInterval(self._display_period_ms)
         self._ui_timer.timeout.connect(self._on_ui_tick)
 
-        self.setWindowTitle("Joint Motor Controller - 关节电机控制面板")
+        self.setWindowTitle("JM Studio")
         self.setMinimumSize(1200, 800)
 
         self._build_ui()
         self._build_statusbar()
         self._connect_signals()
+
+        # 主题: 订阅变更(重铺 QSS + 广播各面板); 启动时已由 main.py 设好色板
+        theme.changed.connect(self._on_theme_changed)
 
         # 启动加载已保存的自绘图布局(resources/ui_layout.json)
         self._feedback_panel.load_layout()
@@ -232,26 +237,11 @@ class MainWindow(QMainWindow):
         return btn
 
     def _apply_menu_button_style(self, btn: QPushButton):
+        # 颜色交由全局 QSS(theme.qss()) 统一管理, 这里只设交互属性与尺寸
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setFixedHeight(26)
         btn.setMinimumWidth(88)
-        btn.setStyleSheet("""
-            QPushButton {
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 0 8px;
-                background: #2A2A2A;
-                color: #DDD;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: #3A3A3A;
-                border-color: #777;
-            }
-            QPushButton:pressed {
-                background: #454545;
-            }
-        """)
+        btn.setStyleSheet("QPushButton { font-weight: bold; }")
 
     def _build_statusbar(self):
         """底部状态栏: 连接状态 + TX/RX 速率与累计总量"""
@@ -373,7 +363,29 @@ class MainWindow(QMainWindow):
             "\nQPushButton:checked{background:#C8963C;color:#1a1a1a;border-color:#E0B566;}")
         self._btn_layout_edit.toggled.connect(self._on_layout_edit_gate)
         layout.addWidget(self._btn_layout_edit, 1, 0)
+        # 主题切换(深/浅), 记住上次选择
+        self._btn_theme = QPushButton("主题: 深色" if theme.is_dark else "主题: 浅色")
+        self._apply_menu_button_style(self._btn_theme)
+        self._btn_theme.clicked.connect(self._on_toggle_theme)
+        layout.addWidget(self._btn_theme, 1, 1)
         return grp
+
+    def _on_toggle_theme(self):
+        theme.set("light" if theme.is_dark else "dark")
+
+    def _on_theme_changed(self, name: str):
+        """主题变更: 重铺全局 QSS + 广播各面板 apply_theme + 持久化。"""
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(theme.qss())
+        self._btn_theme.setText("主题: 深色" if theme.is_dark else "主题: 浅色")
+        for panel in (self._feedback_panel, self._state_panel, self._plot_panel,
+                      self._log_panel):
+            fn = getattr(panel, "apply_theme", None)
+            if callable(fn):
+                fn()
+        self._refresh_statusbar_theme()
+        layout_store.set_meta("theme", name)
 
     def _on_layout_edit_gate(self, on: bool):
         self._feedback_panel.set_layout_edit(on)
@@ -460,15 +472,22 @@ class MainWindow(QMainWindow):
     def _on_connected(self, connected: bool):
         self._conn_panel.set_connected(connected)
         self._state_panel.set_link_active(connected)
+        self._link_connected = connected
+        if not connected:
+            self._telemetry_panel.set_running(False)
+        self._refresh_statusbar_theme()
+
+    def _refresh_statusbar_theme(self):
+        """按连接状态 + 当前主题重设状态栏连接标签颜色。"""
+        connected = getattr(self, "_link_connected", False)
         if connected:
             self._sb_link.setText(f"● {getattr(self, '_cur_port', '')}")
             self._sb_link.setStyleSheet(
-                "font-family: Consolas; padding: 0 8px; color: #2E7D32; font-weight: bold;")
+                f"font-family: Consolas; padding: 0 8px; color: {theme.hex('ok')}; font-weight: bold;")
         else:
             self._sb_link.setText("● 未连接")
             self._sb_link.setStyleSheet(
-                "font-family: Consolas; padding: 0 8px; color: #999;")
-            self._telemetry_panel.set_running(False)
+                f"font-family: Consolas; padding: 0 8px; color: {theme.hex('muted')};")
 
     def _on_error(self, msg: str):
         self._log_panel.log_err(msg)

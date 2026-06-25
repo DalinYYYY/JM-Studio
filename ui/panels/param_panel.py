@@ -21,6 +21,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QBrush, QFont
 from collections import deque
 
+from ui.theme import theme
+
 
 COL_NAME = 0
 COL_ID = 1
@@ -133,30 +135,6 @@ class ParamPanel(QGroupBox):
         hdr.setSectionResizeMode(COL_READ, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(COL_WRITE, QHeaderView.ResizeMode.Fixed)
 
-        self._table.setStyleSheet("""
-            QTableWidget {
-                background: #282828;
-                alternate-background-color: #323232;
-                gridline-color: #444;
-                selection-background-color: #0B6EA8;
-                selection-color: #FFFFFF;
-            }
-            QHeaderView::section {
-                padding: 4px 6px;
-                background: #2A2A2A;
-                color: #D8D8D8;
-                border: 1px solid #444;
-                font-weight: bold;
-            }
-            QTableWidget::item {
-                padding: 2px 6px;
-            }
-            QTableWidget::item:selected {
-                background: #0B6EA8;
-                color: #FFFFFF;
-            }
-        """)
-
         layout.addWidget(self._table, 1)
 
         btn_row = QWidget()
@@ -184,11 +162,11 @@ class ParamPanel(QGroupBox):
     def _make_group_item(self, text: str) -> QTableWidgetItem:
         item = QTableWidgetItem(text)
         item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-        item.setForeground(QBrush(QColor("#F0F0F0")))
+        item.setForeground(QBrush(theme.c("title")))
         font = QFont()
         font.setBold(True)
         item.setFont(font)
-        item.setBackground(QBrush(QColor("#242F3A")))
+        item.setBackground(QBrush(theme.c("table_header")))
         item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         return item
 

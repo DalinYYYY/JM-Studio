@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QTextCursor
 
 from jmproto import cmd_name, err_name
+from ui.theme import theme
 
 
 # 配色(深色文本编辑器友好)
@@ -61,8 +62,6 @@ class LogPanel(QGroupBox):
         self._log.setReadOnly(True)
         self._log.document().setMaximumBlockCount(self.MAX_BLOCKS)
         self._log.setFont(QFont("Consolas", 9))
-        self._log.setStyleSheet(
-            "QTextEdit { background-color: #FAFAFA; border: 1px solid #DDD; }")
         layout.addWidget(self._log)
 
         # ---- 底部工具行 ----
@@ -97,6 +96,12 @@ class LogPanel(QGroupBox):
         tool_layout.addWidget(self._footer_fill, 1)
 
         layout.addWidget(tool_row)
+        self.apply_theme()
+
+    def apply_theme(self):
+        self._log.setStyleSheet(
+            f"QTextEdit {{ background-color:{theme.hex('log_bg')}; color:{theme.hex('log_text')}; "
+            f"border:1px solid {theme.hex('border')}; }}")
 
     # ---------------- 配置 ----------------
     def set_flush_period_ms(self, period_ms: int):

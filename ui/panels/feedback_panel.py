@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 from jmproto import top_fsm_name, run_state_name, cmd_name
 from ui.panels._edit_mixin import LayoutEditMixin
 from ui import layout_store
+from ui.theme import theme
 
 
 _FONT_FAMILIES = ["Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Segoe UI", "sans-serif"]
@@ -37,22 +38,28 @@ def _mkfont(pt, bold=False):
     return f
 
 
-class _T:
-    BG_TOP = QColor("#232733")
-    BG_BOTTOM = QColor("#191C24")
-    BLOCK_TOP = QColor("#3A4150")
-    BLOCK_BOTTOM = QColor("#2C313D")
-    BLOCK_BORDER = QColor("#515872")
-    BLOCK_TEXT = QColor("#E6E9F2")
-    # 强调环节(电机/逆变器)用青绿描边
-    HI_BORDER = QColor("#5FE6AC")
-    EDGE = QColor("#7C8398")          # 正向通路
-    EDGE_FB = QColor("#C9923F")       # 反馈通路(暖色, 区分电流闭环)
-    TITLE = QColor("#F0F2F8")
-    MUTED = QColor("#7C8294")
-    VALUE = QColor("#7FD4FF")        # 数值青蓝
-    VALUE_HOT = QColor("#FFB454")    # 力矩/电压等"动力"量用暖色
-    UNIT = QColor("#8890A4")
+class _TProxy:
+    """FOC 框图配色代理: 属性名 -> theme.c(key), 主题切换即时生效。
+
+    保留原有 _T.EDGE 等大写属性引用不变, 仅把取值转发到全局主题。
+    """
+    _MAP = {
+        "BG_TOP": "bg_top", "BG_BOTTOM": "bg_bottom",
+        "BLOCK_TOP": "block_top", "BLOCK_BOTTOM": "block_bottom",
+        "BLOCK_BORDER": "block_border", "BLOCK_TEXT": "block_text",
+        "HI_BORDER": "hi_border", "EDGE": "edge", "EDGE_FB": "edge_fb",
+        "TITLE": "text_strong", "MUTED": "muted",
+        "VALUE": "value", "VALUE_HOT": "value_hot", "UNIT": "unit",
+    }
+
+    def __getattr__(self, name):
+        key = self._MAP.get(name)
+        if key is None:
+            raise AttributeError(name)
+        return theme.c(key)
+
+
+_T = _TProxy()
 
 
 class _Block:
@@ -443,27 +450,20 @@ class _ParamCard(QFrame):
         super().__init__(parent)
         self._rows = rows
         self._vals = {}
-        self.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-                    stop:0 #2A2F3D, stop:1 #232733);
-                border: 1px solid #383E4E; border-radius: 8px;
-            }
-            QLabel { border: none; }
-        """)
+        self._name_lbls = []
+        self._unit_lbls = []
+        self._val_color = {}     # attr -> 覆盖色(语义色, 如故障红); 默认用 theme value
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 8, 12, 10)
         lay.setSpacing(5)
 
-        head = QLabel(title)
-        head.setStyleSheet("color:#9FB6DD; font-weight:bold; border:none;")
-        head.setFont(_mkfont(9, bold=True))
-        lay.addWidget(head)
+        self._head = QLabel(title)
+        self._head.setFont(_mkfont(9, bold=True))
+        lay.addWidget(self._head)
 
-        line = QFrame()
-        line.setFixedHeight(1)
-        line.setStyleSheet("background:#383E4E; border:none;")
-        lay.addWidget(line)
+        self._line = QFrame()
+        self._line.setFixedHeight(1)
+        lay.addWidget(self._line)
 
         grid = QGridLayout()
         grid.setContentsMargins(0, 2, 0, 0)
@@ -473,23 +473,41 @@ class _ParamCard(QFrame):
         self._val_labels = {}
         for i, (label, attr, _fmt, unit) in enumerate(rows):
             name = QLabel(label)
-            name.setStyleSheet("color:#AEB4C4; border:none;")
             name.setFont(_mkfont(9))
+            self._name_lbls.append(name)
             val = QLabel("--")
             val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            val.setStyleSheet(
-                "color:#7FD4FF; font-family:Consolas,'Microsoft YaHei',monospace; "
-                "font-size:13px; font-weight:bold; border:none;")
             u = QLabel(unit)
-            u.setStyleSheet("color:#8890A4; border:none;")
             u.setFont(_mkfont(8))
             u.setFixedWidth(46)
+            self._unit_lbls.append(u)
             self._val_labels[attr] = val
             grid.addWidget(name, i, 0)
             grid.addWidget(val, i, 1)
             grid.addWidget(u, i, 2)
         lay.addLayout(grid)
         lay.addStretch()
+        self.apply_theme()
+
+    def _val_style(self, color_hex):
+        return (f"color:{color_hex}; font-family:Consolas,'Microsoft YaHei',monospace; "
+                "font-size:13px; font-weight:bold; border:none;")
+
+    def apply_theme(self):
+        self.setStyleSheet(
+            "QFrame {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1, "
+            "stop:0 {top}, stop:1 {bot}); border: 1px solid {bd}; border-radius: 8px; }} "
+            "QLabel {{ border: none; }}".format(
+                top=theme.hex("card_top"), bot=theme.hex("card_bottom"), bd=theme.hex("border")))
+        self._head.setStyleSheet(f"color:{theme.hex('title')}; font-weight:bold; border:none;")
+        self._line.setStyleSheet(f"background:{theme.hex('border')}; border:none;")
+        for n in self._name_lbls:
+            n.setStyleSheet(f"color:{theme.hex('text')}; border:none;")
+        for u in self._unit_lbls:
+            u.setStyleSheet(f"color:{theme.hex('muted')}; border:none;")
+        for attr, lbl in self._val_labels.items():
+            col = self._val_color.get(attr) or theme.hex("value")
+            lbl.setStyleSheet(self._val_style(col))
 
     def update_values(self, fb):
         for label, attr, fmt, unit in self._rows:
@@ -506,10 +524,9 @@ class _ParamCard(QFrame):
         if lbl is None:
             return
         lbl.setText(text)
-        if color:
-            lbl.setStyleSheet(
-                f"color:{color}; font-family:Consolas,'Microsoft YaHei',monospace; "
-                f"font-size:13px; font-weight:bold; border:none;")
+        # 记住语义覆盖色(None 表示回到主题默认 value 色), 供主题切换重建样式
+        self._val_color[attr] = color
+        lbl.setStyleSheet(self._val_style(color or theme.hex("value")))
 
 
 class _MotorView(QWidget):
@@ -612,18 +629,18 @@ class _MotorView(QWidget):
 
     def _draw_stator(self, p, cx, cy, R):
         # 薄外壳: 外圆与内孔间只留一道窄环
-        p.setPen(QPen(QColor("#444B5E"), 1.6))
+        p.setPen(QPen(theme.c("rotor_shell"), 1.6))
         grad = QRadialGradient(cx, cy, R)
-        grad.setColorAt(0.90, QColor("#2A2F3D"))
-        grad.setColorAt(1.0, QColor("#3A4256"))
+        grad.setColorAt(0.90, theme.c("block_bottom"))
+        grad.setColorAt(1.0, theme.c("rotor_shell"))
         p.setBrush(QBrush(grad))
         p.drawEllipse(QPointF(cx, cy), R, R)
-        p.setPen(QPen(QColor("#3A4152"), 1.2))
-        p.setBrush(QColor("#20242E"))
+        p.setPen(QPen(theme.c("rotor_tooth_border"), 1.2))
+        p.setBrush(theme.c("rotor_bore"))
         p.drawEllipse(QPointF(cx, cy), R * 0.86, R * 0.86)
         # 定子齿(指向圆心)
-        p.setBrush(QColor("#333A49"))
-        p.setPen(QPen(QColor("#475064"), 1.0))
+        p.setBrush(theme.c("rotor_tooth"))
+        p.setPen(QPen(theme.c("rotor_tooth_border"), 1.0))
         rt_out = R * 0.86
         rt_in = R * 0.64
         for i in range(self._stator_slots):
@@ -644,9 +661,9 @@ class _MotorView(QWidget):
     def _draw_rotor(self, p, cx, cy, r, th):
         # 转子盘
         grad = QRadialGradient(cx, cy, r)
-        grad.setColorAt(0.0, QColor("#3C4356"))
-        grad.setColorAt(1.0, QColor("#2A303E"))
-        p.setPen(QPen(QColor("#4A5167"), 1.5))
+        grad.setColorAt(0.0, theme.c("node_top"))
+        grad.setColorAt(1.0, theme.c("node_bottom"))
+        p.setPen(QPen(theme.c("rotor_tooth_border"), 1.5))
         p.setBrush(QBrush(grad))
         p.drawEllipse(QPointF(cx, cy), r, r)
 
@@ -654,10 +671,11 @@ class _MotorView(QWidget):
         n = self._pole_pairs * 2
         outer = QRectF(cx - r * 0.92, cy - r * 0.92, r * 1.84, r * 1.84)
         seg = 360.0 / n
+        col_n, col_s = theme.c("rotor_n"), theme.c("rotor_s")
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(n):
             is_n = (i % 2 == 0)
-            col = QColor("#C8554F") if is_n else QColor("#4F7FD0")
+            col = col_n if is_n else col_s
             start = math.degrees(th) + i * seg + 1.5
             path = QPainterPath()
             path.moveTo(QPointF(cx, cy))
@@ -668,15 +686,15 @@ class _MotorView(QWidget):
 
         # 内圈遮罩(留出磁极环宽度), 形成磁极在外环的观感
         grad2 = QRadialGradient(cx, cy, r * 0.58)
-        grad2.setColorAt(0.0, QColor("#363D4E"))
-        grad2.setColorAt(1.0, QColor("#2C3340"))
+        grad2.setColorAt(0.0, theme.c("node_top"))
+        grad2.setColorAt(1.0, theme.c("node_bottom"))
         p.setBrush(QBrush(grad2))
         p.drawEllipse(QPointF(cx, cy), r * 0.58, r * 0.58)
 
         # d 轴标记(小三角, 指示转子磁链方向)
         dax = cx + r * 0.5 * math.cos(th)
         day = cy + r * 0.5 * math.sin(th)
-        p.setBrush(QColor("#E0C060"))
+        p.setBrush(theme.c("value_hot"))
         p.setPen(Qt.PenStyle.NoPen)
         tri = QPainterPath()
         for k in range(3):
@@ -690,12 +708,12 @@ class _MotorView(QWidget):
         p.drawPath(tri)
 
         # 轴心
-        p.setBrush(QColor("#11141B"))
-        p.setPen(QPen(QColor("#566076"), 1.2))
+        p.setBrush(theme.c("rotor_hub"))
+        p.setPen(QPen(theme.c("rotor_tooth_border"), 1.2))
         p.drawEllipse(QPointF(cx, cy), r * 0.18, r * 0.18)
 
     def _draw_pointer(self, p, cx, cy, R, th):
-        col = _T.HI_BORDER if self._enabled else QColor("#6A7288")
+        col = _T.HI_BORDER if self._enabled else theme.c("muted")
         ex = cx + R * 0.66 * math.cos(th)
         ey = cy + R * 0.66 * math.sin(th)
         pen = QPen(col, 2.6)
@@ -738,7 +756,7 @@ class _MotorView(QWidget):
         x0 = 14.0
         w = self.width() - 28.0
         # 分隔线 + 小标题
-        p.setPen(QPen(QColor("#383E4E"), 1))
+        p.setPen(QPen(theme.c("border"), 1))
         p.drawLine(QPointF(x0, y0), QPointF(x0 + w, y0))
         p.setPen(_T.MUTED)
         p.setFont(_mkfont(8, bold=True))
@@ -768,7 +786,7 @@ class _MotorView(QWidget):
                         vtxt = fmt.format(float(v))
                 except Exception:
                     vtxt = str(v)
-            p.setPen(QColor("#9298AC"))
+            p.setPen(theme.c("muted"))
             p.setFont(_mkfont(8))
             p.drawText(QRectF(cell_x, cell_y, col_w * 0.34, row_h),
                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
@@ -784,10 +802,10 @@ class FeedbackPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("QWidget#fbRoot { background:#16181F; }")
         self.setObjectName("fbRoot")
         self._enabled = False
         self._build()
+        self.apply_theme()
 
     def _build(self):
         root = QVBoxLayout(self)
@@ -799,24 +817,17 @@ class FeedbackPanel(QWidget):
         top.setSpacing(8)
         self._foc = _FocDiagram()
         self._motor = _MotorView()
-        self._foc.setStyleSheet("border:1px solid #383E4E; border-radius:8px;")
-        self._motor.setStyleSheet("border:1px solid #383E4E; border-radius:8px;")
         top.addWidget(self._foc, 5)
         top.addWidget(self._motor, 2)
         root.addLayout(top, 3)
 
         # 布局编辑/导出按钮: 作为 FOC 框图的子控件, 浮于其左下角
-        _btn_css = ("QPushButton{background:rgba(42,46,58,0.85);color:#C8CCD8;"
-                    "border:1px solid #444A5A;border-radius:4px;padding:0 8px;font-size:11px;}"
-                    "QPushButton:checked{background:#C8963C;color:#1a1a1a;font-weight:bold;}")
         self._btn_edit = QPushButton("布局编辑: 关", self._foc)
         self._btn_edit.setCheckable(True)
         self._btn_edit.setFixedHeight(22)
-        self._btn_edit.setStyleSheet(_btn_css)
         self._btn_edit.toggled.connect(self._on_edit_toggled)
         self._btn_export = QPushButton("导出布局", self._foc)
         self._btn_export.setFixedHeight(22)
-        self._btn_export.setStyleSheet(_btn_css)
         self._btn_export.clicked.connect(self._on_export_layout)
         self._foc.set_corner_buttons(self._btn_edit, self._btn_export)
         # 默认隐藏, 仅"菜单配置 > 布局编辑"开启后显示
@@ -866,6 +877,23 @@ class FeedbackPanel(QWidget):
     def load_layout(self):
         """启动时加载 FOC 布局(resources/ui_layout.json 的 foc 节)。"""
         self._foc.apply_dict(layout_store.load_section("foc"))
+
+    def apply_theme(self):
+        """主题切换: 重建本面板内联样式 + 重绘自绘图。"""
+        self.setStyleSheet(f"QWidget#fbRoot {{ background:{theme.hex('app_bg')}; }}")
+        border_css = f"border:1px solid {theme.hex('border')}; border-radius:8px;"
+        self._foc.setStyleSheet(border_css)
+        self._motor.setStyleSheet(border_css)
+        btn_css = (
+            f"QPushButton{{background:{theme.hex('input_bg')};color:{theme.hex('text')};"
+            f"border:1px solid {theme.hex('input_border')};border-radius:4px;padding:0 8px;font-size:11px;}}"
+            f"QPushButton:checked{{background:{theme.hex('warn')};color:#FFFFFF;font-weight:bold;}}")
+        self._btn_edit.setStyleSheet(btn_css)
+        self._btn_export.setStyleSheet(btn_css)
+        for card in (self._card_bus, self._card_motion, self._card_state):
+            card.apply_theme()
+        self._foc.update()
+        self._motor.update()
 
     def _on_edit_toggled(self, on: bool):
         self._foc.set_edit_mode(on)

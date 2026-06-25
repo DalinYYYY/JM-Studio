@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 from jmproto import JmCmd, TopFsm, RunState, top_fsm_name, run_state_name
 from ui.panels._edit_mixin import LayoutEditMixin
 from ui import layout_store
+from ui.theme import theme
 
 
 # 中文友好字体族(Windows 优先 YaHei, 回退通用无衬线)
@@ -40,50 +41,35 @@ def _mkfont(point_size, bold=False):
     return f
 
 
-# ============================ 主题配色 ============================
-class _Theme:
-    # 画布背景渐变(深→更深)
-    BG_TOP = QColor("#232733")
-    BG_BOTTOM = QColor("#191C24")
+# ============================ 主题配色(转发到全局 theme) ============================
+class _ThemeProxy:
+    """状态机图配色代理: 属性名 -> theme.c(key), 主题切换即时生效。"""
+    _MAP = {
+        "BG_TOP": "bg_top", "BG_BOTTOM": "bg_bottom",
+        "NODE_TOP": "node_top", "NODE_BOTTOM": "node_bottom",
+        "NODE_BORDER": "node_border", "NODE_TEXT": "node_text",
+        "ACTIVE_TOP": "active_top", "ACTIVE_BOTTOM": "active_bottom",
+        "ACTIVE_BORDER": "active_border", "ACTIVE_GLOW": "active_glow",
+        "FAULT_TOP": "fault_top", "FAULT_BOTTOM": "fault_bottom", "FAULT_BORDER": "fault_border",
+        "ACTIVE_FAULT_TOP": "afault_top", "ACTIVE_FAULT_BOTTOM": "afault_bottom",
+        "ACTIVE_FAULT_BORDER": "afault_border", "ACTIVE_FAULT_GLOW": "afault_glow",
+        "GROUP_BORDER": "group_border", "GROUP_BORDER_ACTIVE": "group_border_active",
+        "GROUP_TITLE": "group_title", "EDGE": "edge", "EDGE_LABEL": "edge_label",
+        "TITLE": "text_strong", "ACCENT": "accent", "MUTED": "muted",
+    }
+    # 半透明容器填充用固定 alpha 叠加主题强调/分组色
+    def __getattr__(self, name):
+        if name == "GROUP_FILL":
+            c = theme.c("group_border"); c = QColor(c.red(), c.green(), c.blue(), 22); return c
+        if name == "GROUP_FILL_ACTIVE":
+            c = theme.c("active_border"); c = QColor(c.red(), c.green(), c.blue(), 26); return c
+        key = self._MAP.get(name)
+        if key is None:
+            raise AttributeError(name)
+        return theme.c(key)
 
-    # 普通节点(中性蓝灰渐变)
-    NODE_TOP = QColor("#3A3F4E")
-    NODE_BOTTOM = QColor("#2C303C")
-    NODE_BORDER = QColor("#4D5365")
-    NODE_TEXT = QColor("#E4E7EF")
 
-    # 激活节点(青绿)
-    ACTIVE_TOP = QColor("#2FB37A")
-    ACTIVE_BOTTOM = QColor("#1E8E63")
-    ACTIVE_BORDER = QColor("#5FE6AC")
-    ACTIVE_GLOW = QColor(95, 230, 172)
-
-    # 故障/急停节点(红)
-    FAULT_TOP = QColor("#9E4B4B")
-    FAULT_BOTTOM = QColor("#7E3838")
-    FAULT_BORDER = QColor("#C06A6A")
-
-    # 激活的故障节点(亮红)
-    ACTIVE_FAULT_TOP = QColor("#E0524F")
-    ACTIVE_FAULT_BOTTOM = QColor("#C13B38")
-    ACTIVE_FAULT_BORDER = QColor("#FF8C88")
-    ACTIVE_FAULT_GLOW = QColor(255, 110, 105)
-
-    # 容器
-    GROUP_FILL = QColor(90, 130, 200, 22)
-    GROUP_FILL_ACTIVE = QColor(95, 230, 172, 26)
-    GROUP_BORDER = QColor("#5A7BB5")
-    GROUP_BORDER_ACTIVE = QColor("#5FE6AC")
-    GROUP_TITLE = QColor("#9FB6DD")
-
-    # 连线
-    EDGE = QColor("#6E7488")
-    EDGE_LABEL = QColor("#9298AC")
-
-    # 文本
-    TITLE = QColor("#F0F2F8")
-    ACCENT = QColor("#5FE6AC")
-    MUTED = QColor("#7C8294")
+_Theme = _ThemeProxy()
 
 
 class _Node:
@@ -235,7 +221,7 @@ class _DiagramView(LayoutEditMixin, QWidget):
 
     def _draw_dot_grid(self, p, step=26):
         p.save()
-        p.setPen(QPen(QColor(255, 255, 255, 10), 1.0))
+        p.setPen(QPen(theme.c("dot_grid"), 1.0))
         y = 50
         while y < self.height():
             x = 20
@@ -340,7 +326,7 @@ class _DiagramView(LayoutEditMixin, QWidget):
         rect = QRectF(center.x() - tw / 2 - pad, center.y() - th / 2 - 1,
                       tw + 2 * pad, th + 2)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(25, 28, 36, 210))
+        p.setBrush(theme.c("chip_bg"))
         p.drawRoundedRect(rect, 4, 4)
         p.setPen(_Theme.EDGE_LABEL)
         p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
@@ -694,52 +680,50 @@ class StateMachinePanel(QWidget):
         self._apply_poll_settings()
 
     def _build(self):
-        self.setStyleSheet("""
-            QWidget#smRoot { background: #16181F; }
-            QLabel { color: #C8CCD8; }
-            QCheckBox { color: #C8CCD8; }
-            QSpinBox {
-                background: #2A2E3A; color: #E4E7EF;
-                border: 1px solid #444A5A; border-radius: 4px;
-                padding: 2px 4px;
-            }
-            QSpinBox:disabled { color: #666; }
-        """)
         self.setObjectName("smRoot")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
-        root.addWidget(self._build_status_bar())
+        self._bar = self._build_status_bar()
+        root.addWidget(self._bar)
 
         self._top_view = _TopFsmView()
         self._run_view = _RunModeView()
         root.addWidget(self._top_view, 1)
         root.addWidget(self._run_view, 1)
+        self.apply_theme()
+
+    def apply_theme(self):
+        self.setStyleSheet(f"QWidget#smRoot {{ background:{theme.hex('app_bg')}; }}")
+        self._bar.setStyleSheet(
+            "QFrame#smBar {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1, "
+            "stop:0 {top}, stop:1 {bot}); border:1px solid {bd}; border-radius:8px; }}".format(
+                top=theme.hex("card_top"), bot=theme.hex("card_bottom"), bd=theme.hex("border")))
+        btn_css = (
+            f"QPushButton{{background:{theme.hex('input_bg')};color:{theme.hex('text')};"
+            f"border:1px solid {theme.hex('input_border')};border-radius:4px;padding:0 8px;font-size:11px;}}"
+            f"QPushButton:checked{{background:{theme.hex('warn')};color:#FFFFFF;font-weight:bold;}}")
+        self._btn_edit.setStyleSheet(btn_css)
+        self._btn_export.setStyleSheet(btn_css)
+        # 状态标签/连接点 重设(沿用最近状态色)
+        self._refresh_state_styles()
+        self._top_view.update()
+        self._run_view.update()
 
     def _build_status_bar(self) -> QFrame:
         bar = QFrame()
-        bar.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #2A2F3D, stop:1 #232733);
-                border: 1px solid #383E4E; border-radius: 8px;
-            }
-        """)
+        bar.setObjectName("smBar")
         bar.setFixedHeight(46)
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(14, 0, 12, 0)
         lay.setSpacing(10)
 
         self._dot = QLabel("●")
-        self._dot.setStyleSheet("color:#666; font-size:14px; border:none;")
         lay.addWidget(self._dot)
 
         self._lbl_state = QLabel("未连接")
-        self._lbl_state.setStyleSheet(
-            "font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 13px; "
-            "font-weight: bold; color: #8A90A0; border: none;")
         lay.addWidget(self._lbl_state)
         lay.addStretch()
 
@@ -750,7 +734,7 @@ class StateMachinePanel(QWidget):
         lay.addWidget(self._chk_poll)
 
         lbl = QLabel("周期")
-        lbl.setStyleSheet("border:none; color:#9298AC;")
+        lbl.setStyleSheet("border:none;")
         lay.addWidget(lbl)
         self._spin_period = QSpinBox()
         self._spin_period.setRange(50, 5000)
@@ -762,17 +746,12 @@ class StateMachinePanel(QWidget):
         lay.addWidget(self._spin_period)
 
         # 布局编辑/导出(默认隐藏, 受"菜单配置 > 布局编辑"门控)
-        _btn_css = ("QPushButton{background:#2A2E3A;color:#C8CCD8;border:1px solid #444A5A;"
-                    "border-radius:4px;padding:0 8px;font-size:11px;}"
-                    "QPushButton:checked{background:#C8963C;color:#1a1a1a;font-weight:bold;}")
         self._btn_edit = QPushButton("布局编辑: 关")
         self._btn_edit.setCheckable(True)
         self._btn_edit.setFixedHeight(24)
-        self._btn_edit.setStyleSheet(_btn_css)
         self._btn_edit.toggled.connect(self._on_edit_toggled)
         self._btn_export = QPushButton("导出布局")
         self._btn_export.setFixedHeight(24)
-        self._btn_export.setStyleSheet(_btn_css)
         self._btn_export.clicked.connect(self._on_export_layout)
         self._btn_edit.setVisible(False)
         self._btn_export.setVisible(False)
@@ -780,6 +759,20 @@ class StateMachinePanel(QWidget):
         lay.addWidget(self._btn_export)
 
         return bar
+
+    def _refresh_state_styles(self):
+        """按最近状态(故障/正常/未连接)重设连接点与状态标签的颜色, 适配当前主题。"""
+        top = self._last_state[0] if self._last_state else None
+        if top is None:
+            dot, col = theme.hex("muted"), theme.hex("muted")
+        elif top in (int(TopFsm.FAULT), int(TopFsm.SAFETY)):
+            dot = col = theme.hex("danger")
+        else:
+            dot = col = theme.hex("accent")
+        self._dot.setStyleSheet(f"color:{dot}; font-size:14px; border:none;")
+        self._lbl_state.setStyleSheet(
+            f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 13px; "
+            f"font-weight: bold; color: {col}; border: none;")
 
     # ---- 布局编辑(菜单门控) ----
     def set_layout_edit(self, on: bool):
@@ -825,11 +818,9 @@ class StateMachinePanel(QWidget):
         self._link_active = bool(active)
         self._restart_poll()
         if not active:
-            self._dot.setStyleSheet("color:#666; font-size:14px; border:none;")
+            self._last_state = (None, None, None, None)
             self._lbl_state.setText("未连接")
-            self._lbl_state.setStyleSheet(
-                "font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 13px; "
-                "font-weight: bold; color: #8A90A0; border: none;")
+            self._refresh_state_styles()
 
     def showEvent(self, evt):
         super().showEvent(evt)
@@ -845,13 +836,8 @@ class StateMachinePanel(QWidget):
         self._top_view.apply_state(top_fsm, run_state, ctrl_mode, enable)
         self._run_view.apply_state(top_fsm, run_state, ctrl_mode, enable)
 
-        is_fault = top_fsm in (int(TopFsm.FAULT), int(TopFsm.SAFETY))
         en_txt = "ON" if enable else "OFF"
-        color = "#FF8C88" if is_fault else "#5FE6AC"
-        self._dot.setStyleSheet(f"color:{color}; font-size:14px; border:none;")
         text = (f"{top_fsm_name(top_fsm)}   ·   运行子态 {run_state_name(run_state)}"
                 f"   ·   使能 {en_txt}")
         self._lbl_state.setText(text)
-        self._lbl_state.setStyleSheet(
-            f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 13px; "
-            f"font-weight: bold; color: {color}; border: none;")
+        self._refresh_state_styles()

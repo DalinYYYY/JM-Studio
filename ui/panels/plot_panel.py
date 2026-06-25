@@ -23,6 +23,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ui.theme import theme
+
 try:
     import pyqtgraph as pg
 except Exception:  # pragma: no cover - fallback for environments without pyqtgraph
@@ -244,7 +246,7 @@ class PlotPanel(QGroupBox):
         layout.addWidget(toolbar)
 
         self._glw = pg.GraphicsLayoutWidget()
-        self._glw.setBackground('#202020')
+        self._glw.setBackground(theme.hex('plot_bg'))
         self._glw.ci.layout.setContentsMargins(0, 0, 0, 0)
         self._glw.ci.layout.setSpacing(2)
         self._glw.ci.layout.setRowStretchFactor(0, 1)
@@ -268,16 +270,27 @@ class PlotPanel(QGroupBox):
 
         self._sync_current_visibility()
 
+    # 曲线名 -> 主题色键
+    _PEN_KEY = {
+        'pos': 'plot_pos', 'vel': 'plot_vel', 'id': 'plot_id', 'iq': 'plot_iq',
+        'ibus': 'plot_ibus', 'ia': 'plot_ia', 'ib': 'plot_ib', 'ic': 'plot_ic',
+        'angle': 'plot_angle',
+    }
+
+    def _pen(self, name):
+        style = Qt.PenStyle.DashLine if name == 'ibus' else Qt.PenStyle.SolidLine
+        return pg.mkPen(theme.hex(self._PEN_KEY[name]), width=2, style=style)
+
     def _build_plots(self):
-        pos_pen = pg.mkPen('#00BCD4', width=2)
-        vel_pen = pg.mkPen('#4CAF50', width=2)
-        id_pen = pg.mkPen('#26C6DA', width=2)
-        iq_pen = pg.mkPen('#FF9800', width=2)
-        ibus_pen = pg.mkPen('#AB47BC', width=2, style=Qt.PenStyle.DashLine)
-        ia_pen = pg.mkPen('#66BB6A', width=2)
-        ib_pen = pg.mkPen('#29B6F6', width=2)
-        ic_pen = pg.mkPen('#FFEE58', width=2)
-        angle_pen = pg.mkPen('#FFC107', width=2)
+        pos_pen = self._pen('pos')
+        vel_pen = self._pen('vel')
+        id_pen = self._pen('id')
+        iq_pen = self._pen('iq')
+        ibus_pen = self._pen('ibus')
+        ia_pen = self._pen('ia')
+        ib_pen = self._pen('ib')
+        ic_pen = self._pen('ic')
+        angle_pen = self._pen('angle')
 
         self._plots['pos'] = self._create_plot(
             0, 0, "位置", "位置", "rad",
@@ -309,6 +322,24 @@ class PlotPanel(QGroupBox):
         for key in ('vel', 'current', 'angle'):
             self._plots[key]['plot'].setXLink(anchor)
 
+    def apply_theme(self):
+        """主题切换: 重设曲线背景/画笔/标题/坐标轴色。"""
+        if pg is None:
+            return
+        self._glw.setBackground(theme.hex('plot_bg'))
+        axis_pen = pg.mkPen(theme.hex('muted'))
+        text_col = theme.c('text')
+        for cfg in self._plots.values():
+            plot = cfg['plot']
+            plot.setTitle(cfg.get('title', ''), color=theme.hex('plot_title'), size='8pt')
+            for ax_name in ('left', 'bottom'):
+                ax = plot.getAxis(ax_name)
+                ax.setPen(axis_pen)
+                ax.setTextPen(text_col)
+            for name, curve in cfg['curves'].items():
+                if name in self._PEN_KEY:
+                    curve.setPen(self._pen(name))
+
     def _create_plot(self, row, col, title, y_label, unit, series_defs,
                      show_bottom=True, show_left=True, menu_profile=None):
         menu_profile = dict(menu_profile or {})
@@ -317,7 +348,7 @@ class PlotPanel(QGroupBox):
         menu_profile.setdefault('series', False)
 
         plot = self._glw.addPlot(row=row, col=col, title=title)
-        plot.setTitle(title, color='#D8D8D8', size='8pt')
+        plot.setTitle(title, color=theme.hex('plot_title'), size='8pt')
         plot.layout.setContentsMargins(0, 0, 0, 0)
         plot.layout.setSpacing(0)
         plot.showGrid(x=True, y=True, alpha=0.25)
@@ -364,6 +395,7 @@ class PlotPanel(QGroupBox):
             'series_defs': series_defs,
             'menu_profile': menu_profile,
             'auto_y': True,
+            'title': title,
         }
 
     def _on_mouse_clicked(self, evt):

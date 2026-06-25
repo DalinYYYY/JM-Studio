@@ -54,6 +54,24 @@ def save(section: str, data: dict) -> bool:
     whole = load()
     whole["version"] = _VERSION
     whole[section] = data
+    return _write(whole)
+
+
+def get_meta(key: str, default=None):
+    """读顶层元数据(如 theme); 缺失返回 default。"""
+    v = load().get(key)
+    return v if v is not None else default
+
+
+def set_meta(key: str, value) -> bool:
+    """写顶层元数据并保存(保留布局节)。"""
+    whole = load()
+    whole["version"] = _VERSION
+    whole[key] = value
+    return _write(whole)
+
+
+def _write(whole: dict) -> bool:
     try:
         os.makedirs(_RES_DIR, exist_ok=True)
         with open(_PATH, "w", encoding="utf-8") as f:
@@ -61,3 +79,4 @@ def save(section: str, data: dict) -> bool:
         return True
     except Exception:
         return False
+
