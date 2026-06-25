@@ -22,6 +22,8 @@ from PyQt6.QtWidgets import (
 )
 
 from jmproto import top_fsm_name, run_state_name, cmd_name
+from ui.panels._edit_mixin import LayoutEditMixin
+from ui import layout_store
 
 
 _FONT_FAMILIES = ["Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Segoe UI", "sans-serif"]
@@ -67,7 +69,25 @@ class _Block:
         self.hi = hi      # 是否强调描边
 
 
-class _FocDiagram(QWidget):
+class _Annot:
+    """框图上的一个数值标注。
+
+    pos 为可选的独立归一化坐标 (x, y); 为 None 时回退到相对锚定块的自动位置
+    (anchor 块下方), 保证向后兼容。编辑拖动后写入 pos。
+    """
+    __slots__ = ("key", "role", "vkey", "color", "anchor", "pos", "multiline")
+
+    def __init__(self, key, role, vkey, color, anchor, pos=None, multiline=False):
+        self.key = key
+        self.role = role        # 角色文本(如 "Vbus")
+        self.vkey = vkey        # 取值键(在 _vals 中)
+        self.color = color
+        self.anchor = anchor    # 锚定块 key(pos 为 None 时据此自动定位)
+        self.pos = pos          # (x, y) 归一化, 或 None
+        self.multiline = multiline  # 三相 ia/ib/ic 多行
+
+
+class _FocDiagram(LayoutEditMixin, QWidget):
     """FOC 电流闭环框图(自绘), 在对应环节标注实时电气量。"""
 
     def __init__(self, parent=None):
@@ -75,8 +95,7 @@ class _FocDiagram(QWidget):
         self.setMinimumHeight(300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._vals = {}     # key -> 显示字符串
-        self._edit = False
-        self._drag_key = None
+        self._ensure_edit_state()
         self._corner_btns = []   # 浮于左下角的编辑/导出按钮
 
         # 归一化布局(0~1)。正向通路在上, 反馈通路在下(由拖拽编辑定稿)。
@@ -108,12 +127,13 @@ class _FocDiagram(QWidget):
             ("motor", "B", "enc", "T", "fb"),
             ("enc", "B", "park", "T", "fb"),
         ]
-        # 数值标注: (锚定块key, 角色文本, 值key, 颜色) —— 画在块下方/相关线旁
+        # 数值标注(_Annot): pos=None 时自动锚定到块下方; iabc 三相多行。
         self._annots = [
-            ("inv", "Vbus", "vbus", _T.VALUE_HOT),
-            ("motor", "τ", "torque", _T.VALUE_HOT),
-            ("idq", "id/iq", "idq", _T.VALUE),
-            ("enc", "θ/ω", "thw", _T.VALUE),
+            _Annot("vbus", "Vbus", "vbus", _T.VALUE_HOT, anchor="inv"),
+            _Annot("torque", "τ", "torque", _T.VALUE_HOT, anchor="motor"),
+            _Annot("idq", "id/iq", "idq", _T.VALUE, anchor="idq"),
+            _Annot("thw", "θ/ω", "thw", _T.VALUE, anchor="enc"),
+            _Annot("iabc", "", "iabc_lines", _T.VALUE, anchor="motor", multiline=True),
         ]
 
     def set_values(self, vals: dict):
@@ -138,75 +158,66 @@ class _FocDiagram(QWidget):
         super().resizeEvent(e)
         self._reposition_corner()
 
-    # ==================== 拖拽编辑模式 ====================
-    # 开启后可用鼠标拖动方块调整布局, 实时显示归一化坐标; 拖好后 export_layout()
-    # 打印/返回 JSON, 直接粘回 _blocks 即定稿。所见即所得, 无移植误差。
-    def set_edit_mode(self, on: bool):
-        self._edit = bool(on)
-        self._drag_key = None
-        self.setMouseTracking(self._edit)
-        self.setCursor(Qt.CursorShape.OpenHandCursor if self._edit else Qt.CursorShape.ArrowCursor)
-        self.update()
-
-    def is_edit_mode(self) -> bool:
-        return getattr(self, "_edit", False)
-
-    def export_layout(self) -> str:
-        """导出当前方块布局为可直接粘回 _blocks 的 Python 代码片段。"""
-        lines = []
-        for b in self._blocks:
-            hi = ", hi=True" if b.hi else ""
-            title = b.title.replace("\n", "\\n")
-            lines.append(
-                f'            _Block("{b.key}", "{title}", '
-                f'{b.x:.3f}, {b.y:.3f}, {b.w:.3f}, {b.h:.3f}{hi}),')
-        return "\n".join(lines)
-
+    # ==================== 布局编辑(LayoutEditMixin 钩子) ====================
     def _geom(self):
         ox, oy = 14.0, 34.0
         w = max(1.0, self.width() - 2 * ox)
         h = max(1.0, self.height() - oy - 14.0)
         return ox, oy, w, h
 
-    def _block_at(self, pos):
-        ox, oy, w, h = self._geom()
-        for b in reversed(self._blocks):
-            r = QRectF(ox + b.x * w, oy + b.y * h, b.w * w, b.h * h)
-            if r.contains(pos):
-                return b
-        return None
+    def _edit_geom(self):
+        return self._geom()
 
-    def mousePressEvent(self, e):
-        if not self.is_edit_mode():
-            return super().mousePressEvent(e)
-        b = self._block_at(e.position())
-        if b is not None:
-            ox, oy, w, h = self._geom()
-            self._drag_key = b.key
-            self._drag_dx = e.position().x() - (ox + b.x * w)
-            self._drag_dy = e.position().y() - (oy + b.y * h)
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
-        self.update()
+    def _iter_boxes(self):
+        return [(b.key, b) for b in self._blocks]
 
-    def mouseMoveEvent(self, e):
-        if not self.is_edit_mode() or self._drag_key is None:
-            return
-        ox, oy, w, h = self._geom()
-        b = next((x for x in self._blocks if x.key == self._drag_key), None)
+    def _annot_pos(self, a):
+        """标注归一化坐标: 优先 a.pos, 否则按锚定块自动算(块下方居中)。"""
+        if a.pos is not None:
+            return a.pos
+        b = next((x for x in self._blocks if x.key == a.anchor), None)
         if b is None:
-            return
-        nx = (e.position().x() - self._drag_dx - ox) / w
-        ny = (e.position().y() - self._drag_dy - oy) / h
-        # 网格吸附 0.005, 并夹在画布内
-        b.x = max(0.0, min(1.0 - b.w, round(nx / 0.005) * 0.005))
-        b.y = max(0.0, min(1.0 - b.h, round(ny / 0.005) * 0.005))
-        self.update()
+            return (0.5, 0.5)
+        if a.multiline:   # 三相: 锚块下方稍远
+            return (b.x + b.w / 2, b.y + b.h + 0.18)
+        return (b.x + b.w / 2, b.y + b.h + 0.06)
 
-    def mouseReleaseEvent(self, e):
-        if not self.is_edit_mode():
-            return super().mouseReleaseEvent(e)
-        self._drag_key = None
-        self.setCursor(Qt.CursorShape.OpenHandCursor)
+    def _iter_labels(self):
+        out = []
+        for a in self._annots:
+            x, y = self._annot_pos(a)
+            out.append((a.key, x, y))
+        return out
+
+    def _set_label_pos(self, key, nx, ny):
+        for a in self._annots:
+            if a.key == key:
+                a.pos = (nx, ny)
+                return
+
+    def export_dict(self) -> dict:
+        """导出 FOC 布局: blocks(x,y,w,h) + annots(x,y)。"""
+        return {
+            "blocks": {b.key: [round(b.x, 3), round(b.y, 3),
+                               round(b.w, 3), round(b.h, 3)] for b in self._blocks},
+            "annots": {a.key: [round(p[0], 3), round(p[1], 3)]
+                       for a in self._annots for p in [self._annot_pos(a)]},
+        }
+
+    def apply_dict(self, d: dict):
+        """套用 JSON 布局(缺项保持默认)。"""
+        if not isinstance(d, dict):
+            return
+        blocks = d.get("blocks", {})
+        for b in self._blocks:
+            v = blocks.get(b.key)
+            if isinstance(v, (list, tuple)) and len(v) == 4:
+                b.x, b.y, b.w, b.h = (float(v[0]), float(v[1]), float(v[2]), float(v[3]))
+        annots = d.get("annots", {})
+        for a in self._annots:
+            v = annots.get(a.key)
+            if isinstance(v, (list, tuple)) and len(v) == 2:
+                a.pos = (float(v[0]), float(v[1]))
         self.update()
 
     # ---- 锚点 ----
@@ -255,32 +266,9 @@ class _FocDiagram(QWidget):
             self._draw_block(p, b, rects[b.key])
         self._draw_annots(p, rects)
 
-        if self._edit:
-            self._draw_edit_overlay(p, ox, oy, w, h, rects)
+        self.draw_edit_overlay(p)
 
         p.end()
-
-    def _draw_edit_overlay(self, p, ox, oy, w, h, rects):
-        # 网格
-        p.setPen(QPen(QColor(255, 255, 255, 16), 1.0))
-        for i in range(0, 21):
-            x = ox + w * i / 20.0
-            p.drawLine(QPointF(x, oy), QPointF(x, oy + h))
-            y = oy + h * i / 20.0
-            p.drawLine(QPointF(ox, y), QPointF(ox + w, y))
-        # 每块标坐标
-        p.setFont(_mkfont(7))
-        for b in self._blocks:
-            r = rects[b.key]
-            p.setPen(QColor("#FFD080"))
-            p.drawText(QRectF(r.x(), r.bottom() + 1, r.width(), 12),
-                       Qt.AlignmentFlag.AlignHCenter,
-                       f"{b.x:.3f},{b.y:.3f}")
-        # 角标提示
-        p.setPen(QColor("#FFD080"))
-        p.setFont(_mkfont(8, bold=True))
-        p.drawText(QRectF(ox, oy, w, 16), Qt.AlignmentFlag.AlignRight,
-                   "编辑模式: 拖动方块, 完成后点[导出布局]")
 
     def _draw_legend(self, p, ox, w):
         p.setFont(_mkfont(8))
@@ -395,22 +383,18 @@ class _FocDiagram(QWidget):
         p.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, b.title)
 
     def _draw_annots(self, p, rects):
-        """在相关块下方画 角色=值 的标注胶囊。"""
-        for key, role, vkey, color in self._annots:
-            r = rects.get(key)
-            if r is None:
-                continue
-            val = self._vals.get(vkey, "--")
-            text = f"{role} = {val}"
-            self._chip(p, QPointF(r.center().x(), r.bottom() + 14), text, color)
-
-        # 三相电流贴在 电机->Clarke 的反馈线竖直段旁(电机正下方), 三相分行显示
-        rm = rects.get("motor")
-        rc = rects.get("clarke")
-        if rm is not None and rc is not None:
-            lines = self._vals.get("iabc_lines", ["ia --", "ib --", "ic --"])
-            mid = QPointF(rm.center().x(), rm.bottom() + (rc.top() - rm.bottom()) * 0.5)
-            self._chip_multiline(p, mid, lines, _T.VALUE)
+        """画数值标注: 位置取 _annot_pos(优先独立坐标, 否则锚定块下方)。"""
+        ox, oy, w, h = self._geom()
+        for a in self._annots:
+            ax, ay = self._annot_pos(a)
+            center = QPointF(ox + ax * w, oy + ay * h)
+            if a.multiline:
+                lines = self._vals.get(a.vkey, ["ia --", "ib --", "ic --"])
+                self._chip_multiline(p, center, lines, a.color)
+            else:
+                val = self._vals.get(a.vkey, "--")
+                text = f"{a.role} = {val}" if a.role else str(val)
+                self._chip(p, center, text, a.color)
 
     def _chip_multiline(self, p, center, lines, color):
         """多行标注胶囊: 每行一个相电流, 竖排不挤。"""
@@ -835,6 +819,9 @@ class FeedbackPanel(QWidget):
         self._btn_export.setStyleSheet(_btn_css)
         self._btn_export.clicked.connect(self._on_export_layout)
         self._foc.set_corner_buttons(self._btn_edit, self._btn_export)
+        # 默认隐藏, 仅"菜单配置 > 布局编辑"开启后显示
+        self._btn_edit.setVisible(False)
+        self._btn_export.setVisible(False)
 
         # 下: 系统参数分区卡片(母线+温度合并, 位置/速度, 状态/故障)
         cards = QHBoxLayout()
@@ -867,36 +854,35 @@ class FeedbackPanel(QWidget):
         cards.addWidget(self._card_state, 1)
         root.addLayout(cards, 2)
 
-    # ---- 布局编辑(调试: 拖动 FOC 方块) ----
+    # ---- 布局编辑(菜单门控) ----
+    def set_layout_edit(self, on: bool):
+        """由主窗口"菜单配置 > 布局编辑"门控: 显示/隐藏编辑按钮; 关闭时退出编辑。"""
+        self._btn_edit.setVisible(on)
+        self._btn_export.setVisible(on)
+        if not on:
+            self._btn_edit.setChecked(False)
+            self._foc.set_edit_mode(False)
+
+    def load_layout(self):
+        """启动时加载 FOC 布局(resources/ui_layout.json 的 foc 节)。"""
+        self._foc.apply_dict(layout_store.load_section("foc"))
+
     def _on_edit_toggled(self, on: bool):
         self._foc.set_edit_mode(on)
         self._btn_edit.setText("布局编辑: 开" if on else "布局编辑: 关")
 
     def _on_export_layout(self):
-        code = self._foc.export_layout()
-        # 写文件(与本模块同目录), 方便直接取用
-        import os
-        out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "foc_layout_export.txt")
-        try:
-            with open(out_path, "w", encoding="utf-8") as f:
-                f.write(code + "\n")
-        except Exception:
-            out_path = "(写入失败)"
-        # 复制到剪贴板
-        try:
-            from PyQt6.QtWidgets import QApplication
-            QApplication.clipboard().setText(code)
-        except Exception:
-            pass
-        print("\n# ==== FOC 布局导出 (粘回 _FocDiagram._blocks) ====\n" + code + "\n")
-        # 弹窗显示, 可全选复制
+        data = self._foc.export_dict()
+        ok = layout_store.save("foc", data)
+        import json
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QPlainTextEdit, QLabel, QDialogButtonBox
         dlg = QDialog(self)
-        dlg.setWindowTitle("FOC 布局导出")
-        dlg.resize(560, 360)
+        dlg.setWindowTitle("FOC 布局已保存")
+        dlg.resize(520, 360)
         lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel(f"已复制到剪贴板, 并保存到:\n{out_path}\n粘回 _FocDiagram._blocks 即定稿:"))
-        edit = QPlainTextEdit(code)
+        tip = "已保存到 " + layout_store.path() if ok else "保存失败(检查目录写权限)"
+        lay.addWidget(QLabel(tip + "\n下次启动自动加载。当前 FOC 布局:"))
+        edit = QPlainTextEdit(json.dumps(data, ensure_ascii=False, indent=2))
         edit.setReadOnly(True)
         edit.setStyleSheet("font-family:Consolas,monospace;font-size:12px;")
         lay.addWidget(edit)

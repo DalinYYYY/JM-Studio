@@ -82,6 +82,10 @@ class MainWindow(QMainWindow):
         self._build_statusbar()
         self._connect_signals()
 
+        # 启动加载已保存的自绘图布局(resources/ui_layout.json)
+        self._feedback_panel.load_layout()
+        self._state_panel.load_layout()
+
         self._client.start()
         self._stats_timer.start(self._stats_period)
         self._ui_timer.start()
@@ -361,7 +365,22 @@ class MainWindow(QMainWindow):
         self._apply_menu_button_style(btn_display)
         layout.addWidget(btn_display, 0, 0)
         layout.addWidget(self._create_log_toggle_button(), 0, 1)
+        # 布局编辑门控: 默认关; 开启后各图显示编辑/导出按钮并允许拖拽
+        self._btn_layout_edit = QPushButton("布局编辑")
+        self._btn_layout_edit.setCheckable(True)
+        self._apply_menu_button_style(self._btn_layout_edit)
+        self._btn_layout_edit.setStyleSheet(self._btn_layout_edit.styleSheet() +
+            "\nQPushButton:checked{background:#C8963C;color:#1a1a1a;border-color:#E0B566;}")
+        self._btn_layout_edit.toggled.connect(self._on_layout_edit_gate)
+        layout.addWidget(self._btn_layout_edit, 1, 0)
         return grp
+
+    def _on_layout_edit_gate(self, on: bool):
+        self._feedback_panel.set_layout_edit(on)
+        self._state_panel.set_layout_edit(on)
+        self.statusBar().showMessage(
+            "布局编辑已开启: 在实时反馈/状态机页拖动方框, 完成点[导出布局]" if on
+            else "布局编辑已关闭", 4000)
 
     # ==================== 信号连接 ====================
     def _connect_signals(self):

@@ -20,9 +20,12 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QSpinBox, QFrame,
+    QPushButton,
 )
 
 from jmproto import JmCmd, TopFsm, RunState, top_fsm_name, run_state_name
+from ui.panels._edit_mixin import LayoutEditMixin
+from ui import layout_store
 
 
 # 中文友好字体族(Windows 优先 YaHei, 回退通用无衬线)
@@ -102,16 +105,22 @@ class _Node:
         self.kind = kind
 
 
-class _DiagramView(QWidget):
+class _DiagramView(LayoutEditMixin, QWidget):
     """单张状态机图的自绘视图基类。子类提供 nodes/edges/标题/激活判定。"""
+
+    # 内容区像素边距(与 paintEvent 一致), 供编辑坐标换算
+    _OX, _OY, _PAD_R, _PAD_B = 18.0, 44.0, 18.0, 18.0
 
     def __init__(self, title, parent=None):
         super().__init__(parent)
         self._title = title
         self._nodes = []           # list[_Node]
-        self._edges = []           # list[(from_key, to_key, label)]
+        self._edges = []           # list[(from_key, to_key, label[, spec])]
         self._active_keys = set()  # 当前高亮的节点 key
         self._note = ""
+        self._label_pos = {}       # "from>to" -> (x, y) 归一化, 连线标签覆盖坐标
+        self._label_px = {}        # 运行期记录每个标签当前像素中心(供命中/默认导出)
+        self._ensure_edit_state()
         self.setMinimumHeight(300)
         self.setMinimumWidth(420)
 
@@ -151,9 +160,7 @@ class _DiagramView(QWidget):
         # 细点阵网格(技术感, 极低对比)
         self._draw_dot_grid(p)
 
-        ox, oy = 18.0, 44.0
-        w = max(1.0, self.width() - 2 * ox)
-        h = max(1.0, self.height() - oy - 18.0)
+        ox, oy, w, h = self._edit_geom()
 
         self._draw_header(p, ox, w)
 
@@ -168,7 +175,63 @@ class _DiagramView(QWidget):
             if n.kind != "group":
                 self._draw_node(p, n, rects[n.key])
 
+        self.draw_edit_overlay(p)
+
         p.end()
+
+    # ---- LayoutEditMixin 钩子 ----
+    def _edit_geom(self):
+        ox, oy = self._OX, self._OY
+        w = max(1.0, self.width() - ox - self._PAD_R)
+        h = max(1.0, self.height() - oy - self._PAD_B)
+        return ox, oy, w, h
+
+    def _iter_boxes(self):
+        return [(n.key, n) for n in self._nodes]
+
+    def _iter_labels(self):
+        out = []
+        ox, oy, w, h = self._edit_geom()
+        for edge in self._edges:
+            if len(edge) < 3 or not edge[2]:
+                continue
+            lk = edge[0] + ">" + edge[1]
+            if lk in self._label_pos:
+                lx, ly = self._label_pos[lk]
+            else:
+                px = self._label_px.get(lk)
+                if px is None:
+                    continue
+                lx, ly = (px.x() - ox) / w, (px.y() - oy) / h
+            out.append((lk, lx, ly))
+        return out
+
+    def _set_label_pos(self, key, nx, ny):
+        self._label_pos[key] = (nx, ny)
+
+    def export_dict(self) -> dict:
+        return {
+            "nodes": {n.key: [round(n.x, 3), round(n.y, 3),
+                              round(n.w, 3), round(n.h, 3)] for n in self._nodes},
+            "labels": {k: [round(v[0], 3), round(v[1], 3)] for k, v in self._label_pos.items()},
+        }
+
+    def apply_dict(self, d: dict):
+        if not isinstance(d, dict):
+            return
+        nodes = d.get("nodes", {})
+        for n in self._nodes:
+            # JSON 键恒为字符串, 而 run_mode 节点 key 是 int(命令码), 故按 str 兜底查找
+            v = nodes.get(n.key)
+            if v is None:
+                v = nodes.get(str(n.key))
+            if isinstance(v, (list, tuple)) and len(v) == 4:
+                n.x, n.y, n.w, n.h = float(v[0]), float(v[1]), float(v[2]), float(v[3])
+        labels = d.get("labels", {})
+        for k, v in labels.items():
+            if isinstance(v, (list, tuple)) and len(v) == 2:
+                self._label_pos[k] = (float(v[0]), float(v[1]))
+        self.update()
 
     def _draw_dot_grid(self, p, step=26):
         p.save()
@@ -242,9 +305,16 @@ class _DiagramView(QWidget):
             self._draw_rounded_polyline(p, pts, pen)
             self._draw_arrow_head(p, pts[-2], pts[-1])
             if label:
+                lk = from_key + ">" + to_key
+                ox, oy, w, h = self._edit_geom()
+                if lk in self._label_pos:
+                    lx, ly = self._label_pos[lk]
+                    lp = QPointF(ox + lx * w, oy + ly * h)
+                else:
+                    lp = self._label_anchor(pts, spec)
+                self._label_px[lk] = lp     # 记录当前像素中心(供编辑命中/默认导出)
                 p.setPen(_Theme.EDGE_LABEL)
                 p.setFont(fe)
-                lp = self._label_anchor(pts, spec)
                 self._draw_edge_label(p, lp, label)
 
     @staticmethod
@@ -691,7 +761,51 @@ class StateMachinePanel(QWidget):
         self._spin_period.valueChanged.connect(self._apply_poll_settings)
         lay.addWidget(self._spin_period)
 
+        # 布局编辑/导出(默认隐藏, 受"菜单配置 > 布局编辑"门控)
+        _btn_css = ("QPushButton{background:#2A2E3A;color:#C8CCD8;border:1px solid #444A5A;"
+                    "border-radius:4px;padding:0 8px;font-size:11px;}"
+                    "QPushButton:checked{background:#C8963C;color:#1a1a1a;font-weight:bold;}")
+        self._btn_edit = QPushButton("布局编辑: 关")
+        self._btn_edit.setCheckable(True)
+        self._btn_edit.setFixedHeight(24)
+        self._btn_edit.setStyleSheet(_btn_css)
+        self._btn_edit.toggled.connect(self._on_edit_toggled)
+        self._btn_export = QPushButton("导出布局")
+        self._btn_export.setFixedHeight(24)
+        self._btn_export.setStyleSheet(_btn_css)
+        self._btn_export.clicked.connect(self._on_export_layout)
+        self._btn_edit.setVisible(False)
+        self._btn_export.setVisible(False)
+        lay.addWidget(self._btn_edit)
+        lay.addWidget(self._btn_export)
+
         return bar
+
+    # ---- 布局编辑(菜单门控) ----
+    def set_layout_edit(self, on: bool):
+        self._btn_edit.setVisible(on)
+        self._btn_export.setVisible(on)
+        if not on:
+            self._btn_edit.setChecked(False)
+            self._top_view.set_edit_mode(False)
+            self._run_view.set_edit_mode(False)
+
+    def load_layout(self):
+        self._top_view.apply_dict(layout_store.load_section("top_fsm"))
+        self._run_view.apply_dict(layout_store.load_section("run_mode"))
+
+    def _on_edit_toggled(self, on: bool):
+        self._top_view.set_edit_mode(on)
+        self._run_view.set_edit_mode(on)
+        self._btn_edit.setText("布局编辑: 开" if on else "布局编辑: 关")
+
+    def _on_export_layout(self):
+        ok1 = layout_store.save("top_fsm", self._top_view.export_dict())
+        ok2 = layout_store.save("run_mode", self._run_view.export_dict())
+        from PyQt6.QtWidgets import QMessageBox
+        msg = ("状态机布局已保存到\n" + layout_store.path() + "\n下次启动自动加载。") \
+            if (ok1 and ok2) else "保存失败(检查目录写权限)。"
+        QMessageBox.information(self, "布局已保存", msg)
 
     # ---- 轮询闸门 ----
     def _apply_poll_settings(self):
