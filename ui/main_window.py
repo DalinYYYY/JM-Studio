@@ -38,8 +38,12 @@ class MainWindow(QMainWindow):
 
     _MAX_FEEDBACK_BATCH_PER_TICK = 1000
 
+    # 电机本体参数(转发到反馈面板转子示意图), code_name 对应 CSV 参数字段
+    _MOTOR_PARAM_KEYS = ("r", "ld", "lq", "flux", "kt", "ke", "pole_pairs")
+
     def __init__(self):
         super().__init__()
+        self._motor_params = {}
         self._logo_path = Path(__file__).resolve().parent.parent / "resources" / "pic" / "log_ioc.png"
         if self._logo_path.exists():
             self.setWindowIcon(QIcon(str(self._logo_path)))
@@ -570,6 +574,10 @@ class MainWindow(QMainWindow):
         spec = panel.get_param(param_id)
         name = spec.code_name if spec else f"id={param_id}"
         self._log_panel.log(f"[RX] {panel.panel_name()} {name}(id={param_id}) = {disp}")
+        # 电机本体参数转发到反馈面板的转子示意图(电阻/电感/磁链/转矩常数/极对数等)
+        if spec is not None and val is not None and spec.code_name in self._MOTOR_PARAM_KEYS:
+            self._motor_params[spec.code_name] = val
+            self._feedback_panel.set_motor_params(self._motor_params)
         self._pump_param_read_queue()
 
     # ==================== 数据接收 ====================
