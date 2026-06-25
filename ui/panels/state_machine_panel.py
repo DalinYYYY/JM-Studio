@@ -447,7 +447,14 @@ def _route(r1, r2, spec=None):
     horiz_to = s_to in ('L', 'R')
 
     if horiz_from and horiz_to:
-        cx = spec.get('cx', (a.x() + b.x()) / 2.0)
+        if 'cx' in spec and spec['cx'] is not None:
+            cx = spec['cx']
+        elif s_from == 'L' and s_to == 'L':
+            cx = min(a.x(), b.x()) - 28.0     # 都从左边出, 绕到左侧走廊
+        elif s_from == 'R' and s_to == 'R':
+            cx = max(a.x(), b.x()) + 28.0     # 都从右边出, 绕到右侧走廊
+        else:
+            cx = (a.x() + b.x()) / 2.0
         if abs(a.y() - b.y()) < 1.0:
             return [a, b]
         return [a, QPointF(cx, a.y()), QPointF(cx, b.y()), b]
@@ -524,7 +531,7 @@ class _TopFsmView(_DiagramView):
             ("INIT", "FAULT", "初始故障", {'from': 'R', 'to': 'T', 'tt': 0.4}),
             ("WORK", "FAULT", "检测故障", {'from': 'R', 'to': 'B', 'ft': 0.14, 'tt': 0.6}),
             ("FAULT", "IDLE", "清除故障", {'from': 'L', 'to': 'R', 'tt': 0.4}),
-            ("WORK", "IDLE", "切换待机", {'from': 'L', 'to': 'B', 'ft': 0.45, 'tt': 0.35}),
+            ("WORK", "IDLE", "切换待机", {'from': 'L', 'to': 'L', 'ft': 0.2, 'tt': 0.5}),
         ]
         self.set_note("运行/配置/标定/升级须从待机进入")
 
