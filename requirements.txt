@@ -1,6 +1,7 @@
 PyQt6>=6.5.0
 pyserial>=3.5
 pyqtgraph>=0.14.0
+numpy>=1.24
 
 # 可选: CAN 传输(can_transport 实现时启用)
 # python-can>=4.0.0
