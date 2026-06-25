@@ -7,8 +7,11 @@
 切换主题: theme.set('light'/'dark') -> 持久化 -> emit changed。订阅者重铺/重绘。
 """
 
-from PyQt6.QtCore import QObject, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import QObject, pyqtSignal, QPointF, Qt
+import os
+import tempfile
+
+from PyQt6.QtGui import QColor, QPixmap, QPainter, QPainterPath, QBrush, QPen
 
 
 # ============================ 色板 ============================
@@ -218,6 +221,58 @@ class _Theme(QObject):
     def __init__(self):
         super().__init__()
         self._name = "dark"
+        self._arrow_dir = os.path.join(tempfile.gettempdir(), "jm_theme_arrows")
+
+    def _arrow_icon(self, direction: str) -> str:
+        """生成朝上/下的实心三角 PNG(按主题文字色), 返回正斜杠路径供 QSS 引用。
+
+        Qt 的 ::up-arrow 不支持 CSS border 三角(会渲染成方块), 必须用 image。
+        文件名按 主题名+方向 固定, 每次原地覆盖——避免临时文件堆积与 Qt url 像素缓存错乱。"""
+        try:
+            os.makedirs(self._arrow_dir, exist_ok=True)
+        except Exception:
+            pass
+        fpath = os.path.join(self._arrow_dir, f"{self._name}_{direction}.png")
+        w, h = 14, 14
+        pix = QPixmap(w, h)
+        pix.fill(QColor(0, 0, 0, 0))
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QColor(0, 0, 0, 0))
+        p.setBrush(QBrush(self.c("text")))
+        path = QPainterPath()
+        if direction == "up":
+            path.moveTo(QPointF(7, 4)); path.lineTo(QPointF(11, 9)); path.lineTo(QPointF(3, 9))
+        else:
+            path.moveTo(QPointF(3, 5)); path.lineTo(QPointF(11, 5)); path.lineTo(QPointF(7, 10))
+        path.closeSubpath()
+        p.drawPath(path)
+        p.end()
+        pix.save(fpath, "PNG")
+        return fpath.replace("\\", "/")
+
+    def _check_icon(self) -> str:
+        """生成白色对勾 PNG(勾选框选中态用), 按主题原地覆盖。"""
+        try:
+            os.makedirs(self._arrow_dir, exist_ok=True)
+        except Exception:
+            pass
+        fpath = os.path.join(self._arrow_dir, f"{self._name}_check.png")
+        pix = QPixmap(14, 14)
+        pix.fill(QColor(0, 0, 0, 0))
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#FFFFFF"))
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        path = QPainterPath()
+        path.moveTo(QPointF(3, 7.5)); path.lineTo(QPointF(6, 10.5)); path.lineTo(QPointF(11, 4))
+        p.drawPath(path)
+        p.end()
+        pix.save(fpath, "PNG")
+        return fpath.replace("\\", "/")
 
     @property
     def name(self):
@@ -254,6 +309,9 @@ class _Theme(QObject):
     def qss(self) -> str:
         p = self._pal()
         g = lambda k: p.get(k, DARK[k])
+        up_arrow = self._arrow_icon("up")
+        down_arrow = self._arrow_icon("down")
+        check_icon = self._check_icon()
         return f"""
         QWidget {{ background: {g('app_bg')}; color: {g('text')}; }}
         QToolTip {{ background: {g('card_top')}; color: {g('text')}; border: 1px solid {g('border')}; }}
@@ -264,6 +322,14 @@ class _Theme(QObject):
         QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {g('title')}; }}
         QLabel {{ background: transparent; color: {g('text')}; }}
         QCheckBox {{ background: transparent; color: {g('text')}; }}
+        QCheckBox::indicator {{
+            width: 15px; height: 15px; border-radius: 3px;
+            border: 1px solid {g('input_border')}; background: {g('input_bg')};
+        }}
+        QCheckBox::indicator:hover {{ border-color: {g('accent')}; }}
+        QCheckBox::indicator:checked {{
+            background: {g('accent')}; border-color: {g('accent')}; image: url({check_icon});
+        }}
         QPushButton {{
             background: {g('btn_bg')}; color: {g('btn_text')};
             border: 1px solid {g('btn_border')}; border-radius: 4px; padding: 3px 8px;
@@ -279,6 +345,24 @@ class _Theme(QObject):
             selection-background-color: {g('sel_bg')}; selection-color: {g('sel_text')};
         }}
         QSpinBox:disabled, QComboBox:disabled {{ color: {g('muted')}; }}
+        QSpinBox::up-button, QDoubleSpinBox::up-button {{
+            subcontrol-origin: border; subcontrol-position: top right;
+            width: 16px; border-left: 1px solid {g('input_border')};
+            border-top-right-radius: 4px; background: {g('btn_bg')};
+        }}
+        QSpinBox::down-button, QDoubleSpinBox::down-button {{
+            subcontrol-origin: border; subcontrol-position: bottom right;
+            width: 16px; border-left: 1px solid {g('input_border')};
+            border-bottom-right-radius: 4px; background: {g('btn_bg')};
+        }}
+        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: {g('btn_hover')}; }}
+        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+            image: url({up_arrow}); width: 9px; height: 9px;
+        }}
+        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+            image: url({down_arrow}); width: 9px; height: 9px;
+        }}
         QTableWidget, QTableView {{
             background: {g('table_bg')}; alternate-background-color: {g('table_alt')};
             color: {g('table_text')}; gridline-color: {g('table_grid')};
