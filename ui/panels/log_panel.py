@@ -104,6 +104,26 @@ class LogPanel(QGroupBox):
             f"border:1px solid {theme.hex('border')}; }}")
 
     # ---------------- 配置 ----------------
+    def get_opts(self) -> dict:
+        """五个显示开关状态(供设置持久化)。"""
+        return {
+            "ts": self.chk_ts.isChecked(),
+            "tx": self.chk_tx.isChecked(),
+            "rx": self.chk_rx.isChecked(),
+            "raw": self.chk_raw.isChecked(),
+            "autoscroll": self.chk_autoscroll.isChecked(),
+        }
+
+    def set_opts(self, opts: dict):
+        """套用显示开关(启动恢复设置用); 缺项保持当前。"""
+        if not isinstance(opts, dict):
+            return
+        mapping = {"ts": self.chk_ts, "tx": self.chk_tx, "rx": self.chk_rx,
+                   "raw": self.chk_raw, "autoscroll": self.chk_autoscroll}
+        for key, chk in mapping.items():
+            if key in opts:
+                chk.setChecked(bool(opts[key]))
+
     def set_flush_period_ms(self, period_ms: int):
         self._flush_timer.setInterval(max(10, int(period_ms)))
 

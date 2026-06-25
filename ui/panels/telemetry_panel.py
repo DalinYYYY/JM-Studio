@@ -62,6 +62,21 @@ class TelemetryPanel(QGroupBox):
                 mask |= bit
         return mask
 
+    def get_period(self) -> int:
+        """当前上传周期 ms(供设置持久化)。"""
+        return self._spin_period.value()
+
+    def apply_config(self, mask: int, period_ms: int):
+        """按 mask 还原各勾选 + 设周期(启动恢复设置用, 不触发下发命令)。"""
+        if self._running:
+            return  # 上报中不改 UI 配置
+        for bit, chk in self._checks:
+            chk.setChecked(bool(int(mask) & bit))
+        try:
+            self._spin_period.setValue(int(period_ms))
+        except (TypeError, ValueError):
+            pass
+
     def _apply_button_style(self):
         """按当前使能态刷新按钮文案与配色"""
         for _bit, chk in self._checks:

@@ -257,5 +257,22 @@
     },
     "labels": {}
   },
-  "theme": "light"
+  "theme": "dark",
+  "settings": {
+    "baud": "2000000",
+    "display_period_ms": 50,
+    "display_buffer_max": 20000,
+    "telemetry": {
+      "mask": 287,
+      "period_ms": 20
+    },
+    "log_visible": false,
+    "log_opts": {
+      "ts": true,
+      "tx": true,
+      "rx": true,
+      "raw": true,
+      "autoscroll": true
+    }
+  }
 }

@@ -91,6 +91,9 @@ class MainWindow(QMainWindow):
         self._feedback_panel.load_layout()
         self._state_panel.load_layout()
 
+        # 启动恢复用户设置(波特率/缓存/遥测/日志开关与选项)
+        self._apply_settings(layout_store.get_meta("settings", {}))
+
         self._client.start()
         self._stats_timer.start(self._stats_period)
         self._ui_timer.start()
@@ -310,6 +313,43 @@ class MainWindow(QMainWindow):
             f"显示刷新 {self._display_period_ms}ms, 缓存 {self._display_buffer_max} 帧",
             3000,
         )
+
+    # ==================== 用户设置持久化 ====================
+    def _collect_settings(self) -> dict:
+        """收集需持久化的用户设置(关窗时写入 ui_layout.json 的 settings 节)。"""
+        return {
+            "baud": self._conn_panel.get_baud(),
+            "display_period_ms": self._display_period_ms,
+            "display_buffer_max": self._display_buffer_max,
+            "telemetry": {
+                "mask": self._telemetry_panel.current_mask(),
+                "period_ms": self._telemetry_panel.get_period(),
+            },
+            "log_visible": self._log_panel_visible,
+            "log_opts": self._log_panel.get_opts(),
+        }
+
+    def _apply_settings(self, d: dict):
+        """启动时把已存设置套回各控件(仅设 UI 状态, 不触发串口/遥测命令)。"""
+        if not isinstance(d, dict):
+            return
+        baud = d.get("baud")
+        if baud:
+            self._conn_panel.set_baud(baud)
+        if "display_period_ms" in d or "display_buffer_max" in d:
+            self._apply_display_settings(
+                d.get("display_period_ms", self._display_period_ms),
+                d.get("display_buffer_max", self._display_buffer_max))
+        tlm = d.get("telemetry")
+        if isinstance(tlm, dict):
+            self._telemetry_panel.apply_config(
+                tlm.get("mask", 0), tlm.get("period_ms", 20))
+        log_opts = d.get("log_opts")
+        if isinstance(log_opts, dict):
+            self._log_panel.set_opts(log_opts)
+        # 日志显隐: 若存值与当前不一致则切换(复用现有逻辑维护 splitter 尺寸)
+        if "log_visible" in d and bool(d["log_visible"]) != self._log_panel_visible:
+            self._toggle_log_panel()
 
     @staticmethod
     def _fmt_bytes(n: int) -> str:
@@ -701,6 +741,11 @@ class MainWindow(QMainWindow):
 
     # ==================== 退出 ====================
     def closeEvent(self, event):
+        # 保存用户设置到本地(波特率/缓存/遥测/日志开关与选项)
+        try:
+            layout_store.set_meta("settings", self._collect_settings())
+        except Exception:
+            pass
         # 退出前若仍在周期上报, 通知下位机停止, 避免串口关闭后下位机继续发
         if self._client.is_open():
             self._client.set_telemetry(False, 0, 0)

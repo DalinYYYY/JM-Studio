@@ -84,6 +84,15 @@ class ConnectionPanel(QGroupBox):
         baud = max(1, min(10000000, baud))
         self.connect_requested.emit(port, baud)
 
+    def get_baud(self) -> str:
+        """返回当前波特率文本(供设置持久化)。"""
+        return self._combo_baud.currentText()
+
+    def set_baud(self, text: str):
+        """设置波特率(启动恢复设置时调用)。"""
+        if text:
+            self._combo_baud.setCurrentText(str(text))
+
     def set_connected(self, connected: bool):
         """由主窗口在连接状态确认后调用, 更新按钮外观"""
         self._connected = connected
