@@ -628,11 +628,24 @@ class _MotorView(QWidget):
         p.end()
 
     def _draw_stator(self, p, cx, cy, R):
-        # 薄外壳: 外圆与内孔间只留一道窄环
-        p.setPen(QPen(theme.c("rotor_shell"), 1.6))
-        grad = QRadialGradient(cx, cy, R)
-        grad.setColorAt(0.90, theme.c("block_bottom"))
-        grad.setColorAt(1.0, theme.c("rotor_shell"))
+        # 薄外壳: 外圆与内孔间只留一道窄环。使能时外壳高亮(青绿), 否则暗色。
+        if self._enabled:
+            shell_edge = theme.c("hi_border")
+            grad = QRadialGradient(cx, cy, R)
+            grad.setColorAt(0.90, theme.c("active_bottom"))
+            grad.setColorAt(1.0, theme.c("active_top"))
+            # 外发光环, 强化"通电"观感
+            for i, alpha in ((6, 36), (3, 70)):
+                gc = theme.c("hi_border")
+                p.setPen(QPen(QColor(gc.red(), gc.green(), gc.blue(), alpha), 1.6 + i))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(QPointF(cx, cy), R + i / 2, R + i / 2)
+        else:
+            shell_edge = theme.c("rotor_shell")
+            grad = QRadialGradient(cx, cy, R)
+            grad.setColorAt(0.90, theme.c("block_bottom"))
+            grad.setColorAt(1.0, theme.c("rotor_shell"))
+        p.setPen(QPen(shell_edge, 1.8 if self._enabled else 1.6))
         p.setBrush(QBrush(grad))
         p.drawEllipse(QPointF(cx, cy), R, R)
         p.setPen(QPen(theme.c("rotor_tooth_border"), 1.2))

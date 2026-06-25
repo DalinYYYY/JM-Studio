@@ -263,7 +263,7 @@
     "display_period_ms": 50,
     "display_buffer_max": 20000,
     "telemetry": {
-      "mask": 287,
+      "mask": 256,
       "period_ms": 20
     },
     "log_visible": false,

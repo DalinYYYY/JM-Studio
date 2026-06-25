@@ -685,6 +685,7 @@ class MainWindow(QMainWindow):
         if self._latest_state is not None:
             self._feedback_panel.update_state(*self._latest_state)
             self._state_panel.update_state(*self._latest_state)
+            self._control_panel.set_enabled_state(bool(self._latest_state[3]))
             self._latest_state = None
 
         pending_count = len(self._feedback_pending)
