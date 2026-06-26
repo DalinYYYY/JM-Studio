@@ -72,6 +72,87 @@ class _ThemeProxy:
 _Theme = _ThemeProxy()
 
 
+_RUN_MODE_GRID_COLS = 5
+_RUN_MODE_GRID_X0 = 0.395
+_RUN_MODE_GRID_Y0 = 0.10
+_RUN_MODE_GRID_DX = 0.117
+_RUN_MODE_GRID_DY = 0.083
+_RUN_MODE_GRID_W = 0.105
+_RUN_MODE_GRID_H = 0.068
+
+_RUN_MODE_SPECS = [
+    (JmCmd.OPEN_LOOP, "开环"),
+    (JmCmd.CURRENT, "电流"),
+    (JmCmd.TORQUE, "力矩"),
+    (JmCmd.MIT, "MIT"),
+    (JmCmd.VELOCITY, "速度"),
+    (JmCmd.POSITION, "位置"),
+    (JmCmd.POSITION_VELOCITY, "位+速"),
+    (JmCmd.POSITION_TORQUE, "位+矩"),
+    (JmCmd.VELOCITY_TORQUE, "速+矩"),
+    (JmCmd.DUTY_CYCLE, "占空比"),
+    # (JmCmd.VOLTAGE_VECTOR, "电压矢量"),
+    (JmCmd.FIELD_WEAKENING, "弱磁"),
+    (JmCmd.SENSORLESS, "无感FOC"),
+    # (JmCmd.IMPEDANCE, "阻抗"),
+    # (JmCmd.ADMITTANCE, "导纳"),
+    (JmCmd.FORCE_CONTROL, "力控"),
+    (JmCmd.FORCE_POSITION_HYBRID, "力位混合"),
+    # (JmCmd.GRAVITY_COMPENSATION, "重力补偿"),
+    # (JmCmd.COLLISION_DETECTION, "碰撞检测"),
+    # (JmCmd.ZERO_FORCE, "零力"),
+    # (JmCmd.CONSTANT_FORCE, "恒力"),
+    # (JmCmd.VARIABLE_IMPEDANCE, "变阻抗"),
+    # (JmCmd.ADAPTIVE_GRAVITY_COMP, "自适应重力"),
+    # (JmCmd.LANDING_BUFFER, "落地缓冲"),
+    (JmCmd.PVT, "PVT"),
+    (JmCmd.CUBIC_SPLINE, "三次样条"),
+    (JmCmd.TRAPEZOIDAL_TRAJ, "梯形轨迹"),
+    (JmCmd.S_CURVE_TRAJ, "S曲线"),
+    (JmCmd.HOMING, "回零"),
+    # (JmCmd.CANOPEN_SYNC, "CAN同步"),
+    (JmCmd.ETHERCAT_CSP, "CSP"),
+    (JmCmd.ETHERCAT_CSV, "CSV"),
+    (JmCmd.ETHERCAT_CST, "CST"),
+    (JmCmd.PP, "PP"),
+    (JmCmd.PV, "PV"),
+    (JmCmd.PT, "PT"),
+    # (JmCmd.ELECTRONIC_GEAR, "电子齿轮"),
+    # (JmCmd.ELECTRONIC_CAM, "电子凸轮"),
+    # (JmCmd.STEP_DIR, "脉冲方向"),
+    # (JmCmd.ANALOG_INPUT, "模拟量"),
+    # (JmCmd.PWM_INPUT, "PWM输入"),
+    # (JmCmd.JOG, "点动"),
+    # (JmCmd.SAFE_TEACH, "安全示教"),
+    # (JmCmd.TEST_AGING, "老化测试"),
+    # (JmCmd.TEST_SWEEP_FREQ, "扫频测试"),
+    # (JmCmd.TEST_COGGING, "齿槽测试"),
+    # (JmCmd.TEST_FRICTION, "摩擦测试"),
+    # (JmCmd.TEST_INERTIA, "惯量测试"),
+    (JmCmd.TEST_CURRENT_LOOP, "电流环测"),
+    (JmCmd.TEST_VELOCITY_LOOP, "速度环测"),
+]
+
+
+def _build_run_mode_nodes():
+    nodes = []
+    for idx, (cmd, label) in enumerate(_RUN_MODE_SPECS):
+        col = idx % _RUN_MODE_GRID_COLS
+        row = idx // _RUN_MODE_GRID_COLS
+        nodes.append(
+            _Node(
+                int(cmd),
+                label,
+                _RUN_MODE_GRID_X0 + col * _RUN_MODE_GRID_DX,
+                _RUN_MODE_GRID_Y0 + row * _RUN_MODE_GRID_DY,
+                _RUN_MODE_GRID_W,
+                _RUN_MODE_GRID_H,
+                "mode",
+            )
+        )
+    return nodes
+
+
 class _Node:
     """一个状态节点(逻辑坐标, 0~1 归一化后乘画布尺寸)。
 
@@ -625,17 +706,7 @@ class _RunModeView(_DiagramView):
             _Node("FAULT_GW", "异常模式", 0.00, 0.56, 0.16, 0.16, "fault"),
             _Node("ENTER", "IDLE", 0.205, 0.30, 0.115, 0.16, "mode"),
             _Node("RUN", "运行模式", 0.37, 0.02, 0.61, 0.96, "group"),
-            _Node(int(JmCmd.POSITION_TORQUE), "PT", 0.41, 0.12, 0.155, 0.11, "mode"),
-            _Node(int(JmCmd.ETHERCAT_CST), "CST", 0.595, 0.12, 0.155, 0.11, "mode"),
-            _Node(int(JmCmd.PP), "PP", 0.78, 0.12, 0.155, 0.11, "mode"),
-            _Node(int(JmCmd.PV), "PV", 0.41, 0.27, 0.155, 0.11, "mode"),
-            _Node(int(JmCmd.ETHERCAT_CSV), "CSV", 0.595, 0.27, 0.155, 0.11, "mode"),
-            _Node(int(JmCmd.ETHERCAT_CSP), "CSP", 0.78, 0.27, 0.155, 0.11, "mode"),
-            _Node(int(JmCmd.PVT), "PVT", 0.78, 0.42, 0.155, 0.11, "mode"),
-            _Node(int(JmCmd.MIT), "MIT", 0.78, 0.59, 0.155, 0.11, "mode"),
-            _Node("DISABLE_RUN", "禁止运动切换", 0.41, 0.44, 0.155, 0.18, "warn"),
-            _Node(int(JmCmd.HOMING), "回零", 0.41, 0.81, 0.155, 0.11, "mode"),
-            _Node(int(JmCmd.STOP), "停机", 0.595, 0.81, 0.155, 0.11, "mode"),
+            *_build_run_mode_nodes(),
         ]
         self._edges = [
             ("IDLE_GW", "ENTER", "主动切换", {'from': 'R', 'to': 'L', 'ft': 0.5, 'tt': 0.35}),
@@ -644,6 +715,20 @@ class _RunModeView(_DiagramView):
             ("RUN", "FAULT_GW", "运行模式切换", {'from': 'L', 'to': 'T', 'ft': 0.85}),
         ]
         self.set_note("运动模式间不能相互切换, 须从待机进入")
+
+    def apply_dict(self, d: dict):
+        if not isinstance(d, dict):
+            return
+        nodes = d.get("nodes", {})
+        if isinstance(nodes, dict):
+            expected = {str(n.key) for n in self._nodes}
+            incoming = set(nodes.keys())
+            # 运行模式集合变更时, 旧布局会带着已经屏蔽掉的模式坐标;
+            # 这时直接保留代码默认布局, 避免显示和当前协议不同步。
+            if incoming and incoming != expected:
+                self.update()
+                return
+        super().apply_dict(d)
 
     def apply_state(self, top_fsm, run_state, ctrl_mode, enable):
         keys = set()
@@ -802,7 +887,7 @@ class StateMachinePanel(QWidget):
 
     # ---- 轮询闸门 ----
     def _apply_poll_settings(self):
-        self._spin_period.setEnabled(self._chk_poll.isChecked())
+        self._spin_period.setEnabled(not self._chk_poll.isChecked())
         self._restart_poll()
 
     def _restart_poll(self):

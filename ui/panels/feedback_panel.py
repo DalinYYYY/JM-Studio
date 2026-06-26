@@ -1081,7 +1081,7 @@ class FeedbackPanel(QWidget):
             self._refresh_state_styles()
 
     def _apply_poll_settings(self):
-        self._spin_period.setEnabled(self._chk_poll.isChecked())
+        self._spin_period.setEnabled(not self._chk_poll.isChecked())
         self._restart_poll()
 
     def _restart_poll(self):
