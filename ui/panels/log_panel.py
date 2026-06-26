@@ -139,7 +139,7 @@ class LogPanel(QGroupBox):
         if len(self._pending) >= self._max_pending:
             self._pending.popleft()
             self._dropped += 1
-        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")
         self._pending.append((kind, body_html, ts))
 
     def _append_html(self, kind: str, body_html: str, ts: str = None):
@@ -147,7 +147,7 @@ class LogPanel(QGroupBox):
         parts = []
         if self.chk_ts.isChecked():
             if ts is None:
-                ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                ts = datetime.datetime.now().strftime("%H:%M:%S.%f")
             parts.append(f'<span style="color:{_COLOR["ts"]}">[{ts}]</span> ')
         color = _COLOR.get(kind, _COLOR['info'])
         parts.append(f'<span style="color:{color}">{body_html}</span>')
