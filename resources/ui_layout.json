@@ -5,18 +5,18 @@
     "display_period_ms": 50,
     "display_buffer_max": 20000,
     "main_window": {
-      "width": 1561,
-      "height": 1068
+      "width": 1946,
+      "height": 1135
     },
     "telemetry": {
-      "mask": 95,
-      "period_ms": 20
+      "mask": 511,
+      "period_ms": 19
     },
     "feedback_poll": {
-      "enabled": false,
+      "enabled": true,
       "period_ms": 200
     },
-    "log_visible": true,
+    "log_visible": false,
     "log_opts": {
       "ts": true,
       "tx": true,

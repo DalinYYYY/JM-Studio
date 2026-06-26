@@ -1,8 +1,8 @@
-"""虚拟传输: 实现 Transport 接口, 用 VirtualResponder 回环产生数据, 无需真实串口。
+"""虚拟传输: 实现 Transport 接口, 用数字孪生引擎回环产生数据, 无需真实串口。
 
 在连接面板选择"虚拟数据引擎"时使用。对 JmClient 而言, 它与 SerialTransport 完全等价:
   - send(cmd, payload): 交给应答器立即生成应答帧, 经 frame_received 发回(下一事件循环)
-  - 单一 QTimer 周期推进物理仿真 + 产出遥测帧
+  - 单一 QTimer 周期推进孪生仿真 + 产出遥测帧
 线程模型: 全部在 GUI 主线程的定时器上下文运行, 无并发, 无需锁。
 """
 
@@ -10,20 +10,24 @@ from PyQt6.QtCore import QTimer
 
 from jmproto import FrameCodec
 from ..base import Transport
-from .responder import VirtualResponder
-from .motor_sim import MotorSim
+from .twin_responder import TwinResponder
+from .digital_twin import DigitalTwinEngine
 
 
 class VirtualTransport(Transport):
-    """虚拟数据引擎传输。"""
+    """数字孪生虚拟传输。
+
+    默认使用高保真数字孪生引擎 (FOC + 级联控制 + 完整状态机 + 故障系统)。
+    每 20ms 的仿真周期内, 按 100μs 的 FOC 周期推进 200 步, 实现多速率仿真。
+    """
 
     name = "virtual"
-    _SIM_PERIOD_MS = 20      # 物理仿真步进(50Hz)
+    _SIM_PERIOD_MS = 20      # 仿真步进周期(50Hz, 每次 200 个 FOC 步)
 
     def __init__(self):
         super().__init__()
-        self._sim = MotorSim()
-        self._resp = VirtualResponder(self._sim)
+        self._engine = DigitalTwinEngine()
+        self._resp = TwinResponder(self._engine)
         self._open = False
         self._sim_timer = QTimer(self)
         self._sim_timer.timeout.connect(self._on_sim_tick)
@@ -85,6 +89,7 @@ class VirtualTransport(Transport):
 
     # ---------------- 定时器 ----------------
     def _on_sim_tick(self):
+        """推进孪生仿真: 20ms 内按 FOC 周期(100μs)推进 200 步。"""
         self._resp.advance(self._SIM_PERIOD_MS / 1000.0)
 
     def _sync_tlm_timer(self):
@@ -102,7 +107,12 @@ class VirtualTransport(Transport):
         for rcmd, rpayload in self._resp.on_tick():
             self._emit_frame(rcmd, rpayload)
 
+    # ---------------- 孪生专属接口 ----------------
+    def get_engine(self) -> DigitalTwinEngine:
+        """暴露孪生引擎, 供 UI 获取详细遥测/注入故障。"""
+        return self._engine
+
     # ---------------- 工具 ----------------
     @staticmethod
     def list_ports() -> list:
-        return [("VIRTUAL", "虚拟数据引擎 (演示, 无需硬件)")]
+        return [("VIRTUAL", "数字孪生引擎 (高保真仿真, 无需硬件)")]

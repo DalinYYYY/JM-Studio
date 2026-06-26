@@ -441,7 +441,7 @@ class MainWindow(QMainWindow):
             app.setStyleSheet(theme.qss())
         self._btn_theme.setText("主题: 深色" if theme.is_dark else "主题: 浅色")
         for panel in (self._feedback_panel, self._state_panel, self._plot_panel,
-                      self._log_panel):
+                      self._log_panel, self._param_panel, self._config_panel):
             fn = getattr(panel, "apply_theme", None)
             if callable(fn):
                 fn()

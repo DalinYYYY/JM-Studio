@@ -7,7 +7,7 @@ from collections import deque
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QWidget, QPushButton,
-    QCheckBox, QTextEdit, QSizePolicy,
+    QCheckBox, QTextEdit, QSizePolicy, QFileDialog, QMessageBox,
 )
 from PyQt6.QtGui import QFont, QTextCursor
 
@@ -90,6 +90,10 @@ class LogPanel(QGroupBox):
         tool_layout.addSpacing(8)
         tool_layout.addWidget(self._btn_clear)
 
+        self._btn_export = QPushButton("导出日志")
+        self._btn_export.clicked.connect(self._export_log)
+        tool_layout.addWidget(self._btn_export)
+
         self._footer_fill = QWidget()
         self._footer_fill.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -166,6 +170,37 @@ class LogPanel(QGroupBox):
         for _ in range(count):
             kind, body_html, ts = self._pending.popleft()
             self._append_html(kind, body_html, ts)
+
+    def _export_log(self):
+        """导出当前日志内容为 txt 或 html。"""
+        self.flush()
+
+        default_name = f"jm_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        path, filt = QFileDialog.getSaveFileName(
+            self,
+            "导出日志",
+            default_name,
+            "Text Files (*.txt);;HTML Files (*.html)",
+        )
+        if not path:
+            return
+
+        try:
+            if filt.startswith("HTML"):
+                if not path.lower().endswith(".html"):
+                    path += ".html"
+                content = self._log.document().toHtml()
+            else:
+                if not path.lower().endswith(".txt"):
+                    path += ".txt"
+                content = self._log.toPlainText()
+
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"日志导出失败:\n{e}")
+        else:
+            QMessageBox.information(self, "导出完成", f"日志已导出到:\n{path}")
 
     @staticmethod
     def _hex(payload: bytes) -> str:

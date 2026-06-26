@@ -83,7 +83,7 @@
 82,读DQ电流,0xC3,Host->Motor,反馈查询,无,{id:f32;iq:f32},0,-,-,0xC300|ID,id[0:4]iq[4:8],dq轴电流反馈
 83,读母线信息,0xC4,Host->Motor,反馈查询,无,{vbus:f32;ibus:f32;power:f32},0,-,-,0xC400|ID,CAN分包,母线电压电流功率
 84,读温度,0xC5,Host->Motor,反馈查询,无,{temp_fet:f32;temp_motor:f32},0,-,-,0xC500|ID,fet[0:4]mot[4:8],功率管/电机温度
-85,读位置速度,0xC6,Host->Motor,反馈查询,无,{pos:f32;vel:f32},0,-,-,0xC600|ID,pos[0:4]vel[4:8],输出端位置速度
+85,读位置速度,0xC6,Host->Motor,反馈查询,无,{pos:f32;vel:f32},0,-,-,0xC600|ID,pos[0:4]vel[4:8],电机端多圈位置θ_m+速度ω(与0xC0/控制环同坐标系)
 86,读多圈位置,0xC7,Host->Motor,反馈查询,无,{multiturn:i32;single:f32},0,-,-,0xC700|ID,mt[0:4]sg[4:8],多圈计数+单圈
 87,读故障码,0xC8,Host->Motor,反馈查询,无,{fault_mask:u32;warn_mask:u32},0,-,-,0xC800|ID,flt[0:4]wrn[4:8],故障/警告位掩码
 88,读调试数据,0xC9,Host->Motor,反馈查询,无,ACK,0,-,-,0xC900|ID,代码当前未实现专用返回,默认按通用ACK处理
