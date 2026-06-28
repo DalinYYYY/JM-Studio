@@ -1,0 +1,7 @@
+# 波形显示上位机依赖
+PyQt6>=6.5
+pyqtgraph>=0.13
+numpy>=1.24
+pyserial>=3.5
+# 可选 (CAN 传输, 不装则 CAN 选项禁用)
+# python-can>=4.2
