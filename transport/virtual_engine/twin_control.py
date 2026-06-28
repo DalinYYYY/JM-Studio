@@ -652,24 +652,89 @@ class ControllerCore:
         # 速度环 + 入环分发 → id_ref/iq_ref
         out = self.cascade.run(ref, fb)
 
-        # 开环电压模式: 直接用 ref.voltage 作为 uq
+        # 开环电压模式: 直接用 ref.voltage 作为 uq, 带 d轴解耦 + 电流软限位
+        # (对齐真实驱动器: 开环模式也有电流保护; d轴解耦防止交叉耦合使 id 发散)
         if ref.ctrl_type == RefCtrlType.VOLTAGE:
-            return (0.0, ref.voltage)
+            uq = self._open_loop_current_limit(ref.voltage, fb)
+            ud = self._decouple_d(fb)
+            return (ud, uq)
         if ref.ctrl_type == RefCtrlType.DUTY:
             vmax = self.mp.motor_base.rated_voltage * self.mp.current_loop.pwm_max_duty
-            return (0.0, ref.duty * vmax)
+            uq = self._open_loop_current_limit(ref.duty * vmax, fb)
+            ud = self._decouple_d(fb)
+            return (ud, uq)
         if ref.ctrl_type == RefCtrlType.IDLE:
             return (0.0, 0.0)
 
         # 电流环(FOC PI) → ud/uq
         ud, uq = self.foc.run(out.id_ref, out.iq_ref, fb.id, fb.iq,
                                self.mp.encoder_param.elec_angle_bias + fb.pos * self.mp.motor_base.pole_pairs)
+
+        # TORQUE/CURRENT 模式: 无速度闭环, 空载小惯量下会持续加速超速。
+        # 在 FOC 输出后施加速度软限位 (衰减 uq), 模拟真实驱动器的速度保护。
+        if ref.ctrl_type in (RefCtrlType.TORQUE, RefCtrlType.CURRENT):
+            uq = self._speed_soft_limit(uq, fb)
+
         return (ud, uq)
 
     def reset(self):
         self.cascade.reset()
         self.foc.reset()
         self._pos_counter = 0
+
+    def _speed_soft_limit(self, uq_cmd: float, fb: CascadeFeedback) -> float:
+        """速度软限位: 当转速接近 max_speed 时衰减 uq, 避免开环模式超速。
+
+        soft_start (90% max_speed) → 1.0 倍输出
+        soft_hard  (95% max_speed) → 0.0 倍输出 (停止加速)
+        使稳态速度自然受限在 max_speed 附近, 不触发 OVER_SPEED 故障。
+        """
+        max_speed = self.mp.motor_base.max_speed
+        soft_start = max_speed * 0.9
+        soft_hard = max_speed * 0.95
+        omega = abs(fb.vel)
+        if omega <= soft_start:
+            return uq_cmd
+        if omega >= soft_hard:
+            return 0.0
+        ratio = 1.0 - (omega - soft_start) / (soft_hard - soft_start)
+        return uq_cmd * max(0.0, ratio)
+
+    def _open_loop_current_limit(self, uq_cmd: float, fb: CascadeFeedback) -> float:
+        """开环模式(VOLTAGE/DUTY)电流+速度软限位。
+
+        开环模式无电流环, 空载时瞬态电流冲击大且高速交叉耦合使 id 发散。
+        当实测电流接近峰值时, 按比例衰减输出电压, 模拟真实驱动器的电流保护。
+
+        速度软限位: 开环模式无速度闭环, 空载小惯量下反电动势未建立即超速。
+        当转速接近 max_speed 时, 按比例衰减输出电压, 使稳态速度自然受限,
+        避免触发 OVER_SPEED 故障 (模拟真实驱动器的速度保护)。
+        """
+        peak_i = self.mp.motor_base.peak_current
+        # 1. 电流软限位: 峰值的 80% 开始衰减
+        soft_limit = peak_i * 0.8
+        i_mag = math.sqrt(fb.id ** 2 + fb.iq ** 2)
+        if i_mag > soft_limit and i_mag > 1e-6:
+            scale = soft_limit / i_mag
+            uq_cmd *= scale
+
+        # 2. 速度软限位
+        uq_cmd = self._speed_soft_limit(uq_cmd, fb)
+        return uq_cmd
+
+    def _decouple_d(self, fb: CascadeFeedback) -> float:
+        """d轴解耦电压: 抵消交叉耦合项 ωe·Lq·iq, 防止开环模式 id 发散。
+
+        物理模型 dq方程: did/dt = (ud - R·id + ωe·Lq·iq) / Ld
+        开环模式 ud=0 时, 交叉耦合项 ωe·Lq·iq 使 id 持续增长。
+        注入 ud = R·id - ωe·Lq·iq 可抵消耦合, 使 did/dt≈0, id 趋于稳定。
+        (对齐 FOC 解耦补偿: decoupling_gain=1.0)
+        """
+        pp = self.mp.motor_base.pole_pairs
+        lq = self.mp.motor_base.lq
+        r = self.mp.motor_base.r
+        omega_e = pp * fb.vel
+        return r * fb.id - omega_e * lq * fb.iq
 
     def reload_params(self):
         """重新加载控制器 PID 配置(PARAM_WRITE 后调用, 实时生效)。

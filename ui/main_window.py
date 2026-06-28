@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 
 import jmproto as jp
-from jmproto import JmCmd, cmd_name, err_name
+from jmproto import JmCmd, cmd_name, err_name, err_name_cn, fault_mask_to_str
 from transport.serial_transport import SerialTransport
 from transport.virtual_engine import VirtualTransport
 from core.motor_client import JmClient
@@ -32,6 +32,8 @@ from ui.panels.telemetry_panel import TelemetryPanel
 from ui.panels.plot_panel import PlotPanel
 from ui.panels.log_panel import LogPanel
 from ui.panels.state_machine_panel import StateMachinePanel
+from ui.panels.twin_param_panel import TwinParamPanel
+from ui.panels.fault_info_panel import FaultInfoPanel
 from ui.theme import theme
 from ui import layout_store
 
@@ -137,6 +139,8 @@ class MainWindow(QMainWindow):
             show_save=True, save_text="保存配置到Flash/EEPROM")
         self._plot_panel = PlotPanel()
         self._state_panel = StateMachinePanel()
+        self._twin_param_panel = TwinParamPanel()
+        self._fault_info_panel = FaultInfoPanel()
         self._log_panel = LogPanel()
         self._log_panel_visible = True
 
@@ -157,6 +161,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._state_panel, "状态机")
         tabs.addTab(self._param_panel, "电机参数")
         tabs.addTab(self._config_panel, "电机配置")
+        tabs.addTab(self._twin_param_panel, "孪生参数")
+        tabs.addTab(self._fault_info_panel, "故障信息")
         tabs.addTab(self._plot_panel, "实时曲线")
 
         self._right_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -317,14 +323,19 @@ class MainWindow(QMainWindow):
     # ==================== 用户设置持久化 ====================
     def _collect_settings(self) -> dict:
         """收集需持久化的用户设置(关窗时写入 ui_layout.json 的 settings 节)。"""
-        return {
+        s = {
             "baud": self._conn_panel.get_baud(),
             "display_period_ms": self._display_period_ms,
             "display_buffer_max": self._display_buffer_max,
             "main_window": {
                 "width": int(self.width()),
                 "height": int(self.height()),
+                "x": int(self.x()),
+                "y": int(self.y()),
             },
+            "right_splitter": self._safe_sizes(self._right_splitter),
+            "log_splitter_sizes": self._safe_sizes_log(),
+            "layout_edit": bool(self._btn_layout_edit.isChecked()),
             "telemetry": {
                 "mask": self._telemetry_panel.current_mask(),
                 "period_ms": self._telemetry_panel.get_period(),
@@ -336,6 +347,32 @@ class MainWindow(QMainWindow):
             "log_visible": self._log_panel_visible,
             "log_opts": self._log_panel.get_opts(),
         }
+        # 各面板配置 (容错: 单面板失败不影响整体保存)
+        for key, panel in (
+            ("plot", self._plot_panel),
+            ("motion", self._motion_panel),
+            ("motor_param", self._param_panel),
+            ("motor_config", self._config_panel),
+            ("twin_param", self._twin_param_panel),
+            ("fault_info", self._fault_info_panel),
+        ):
+            try:
+                s[key] = panel.get_opts()
+            except Exception:
+                pass
+        return s
+
+    def _safe_sizes(self, splitter) -> list:
+        try:
+            return [int(x) for x in splitter.sizes()]
+        except Exception:
+            return []
+
+    def _safe_sizes_log(self) -> list:
+        try:
+            return [int(x) for x in (self._log_splitter_sizes or [])]
+        except Exception:
+            return []
 
     def _apply_settings(self, d: dict):
         """启动时把已存设置套回各控件(仅设 UI 状态, 不触发串口/遥测命令)。"""
@@ -355,12 +392,39 @@ class MainWindow(QMainWindow):
                 height = int(mw.get("height", self.height()))
                 self.resize(max(self.minimumWidth(), width),
                             max(self.minimumHeight(), height))
+                # 恢复窗口位置 (避免移出屏幕)
+                x = mw.get("x")
+                y = mw.get("y")
+                if x is not None and y is not None:
+                    self.move(int(x), int(y))
+            except Exception:
+                pass
+        # 右侧 splitter 尺寸 (优先 log_splitter_sizes 若日志隐藏)
+        rs = d.get("right_splitter")
+        if isinstance(rs, list) and len(rs) >= 2:
+            try:
+                self._right_splitter.setSizes([int(x) for x in rs])
+                self._log_splitter_sizes = [int(x) for x in rs]
+            except Exception:
+                pass
+        lss = d.get("log_splitter_sizes")
+        if isinstance(lss, list) and len(lss) >= 2:
+            try:
+                self._log_splitter_sizes = [int(x) for x in lss]
+            except Exception:
+                pass
+        # 布局编辑开关
+        if "layout_edit" in d:
+            try:
+                self._btn_layout_edit.setChecked(bool(d["layout_edit"]))
             except Exception:
                 pass
         tlm = d.get("telemetry")
         if isinstance(tlm, dict):
-            self._telemetry_panel.apply_config(
-                tlm.get("mask", 0), tlm.get("period_ms", 20))
+            # 强制补全 DQ/PHASE 位: 实时反馈与曲线的三相电流依赖这两位,
+            # 否则遥测帧不含 ia/ib/ic, 显示恒为0
+            mask = tlm.get("mask", 0) | jp.JmTlmBit.DQ | jp.JmTlmBit.PHASE
+            self._telemetry_panel.apply_config(mask, tlm.get("period_ms", 20))
         fb_poll = d.get("feedback_poll")
         if isinstance(fb_poll, dict):
             self._feedback_panel.apply_poll_config(
@@ -371,6 +435,21 @@ class MainWindow(QMainWindow):
         # 日志显隐: 若存值与当前不一致则切换(复用现有逻辑维护 splitter 尺寸)
         if "log_visible" in d and bool(d["log_visible"]) != self._log_panel_visible:
             self._toggle_log_panel()
+        # 各面板配置 (容错: 单面板失败不影响其他)
+        for key, panel in (
+            ("plot", self._plot_panel),
+            ("motion", self._motion_panel),
+            ("motor_param", self._param_panel),
+            ("motor_config", self._config_panel),
+            ("twin_param", self._twin_param_panel),
+            ("fault_info", self._fault_info_panel),
+        ):
+            opts = d.get(key)
+            if isinstance(opts, dict):
+                try:
+                    panel.set_opts(opts)
+                except Exception:
+                    pass
 
     @staticmethod
     def _fmt_bytes(n: int) -> str:
@@ -441,7 +520,8 @@ class MainWindow(QMainWindow):
             app.setStyleSheet(theme.qss())
         self._btn_theme.setText("主题: 深色" if theme.is_dark else "主题: 浅色")
         for panel in (self._feedback_panel, self._state_panel, self._plot_panel,
-                      self._log_panel, self._param_panel, self._config_panel):
+                      self._log_panel, self._param_panel, self._config_panel,
+                      self._twin_param_panel, self._fault_info_panel):
             fn = getattr(panel, "apply_theme", None)
             if callable(fn):
                 fn()
@@ -509,6 +589,10 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("已连接 虚拟数据引擎 (演示)")
                 self._cur_port = "VIRTUAL"
                 self._log_panel.log("[SIM] 虚拟数据引擎已启动, 所有数据由本地仿真生成")
+                # 把孪生引擎句柄传给孪生参数面板
+                self._twin_param_panel.set_engine(self._client.transport.get_engine())
+                # 故障屏蔽需要引擎句柄
+                self._fault_info_panel.set_engine(self._client.transport.get_engine())
             return
         # 真实串口: 若当前是虚拟传输, 换回串口传输
         if not isinstance(self._client.transport, SerialTransport):
@@ -529,6 +613,8 @@ class MainWindow(QMainWindow):
         self._param_read_queue.clear()
         self._param_write_queue.clear()
         self._client.close()
+        self._twin_param_panel.set_engine(None)
+        self._fault_info_panel.set_engine(None)
         self.statusBar().showMessage("已断开")
 
     def _on_connected(self, connected: bool):
@@ -564,9 +650,18 @@ class MainWindow(QMainWindow):
         return True
 
     def _on_poll_state(self):
-        """状态机面板周期请求: 静默拉取 READ_STATE(不弹窗)。"""
-        if self._client.is_open():
-            self._client.query_state()
+        """状态机面板周期请求: 静默拉取 READ_STATE + 三相/dq 电流 + 反馈(不弹窗)。
+
+        READ_FEEDBACK 只含 pos/vel/torque/temp/vbus/fault 6 字段, 不含电流;
+        READ_STATE 只含状态机 4 字节。三相电流只能通过 READ_PHASE_CURRENT /
+        READ_DQ_CURRENT 主动查询。这里周期补查, 配合 JmClient 的 _last_feedback
+        合并机制, 让 UI 拿到完整的反馈数据。
+        """
+        if not self._client.is_open():
+            return
+        self._client.query_state()
+        self._client.query_dq_current()
+        self._client.query_phase_current()
 
     def _on_control_command(self, cmd: int):
         if self._ensure_open():
@@ -723,9 +818,15 @@ class MainWindow(QMainWindow):
             while self._feedback_pending:
                 batch.append(self._feedback_pending.popleft())
 
-            for ts, fb in batch:
-                self._plot_panel.feed_feedback(ts, fb)
-            self._feedback_panel.update_feedback(batch[-1][1])
+            # P4 优化: 批量向量化喂曲线, 避免逐帧 Python 调用开销
+            ts_list = [item[0] for item in batch]
+            fb_list = [item[1] for item in batch]
+            self._plot_panel.feed_feedback_batch(ts_list, fb_list)
+            last_fb = batch[-1][1]
+            self._feedback_panel.update_feedback(last_fb)
+            # 实时故障解码: 故障上升沿才记入历史
+            self._fault_info_panel.update_fault_mask(
+                getattr(last_fb, 'fault_mask', 0) or 0)
 
         if self._feedback_dropped:
             now = time.monotonic()
@@ -743,7 +844,12 @@ class MainWindow(QMainWindow):
             self._pump_param_write_queue()
 
     def _on_nack(self, cmd: int, err: int):
-        self._log_panel.log_warn(f"NACK {cmd_name(cmd)}(0x{cmd:02X}) err={err_name(err)}(0x{err:02X})")
+        # NACK 中文描述: err_name_cn 返回 "枚举名(中文)"; 错误信息加载到故障面板
+        cn = err_name_cn(err)
+        self._log_panel.log_warn(
+            f"NACK {cmd_name(cmd)}(0x{cmd:02X}) err={cn}(0x{err:02X})")
+        # 故障信息面板加载 NACK 错误信息
+        self._fault_info_panel.show_nack_error(cmd, err)
         if cmd == JmCmd.PARAM_READ and self._pending_param_reads:
             self._pending_param_reads.popleft()
             self._pump_param_read_queue()

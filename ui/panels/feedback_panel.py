@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QCheckBox, QSpinBox,
 )
 
-from jmproto import top_fsm_name, run_state_name, cmd_name
+from jmproto import top_fsm_name, run_state_name, motion_state_name, cmd_name, fault_mask_to_str
 from ui.panels._edit_mixin import LayoutEditMixin
 from ui import layout_store
 from ui.theme import theme
@@ -883,6 +883,7 @@ class FeedbackPanel(QWidget):
         self._card_state = _ParamCard("状态 / 故障", [
             ("顶层状态", "_fsm", "{}", ""),
             ("运行子态", "_run", "{}", ""),
+            ("运动子态", "_motion", "{}", ""),
             ("控制模式", "_ctrl", "{}", ""),
             ("使能", "_en", "{}", ""),
             ("故障掩码", "_fault", "{}", ""),
@@ -1027,13 +1028,34 @@ class FeedbackPanel(QWidget):
             "thw": f"{f('single','{:.3f}')}rad / {f('vel','{:.2f}')}",
         })
 
-        # 故障/警告
-        self._card_state.set_text(
-            "_fault", f"0x{fb.fault_mask:04X}",
-            "#FF6B6B" if fb.fault_mask else "#7FD4FF")
+        # 故障/警告: 显示十六进制 + 解码描述(故障时加载完整中文信息)
+        fault_mask = fb.fault_mask
+        fault_lbl = self._card_state._val_labels.get("_fault")
+        if fault_mask:
+            full_desc = fault_mask_to_str(fault_mask)
+            # 单行过长时截断, 完整描述见故障信息 tab + tooltip
+            short = full_desc if len(full_desc) <= 24 else full_desc[:22] + "..."
+            self._card_state.set_text(
+                "_fault", f"0x{fault_mask:04X} {short}", "#FF6B6B")
+            if fault_lbl is not None:
+                fault_lbl.setToolTip(f"故障掩码 0x{fault_mask:04X}\n{full_desc}\n详见 [故障信息] tab")
+        else:
+            self._card_state.set_text("_fault", "0x0000 无故障", "#7FD4FF")
+            if fault_lbl is not None:
+                fault_lbl.setToolTip("无故障")
         self._card_state.set_text(
             "_warn", f"0x{fb.warn_mask:04X}",
             "#FFB454" if fb.warn_mask else "#7FD4FF")
+
+        # 运动子状态 (twin 扩展, 反映 STANDSTILL/MOVING/DECEL/HOLDING/BRAKING)
+        ms = getattr(fb, "motion_state", 0)
+        motion_lbl = self._card_state._val_labels.get("_motion")
+        self._card_state.set_text("_motion", motion_state_name(ms))
+        if motion_lbl is not None:
+            # 不同状态用不同颜色: 静止=灰, 运动=蓝, 减速=橙, 保持=绿
+            col = {0: "#8890A4", 1: "#5F9EFF", 2: "#FFB454",
+                   3: "#5FE6AC", 4: "#FF6B6B"}.get(int(ms), "#7FD4FF")
+            motion_lbl.setStyleSheet(f"color:{col}; font-weight:bold;")
 
         self._refresh_state_styles()
 

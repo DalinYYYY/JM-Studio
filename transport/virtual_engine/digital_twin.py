@@ -85,6 +85,10 @@ class DigitalTwinEngine:
             cmd = self._current_cmd
             self._current_cmd = MotorCmd()  # 命令消费后清零(一次性命令)
 
+        # 0.5 故障屏蔽设置(在 check 之前生效, 当拍即应用)
+        if cmd.set_fault_disable is not None:
+            self.fault_detector.set_disable_mask(cmd.set_fault_disable)
+
         # 1. 取物理反馈
         fb_phys = self.physics.snapshot()
         # 跟随误差(位置模式): 控制环在电机端, 与固件 multiturn=theta_m 一致
@@ -192,6 +196,7 @@ class DigitalTwinEngine:
             if cmd.set_kd is not None: c.set_kd = cmd.set_kd
             if cmd.set_torque_ff is not None: c.set_torque_ff = cmd.set_torque_ff
             if cmd.set_vel_ff is not None: c.set_vel_ff = cmd.set_vel_ff
+            if cmd.set_fault_disable is not None: c.set_fault_disable = cmd.set_fault_disable
         # 更新通信心跳
         self.fault_detector.update_comm(self.t_sim)
 
@@ -207,6 +212,28 @@ class DigitalTwinEngine:
         """
         self.controller.reload_params()
 
+    def rebuild(self):
+        """重建物理模型/控制器/状态机/故障检测器 (保留 mp 引用)。
+
+        用于导入给定参数(R/Ld/惯量等)后, 让物理模型用新参数生效。
+        会重置电机运行状态(位置/速度/电流归零), 但保留 MotorParam 对象引用。
+        """
+        from .twin_physics import MotorPhysics
+        from .twin_control import ControllerCore
+        from .twin_fsm import SystemStateMachine, FaultDetector
+        self.physics = MotorPhysics(self.mp)
+        self.load = JointLoad(self.mp.gearbox_param.gear_ratio)
+        self.controller = ControllerCore(self.mp, self.dt_foc, self.pos_ratio)
+        self.fsm = SystemStateMachine(self.mp)
+        self.fault_detector = FaultDetector(self.mp)
+        # 运行时状态归零
+        self.t_sim = 0.0
+        self._foc_count = 0
+        with self._cmd_lock:
+            self._current_cmd = MotorCmd()
+        self._last_telemetry = {}
+        self._follow_err = 0.0
+
     # ---------- 故障注入 ----------
     def inject_fault(self, fault_bits: int):
         """注入故障(演示用)。"""
@@ -215,6 +242,15 @@ class DigitalTwinEngine:
     def clear_injected_fault(self):
         """清除注入的故障。"""
         self.fault_detector.clear_injected()
+
+    # ---------- 故障屏蔽 ----------
+    def set_fault_disable_mask(self, mask: int):
+        """设置故障屏蔽掩码(位1=对应故障不触发)。"""
+        self.fault_detector.set_disable_mask(mask)
+
+    def get_fault_disable_mask(self) -> int:
+        """获取当前故障屏蔽掩码。"""
+        return self.fault_detector.get_disable_mask()
 
     # ---------- 负载配置 ----------
     def configure_load(self, mass: float = None, length: float = None,
@@ -247,6 +283,7 @@ class DigitalTwinEngine:
         self.controller.reset()
         self.fsm.reset()
         self.fault_detector.clear_injected()
+        self.fault_detector.set_disable_mask(0)   # 清除故障屏蔽
         self.t_sim = 0.0
         self._foc_count = 0
         self._follow_err = 0.0
@@ -356,6 +393,12 @@ class DigitalTwinThread(QThread):
 
     def clear_injected_fault(self):
         self.engine.clear_injected_fault()
+
+    def set_fault_disable_mask(self, mask: int):
+        self.engine.set_fault_disable_mask(mask)
+
+    def get_fault_disable_mask(self) -> int:
+        return self.engine.get_fault_disable_mask()
 
     def configure_load(self, **kwargs):
         self.engine.configure_load(**kwargs)

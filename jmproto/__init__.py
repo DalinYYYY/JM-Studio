@@ -15,7 +15,7 @@ from .frame import FrameCodec, FrameDecoder, STX_H, STX_L, MAX_PACK_SIZE, PACK_O
 from .cmd_def import (
     JmCmd, JmErr, JmTlmBit, JmParamType,
     TopFsm, RunState, TOP_FSM_CN, RUN_STATE_CN,
-    cmd_name, err_name, top_fsm_name, run_state_name,
+    cmd_name, err_name, top_fsm_name, run_state_name, motion_state_name,
     MAGIC_BOOTLOADER, MAGIC_FACTORY_RESET,
 )
 from . import codec
@@ -25,15 +25,25 @@ from .feedback import (
 from .registry import (
     ProtocolRegistry, CommandSpec, ParamSpec, Field, get_registry,
 )
+from .fault_codes import (
+    load_fault_csv, fault_code_lookup, fault_codes_by_source,
+    fault_mask_decode, fault_mask_to_str,
+    err_name_cn, err_name_cn_short,
+    FAULT_BIT_INFO,
+)
 
 __all__ = [
     'crc16_calc',
     'FrameCodec', 'FrameDecoder', 'STX_H', 'STX_L', 'MAX_PACK_SIZE', 'PACK_OVERHEAD',
     'JmCmd', 'JmErr', 'JmTlmBit', 'JmParamType',
     'TopFsm', 'RunState', 'TOP_FSM_CN', 'RUN_STATE_CN',
-    'cmd_name', 'err_name', 'top_fsm_name', 'run_state_name',
+    'cmd_name', 'err_name', 'top_fsm_name', 'run_state_name', 'motion_state_name',
     'MAGIC_BOOTLOADER', 'MAGIC_FACTORY_RESET',
     'codec',
     'FeedbackData', 'parse_state', 'parse_read_reply', 'parse_telemetry',
     'ProtocolRegistry', 'CommandSpec', 'ParamSpec', 'Field', 'get_registry',
+    'load_fault_csv', 'fault_code_lookup', 'fault_codes_by_source',
+    'fault_mask_decode', 'fault_mask_to_str',
+    'err_name_cn', 'err_name_cn_short',
+    'FAULT_BIT_INFO',
 ]

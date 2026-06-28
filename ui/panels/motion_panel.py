@@ -124,3 +124,44 @@ class MotionPanel(QGroupBox):
         for name, w in self._field_widgets.items():
             values[name] = w.value()
         self.send_command.emit(spec.cmd, values)
+
+    # ==================== 配置持久化 ====================
+    def get_opts(self) -> dict:
+        """收集可持久化的 UI 配置. 返回当前模式 cmd + 各模式字段值字典."""
+        opts = {"current_cmd": None, "fields": {}}
+        spec = self._current_spec()
+        if spec is not None:
+            opts["current_cmd"] = int(spec.cmd)
+        # 当前模式的字段值
+        for name, w in self._field_widgets.items():
+            try:
+                opts["fields"][name] = float(w.value())
+            except Exception:
+                pass
+        return opts
+
+    def set_opts(self, opts: dict):
+        """启动时套用配置 (容错). 注: 仅恢复当前模式选择 + 当前模式字段值;
+        其它模式的字段值不保留 (动态构建, 切换模式时会重新生成)."""
+        if not isinstance(opts, dict):
+            return
+        # 恢复模式选择
+        cmd = opts.get("current_cmd")
+        if cmd is not None:
+            try:
+                idx = self._combo_mode.findData(int(cmd))
+                if idx >= 0:
+                    self._combo_mode.setCurrentIndex(idx)
+            except Exception:
+                pass
+        # 恢复当前模式字段值 (模式切换会触发 _rebuild_fields, 故需在信号处理后再赋值)
+        fields = opts.get("fields")
+        if isinstance(fields, dict):
+            for name, val in fields.items():
+                w = self._field_widgets.get(name)
+                if w is None:
+                    continue
+                try:
+                    w.setValue(float(val))
+                except Exception:
+                    pass

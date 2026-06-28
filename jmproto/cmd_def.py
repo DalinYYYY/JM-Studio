@@ -352,3 +352,18 @@ def run_state_name(run_state: int) -> str:
         return RUN_STATE_CN[RunState(run_state)]
     except (ValueError, KeyError):
         return f"({run_state})"
+
+
+# 运动子状态 (twin 扩展, 区别于固件 run_state 控制模式映射)
+MOTION_STATE_CN = {
+    0: "静止",
+    1: "运动中",
+    2: "减速中",
+    3: "保持中",
+    4: "制动中",
+}
+
+
+def motion_state_name(motion_state: int) -> str:
+    """返回运动子状态中文名 (STANDSTILL/MOVING/DECEL/HOLDING/BRAKING)。"""
+    return MOTION_STATE_CN.get(int(motion_state), f"({motion_state})")

@@ -38,6 +38,9 @@ class JmClient(QObject):
         self._tp.frame_received.connect(self._on_frame)
         self._tp.connected.connect(self.connected)
         self._tp.error_occurred.connect(self.error_occurred)
+        # 合并反馈状态: 各 READ_*/TELEMETRY 帧按 filled_fields 增量合并,
+        # 让 UI 拿到的是累积完整的 FeedbackData (避免部分帧字段覆盖为默认0)
+        self._last_feedback = jp.FeedbackData()
 
     @property
     def registry(self):
@@ -146,6 +149,22 @@ class JmClient(QObject):
         return self._send(JmCmd.SET_TELEMETRY, payload)
 
     # ---------------- 帧分发(主线程槽) ----------------
+    def _merge_and_emit_feedback(self, fb):
+        """把部分字段帧合并到 _last_feedback, 再 emit 合并后的完整 fb.
+
+        各 READ_*/TELEMETRY 帧只填充本帧涉及的字段(filled_fields), 其余保持默认 0.
+        若直接 emit, UI 会把未涉及字段当作 0 显示 (如 READ_PHASE_CURRENT 帧的 pos=0
+        会覆盖曲线). 这里按 filled_fields 增量合并到累积状态, 保证 UI 拿到完整数据.
+        """
+        merged = self._last_feedback
+        for field in getattr(fb, 'filled_fields', ()):
+            try:
+                setattr(merged, field, getattr(fb, field))
+            except Exception:
+                pass
+        # merged 是被持续修改的同一对象; UI 侧只读不写, 安全
+        self.feedback_updated.emit(merged)
+
     def _on_frame(self, cmd: int, payload: bytes):
         self.raw_frame.emit(cmd, payload)
 
@@ -165,7 +184,7 @@ class JmClient(QObject):
 
         # READ_FEEDBACK(22B)
         if cmd == JmCmd.READ_FEEDBACK and len(payload) >= 22:
-            self.feedback_updated.emit(jp.FeedbackData.from_feedback_payload(payload))
+            self._merge_and_emit_feedback(jp.FeedbackData.from_feedback_payload(payload))
             return
 
         # READ_STATE
@@ -177,7 +196,7 @@ class JmClient(QObject):
         if JmCmd.READ_PHASE_CURRENT <= cmd <= JmCmd.READ_FAULT:
             fb, filled = jp.parse_read_reply(cmd, payload)
             if fb is not None:
-                self.feedback_updated.emit(fb)
+                self._merge_and_emit_feedback(fb)
             return
 
         # DEV_INFO
@@ -216,7 +235,7 @@ class JmClient(QObject):
             fb, filled = jp.parse_telemetry(payload)
             if 'top_fsm' in filled:
                 self.state_updated.emit(fb.top_fsm, fb.run_state, fb.ctrl_mode, fb.enable)
-            self.feedback_updated.emit(fb)
+            self._merge_and_emit_feedback(fb)
             return
 
         # 其余: 作 ACK 处理

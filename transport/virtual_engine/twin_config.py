@@ -13,7 +13,8 @@
 
 import os
 import csv
-from dataclasses import dataclass, field, asdict
+import json
+from dataclasses import dataclass, field, asdict, is_dataclass
 
 
 # ---- 固件 CSV 路径(相对上位机工程向上回溯到固件 User) ----
@@ -296,6 +297,131 @@ def load_motor_param(csv_path: str = None) -> MotorParam:
     except Exception:
         pass  # 解析失败保留默认值
     return mp
+
+
+# ==================== 参数分组定义(用于导入导出) ====================
+# 给定参数: 电机物理本体相关子结构
+GIVEN_SUBS = ('motor_base', 'gearbox_param', 'encoder_param', 'thermal_model')
+# 控制参数: 控制环路相关子结构
+CONTROL_SUBS = ('current_loop', 'position_loop', 'impedance_ctrl', 'homing_param')
+# 保护参数: 保护与限位相关子结构
+PROTECT_SUBS = ('protection_param', 'position_limit')
+
+# 配置文件版本号
+PROFILE_VERSION = 1
+
+
+# ==================== 序列化/反序列化 ====================
+def _sub_to_dict(sub_obj) -> dict:
+    """单个子 dataclass → dict (仅保留实际字段, 过滤内部状态)。"""
+    if not is_dataclass(sub_obj):
+        return sub_obj
+    out = {}
+    for fname in sub_obj.__dataclass_fields__:
+        out[fname] = getattr(sub_obj, fname)
+    return out
+
+
+def _sub_from_dict(sub_obj, data: dict):
+    """dict → 单个子 dataclass (就地写入, 保留对象引用)。
+
+    仅写入 dataclass 中已存在的字段; 忽略 data 中多余的字段。
+    """
+    if not is_dataclass(sub_obj) or not isinstance(data, dict):
+        return
+    for fname in sub_obj.__dataclass_fields__:
+        if fname in data:
+            setattr(sub_obj, fname, data[fname])
+
+
+def mp_to_dict(mp: MotorParam, section: str = 'all') -> dict:
+    """将 MotorParam 导出为 dict。
+
+    Args:
+        section: 'all' / 'given' / 'control' / 'protect'
+    """
+    if section == 'given':
+        subs = GIVEN_SUBS
+    elif section == 'control':
+        subs = CONTROL_SUBS
+    elif section == 'protect':
+        subs = PROTECT_SUBS
+    else:  # all
+        subs = tuple(mp.__dataclass_fields__.keys())
+
+    out = {'version': PROFILE_VERSION}
+    if section == 'all':
+        out['motor_name'] = mp.motor_instance.motor_name
+    for sub_name in subs:
+        sub_obj = getattr(mp, sub_name)
+        out[sub_name] = _sub_to_dict(sub_obj)
+    return out
+
+
+def mp_from_dict(mp: MotorParam, data: dict, section: str = 'all') -> bool:
+    """从 dict 导入参数到 MotorParam (就地写入, 保留对象引用)。
+
+    Args:
+        mp: 目标 MotorParam (就地修改)
+        data: 字典数据
+        section: 'all' / 'given' / 'control' / 'protect'
+    Returns:
+        True 表示成功写入至少一个字段
+    """
+    if not isinstance(data, dict):
+        return False
+    if section == 'given':
+        subs = GIVEN_SUBS
+    elif section == 'control':
+        subs = CONTROL_SUBS
+    elif section == 'protect':
+        subs = PROTECT_SUBS
+    else:  # all
+        subs = tuple(mp.__dataclass_fields__.keys())
+
+    written = False
+    for sub_name in subs:
+        if sub_name in data:
+            sub_obj = getattr(mp, sub_name, None)
+            if sub_obj is not None:
+                _sub_from_dict(sub_obj, data[sub_name])
+                written = True
+    return written
+
+
+def mp_to_json(mp: MotorParam, section: str = 'all', indent: int = 2) -> str:
+    """导出为 JSON 字符串。"""
+    return json.dumps(mp_to_dict(mp, section), indent=indent, ensure_ascii=False)
+
+
+def mp_from_json(mp: MotorParam, json_str: str, section: str = 'all') -> bool:
+    """从 JSON 字符串导入。"""
+    try:
+        data = json.loads(json_str)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return mp_from_dict(mp, data, section)
+
+
+def mp_to_file(mp: MotorParam, path: str, section: str = 'all') -> bool:
+    """导出到 JSON 文件。"""
+    try:
+        data = mp_to_dict(mp, section)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def mp_from_file(mp: MotorParam, path: str, section: str = 'all') -> bool:
+    """从 JSON 文件导入。"""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return mp_from_dict(mp, data, section)
 
 
 class ParamAccessor:

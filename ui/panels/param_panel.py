@@ -8,7 +8,6 @@
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QFrame,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -82,10 +81,6 @@ class ParamPanel(QGroupBox):
         self._row_state = {}     # param_id -> {'synced': str, 'dirty': bool, 'pending': bool}
         self._pending_writes = deque()  # (param_id, sent_text)
         self._syncing_table = False
-        # 衍生参数卡: 电流环带宽/KP/KI 实时计算展示(仅 motor_param 源)
-        self._code_name_to_pid = {}          # code_name -> param_id
-        self._derived_labels = {}            # key -> QLabel
-        self._derived_card = None
         self._row_of_pid = {}                # param_id -> 行号(用于主题刷新只读行)
         self._btn_base_style = """
             QPushButton {
@@ -153,11 +148,6 @@ class ParamPanel(QGroupBox):
         legend_w = QWidget()
         legend_w.setLayout(legend)
         layout.addWidget(legend_w)
-
-        # 衍生参数卡(仅电机参数源): 电流环带宽/KP/KI 实时计算
-        if self._source == "motor_param":
-            self._derived_card = self._build_derived_card()
-            layout.addWidget(self._derived_card)
 
         self._table = QTableWidget(0, 8)
         self._table.setHorizontalHeaderLabels(["参数", "ID", "类型/单位", "当前值", "修改值", "描述", "读", "写"])
@@ -248,124 +238,9 @@ class ParamPanel(QGroupBox):
         layout.addWidget(button, 0, Qt.AlignmentFlag.AlignCenter)
         return cell
 
-    # ---------- 衍生参数卡: 电流环带宽/KP/KI 实时计算 ----------
-    def _build_derived_card(self) -> QFrame:
-        """构建电流环衍生参数卡。值由 _update_derived_card() 实时刷新。"""
-        card = QFrame()
-        card.setObjectName("derivedCard")
-        grid = QGridLayout(card)
-        grid.setContentsMargins(8, 6, 8, 6)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(4)
-
-        title = QLabel("电流环衍生参数(实时计算)")
-        f = QFont(); f.setBold(True)
-        title.setFont(f)
-        title.setStyleSheet(f"color: {theme.hex('title')};")
-        grid.addWidget(title, 0, 0, 1, 4)
-
-        # 行1: 配置带宽 / KP(q) / KI(q)
-        # 行2: 由KP推算带宽 / 由KI推算带宽 / 一致性
-        fields = [
-            ("bw_cfg",  "配置带宽",         "Hz",       1, 0),
-            ("kp_q",    "KP (q轴)",          "V/A",      1, 1),
-            ("ki_q",    "KI (q轴)",          "V/(A·s)",  1, 2),
-            ("bw_kp",   "由KP推算带宽",     "Hz",       2, 0),
-            ("bw_ki",   "由KI推算带宽",     "Hz",       2, 1),
-            ("consist", "一致性",            "",          2, 2),
-        ]
-        for key, label, unit, row, col in fields:
-            lbl = QLabel(label)
-            lbl.setStyleSheet(f"color: {theme.hex('muted')};")
-            val = QLabel("--")
-            val.setStyleSheet(
-                f"color: {theme.hex('value')}; font-weight: bold;")
-            wrap = QWidget()
-            wl = QVBoxLayout(wrap)
-            wl.setContentsMargins(0, 0, 0, 0)
-            wl.setSpacing(0)
-            wl.addWidget(lbl)
-            wl.addWidget(val)
-            unit_lbl = QLabel(unit) if unit else QLabel("")
-            unit_lbl.setStyleSheet(f"color: {theme.hex('muted')};")
-            grid.addWidget(wrap, row, col * 2)
-            grid.addWidget(unit_lbl, row, col * 2 + 1)
-            self._derived_labels[key] = val
-        grid.setColumnStretch(7, 1)
-        self._refresh_derived_card_style(card)
-        return card
-
-    def _refresh_derived_card_style(self, card: QFrame):
-        card.setStyleSheet(
-            f"QFrame#derivedCard {{ background: {theme.hex('card_top')};"
-            f" border: 1px solid {theme.hex('border')}; border-radius: 6px; }}")
-
-    def _update_derived_card(self):
-        """从当前/编辑值实时计算电流环衍生参数并刷新显示。"""
-        if self._derived_card is None:
-            return
-        # 取值: 可配参数优先用编辑框(反映待写入值), 否则用当前读回值;
-        #       固有参数(R/Lq)只能用读回值。
-        def val_of(code_name, prefer_edit=False):
-            pid = self._code_name_to_pid.get(code_name)
-            if pid is None:
-                return None
-            item = None
-            if prefer_edit:
-                e = self._edit_items.get(pid)
-                if e is not None:
-                    t = e.text().strip()
-                    if t and t != "--":
-                        item = t
-            if item is None:
-                c = self._current_items.get(pid)
-                if c is not None:
-                    t = c.text().strip()
-                    if t and t != "--":
-                        item = t
-            if item is None:
-                return None
-            try:
-                return float(item)
-            except ValueError:
-                return None
-
-        bw_cfg = val_of("current_bandwidth_hz", prefer_edit=True)
-        kp_q = val_of("current_kp_q", prefer_edit=True)
-        ki_q = val_of("current_ki_q", prefer_edit=True)
-        r = val_of("r")
-        lq = val_of("lq")
-
-        import math
-        two_pi = 2.0 * math.pi
-        bw_kp = (kp_q / (two_pi * lq)) if (kp_q is not None and lq is not None and lq > 0) else None
-        bw_ki = (ki_q / (two_pi * r)) if (ki_q is not None and r is not None and r > 0) else None
-
-        def fmt(x, prec=3):
-            return f"{x:.{prec}f}" if x is not None else "--"
-
-        self._derived_labels["bw_cfg"].setText(fmt(bw_cfg, 1))
-        self._derived_labels["kp_q"].setText(fmt(kp_q))
-        self._derived_labels["ki_q"].setText(fmt(ki_q))
-        self._derived_labels["bw_kp"].setText(fmt(bw_kp, 1))
-        self._derived_labels["bw_ki"].setText(fmt(bw_ki, 1))
-
-        # 一致性: 三个带宽两两相对误差 < 15% 视为一致
-        consist_lbl = self._derived_labels["consist"]
-        vals = [v for v in (bw_cfg, bw_kp, bw_ki) if v is not None and v > 0]
-        if len(vals) < 2:
-            consist_lbl.setText("--")
-            consist_lbl.setStyleSheet(f"color: {theme.hex('muted')}; font-weight: bold;")
-        else:
-            mx, mn = max(vals), min(vals)
-            ok = (mx - mn) / mx < 0.15
-            consist_lbl.setText("一致 ✓" if ok else "不一致 ✗")
-            consist_lbl.setStyleSheet(
-                f"color: {theme.hex('ok') if ok else 'danger'}; font-weight: bold;")
-
     # ---------- 主题 ----------
     def apply_theme(self):
-        """主题切换: 刷新图例色块/只读行样式/衍生卡配色。"""
+        """主题切换: 刷新图例色块/只读行样式。"""
         # 重建图例色块颜色(色块在 _build 时按 [固有, 可配置] 顺序创建)
         ro = theme.c("card_bottom")
         rw = theme.c("table_bg")
@@ -379,15 +254,6 @@ class ParamPanel(QGroupBox):
             if row is None:
                 continue
             self._style_row(row, spec.writable)
-        # 衍生卡
-        if self._derived_card is not None:
-            self._refresh_derived_card_style(self._derived_card)
-            for key, lbl in self._derived_labels.items():
-                if key == "consist":
-                    continue
-                lbl.setStyleSheet(
-                    f"color: {theme.hex('value')}; font-weight: bold;")
-            self._update_derived_card()
 
     def _populate(self):
         self._syncing_table = True
@@ -399,7 +265,6 @@ class ParamPanel(QGroupBox):
         self._group_param_ids.clear()
         self._row_state.clear()
         self._pending_writes.clear()
-        self._code_name_to_pid.clear()
         self._row_of_pid.clear()
 
         groups = self._params_by_group()
@@ -410,7 +275,6 @@ class ParamPanel(QGroupBox):
 
         self._table.resizeRowsToContents()
         self._syncing_table = False
-        self._update_derived_card()
 
     def _update_table_layout(self):
         self._table.horizontalHeader().setStretchLastSection(False)
@@ -471,7 +335,6 @@ class ParamPanel(QGroupBox):
             'pending': False,
             'writable': bool(p.writable),
         }
-        self._code_name_to_pid[p.code_name] = int(p.param_id)
         self._row_of_pid[int(p.param_id)] = row
 
         # 视觉区分: 固有参数(只读)用暗色背景, 可配置参数用默认底色
@@ -552,7 +415,6 @@ class ParamPanel(QGroupBox):
             current_item.setText(sent_text)
             dirty = edit_item.text().strip() != sent_text
             self._set_write_button_state(int(pid), dirty, False)
-        self._update_derived_card()
         return pid
 
     def reject_pending_write(self):
@@ -581,7 +443,6 @@ class ParamPanel(QGroupBox):
         text = item.text().strip()
         dirty = (text != state['synced'])
         self._set_write_button_state(int(pid), dirty, state.get('pending', False) and dirty)
-        self._update_derived_card()
 
     def set_value(self, param_id: int, text: str):
         """收到读应答后更新当前值列"""
@@ -606,7 +467,54 @@ class ParamPanel(QGroupBox):
                     self._syncing_table = False
             dirty = bool(edit_item and edit_item.text().strip() != text)
             self._set_write_button_state(pid, dirty, False)
-        self._update_derived_card()
+
+    # ==================== 配置持久化 ====================
+    def get_opts(self) -> dict:
+        """收集可持久化的 UI 配置: 修改值列文本(按 param_id) + 表格列宽."""
+        opts = {"edit_values": {}, "column_widths": {}}
+        for pid, item in self._edit_items.items():
+            try:
+                text = item.text().strip()
+                if text:
+                    opts["edit_values"][str(int(pid))] = text
+            except Exception:
+                pass
+        try:
+            for col in range(self._table.columnCount()):
+                opts["column_widths"][str(int(col))] = int(self._table.columnWidth(col))
+        except Exception:
+            pass
+        return opts
+
+    def set_opts(self, opts: dict):
+        """启动时套用配置 (容错)."""
+        if not isinstance(opts, dict):
+            return
+        # 恢复列宽
+        cw = opts.get("column_widths")
+        if isinstance(cw, dict):
+            for k, w in cw.items():
+                try:
+                    col = int(k)
+                    if 0 <= col < self._table.columnCount():
+                        self._table.setColumnWidth(col, int(w))
+                except Exception:
+                    pass
+        # 恢复修改值列文本 (不触发 dirty 标记的副作用)
+        ev = opts.get("edit_values")
+        if isinstance(ev, dict):
+            self._syncing_table = True
+            try:
+                for k, text in ev.items():
+                    try:
+                        pid = int(k)
+                    except Exception:
+                        continue
+                    item = self._edit_items.get(pid)
+                    if item is not None:
+                        item.setText(str(text))
+            finally:
+                self._syncing_table = False
 
     def _params_by_group(self):
         if self._source == "motor_config":

@@ -280,6 +280,9 @@ class MotorPhysics:
         s.temp_motor += (target_temp - s.temp_motor) * alpha
         # FET 温度(更快响应)
         s.temp_fet += (self.T_amb + self.Rth * 0.8 * p_loss - s.temp_fet) * min(1.0, dt / (tau * 0.3))
+        # 温度上限 clamp: 防止数值发散时温度爆炸 (物理上也有熔断保护)
+        s.temp_motor = _clamp(s.temp_motor, -40.0, 200.0)
+        s.temp_fet = _clamp(s.temp_fet, -40.0, 150.0)
 
     def _update_encoder(self, dt: float):
         """编码器量化 + PLL速度观测(复刻 motion_param VEL_METHOD_PLL)。"""

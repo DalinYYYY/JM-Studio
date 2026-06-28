@@ -33,8 +33,9 @@ class TelemetryPanel(QGroupBox):
         # 上传数据种类勾选(每行2个)
         for i, (bit, label) in enumerate(JmTlmBit.ITEMS):
             chk = QCheckBox(label)
-            # 默认勾选最常用项
-            if bit in (JmTlmBit.POS_VEL, JmTlmBit.BUS, JmTlmBit.TEMP, JmTlmBit.STATE):
+            # 默认勾选最常用项(含 DQ/PHASE, 否则实时反馈与曲线三相电流恒为0)
+            if bit in (JmTlmBit.POS_VEL, JmTlmBit.DQ, JmTlmBit.PHASE,
+                       JmTlmBit.BUS, JmTlmBit.TEMP, JmTlmBit.STATE):
                 chk.setChecked(True)
             self._checks.append((bit, chk))
             layout.addWidget(chk, i // 2, i % 2)

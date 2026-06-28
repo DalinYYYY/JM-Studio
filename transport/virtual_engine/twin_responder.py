@@ -80,6 +80,7 @@ class TwinResponder:
             return [self._ack(cmd)]
         if cmd == int(JmCmd.CLEAR_FAULT):
             self.engine.apply_cmd(MotorCmd(fault_clear=True))
+            self.engine.fault_detector.clear_injected()
             self.engine.step()
             return [self._ack(cmd)]
 
@@ -90,7 +91,9 @@ class TwinResponder:
                      cmd <= int(JmCmd.SINGLE_STEP))
         if is_motion:
             top = self._top_fsm()
-            if top not in (int(TopFsm.READY), int(TopFsm.RUN)):
+            # 允许 READY/RUN/SAFETY 接收运动命令:
+            #   SAFETY 状态下 FSM._handle_safety 会判断方向, 仅允许反向退出
+            if top not in (int(TopFsm.READY), int(TopFsm.RUN), int(TopFsm.SAFETY)):
                 return [self._nack(cmd, int(JmErr.STATE_DENY))]
             values = self._unpack_fields(spec, payload)
             mc = self._build_motion_cmd(cmd, values)
@@ -256,7 +259,8 @@ class TwinResponder:
         return (int(JmCmd.READ_STATE),
                 bytes([self._top_fsm() & 0xFF, self._run_state() & 0xFF,
                        int(t.get('control_mode', 0)) & 0xFF,
-                       1 if self._top_fsm() in (int(TopFsm.READY), int(TopFsm.RUN)) else 0]))
+                       1 if self._top_fsm() in (int(TopFsm.READY), int(TopFsm.RUN)) else 0,
+                       int(t.get('run_state', 0)) & 0xFF]))  # 第5字节: 运动子状态(STANDSTILL/MOVING/...)
 
     def _read_reply_frame(self, cmd: int):
         t = self._tlm()
@@ -318,7 +322,8 @@ class TwinResponder:
         if mask & JmTlmBit.STATE:
             out += bytes([self._top_fsm() & 0xFF, self._run_state() & 0xFF,
                           int(t.get('control_mode', 0)) & 0xFF,
-                          1 if self._top_fsm() in (int(TopFsm.READY), int(TopFsm.RUN)) else 0])
+                          1 if self._top_fsm() in (int(TopFsm.READY), int(TopFsm.RUN)) else 0,
+                          int(t.get('run_state', 0)) & 0xFF])  # 第5字节: 运动子状态
         return (int(JmCmd.TELEMETRY), bytes(out))
 
     # ================= 内部: 参数读写 =================
