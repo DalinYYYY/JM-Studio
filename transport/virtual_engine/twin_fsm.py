@@ -690,8 +690,13 @@ class SystemStateMachine:
             # MIT/阻抗控制: tau = kp*(pos_des-pos) + kd*(vel_des-vel) + tff
             # 直接输出力矩, 跳过位置环/速度环 (避免量纲错配:
             #   IMPEDANCE profile 的 output_limit 是力矩 Nm, 却被位置环当作速度 rad/s 限幅)
-            pos_err = self.target_pos - fb.get('pos', 0.0)
-            vel_err = self.target_vel - fb.get('vel', 0.0)
+            # 坐标系: target_pos/target_vel 是电机端量, 必须用电机端反馈 theta_m/omega_m,
+            #   与 POSITION 模式(用 theta_m 算跟随误差)及控制环反馈保持同坐标系。
+            #   误用输出端 pos_out/vel_out 会因 gear_ratio 倍缩放导致刚度等效放大 N 倍, 收敛到错误位置。
+            theta_m = fb.get('theta_m', fb.get('pos', 0.0))
+            omega_m = fb.get('omega_m', fb.get('vel', 0.0))
+            pos_err = self.target_pos - theta_m
+            vel_err = self.target_vel - omega_m
             torque = self.target_kp * pos_err + self.target_kd * vel_err + self.target_torque_ff
             ref.ctrl_type = RefCtrlType.TORQUE
             ref.torque = torque

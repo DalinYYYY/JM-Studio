@@ -1,0 +1,127 @@
+{
+  "main_window": {
+    "width": 1234,
+    "height": 800
+  },
+  "twin_param": {
+    "adv_enabled": {
+      "adv_current": false,
+      "adv_velocity": false,
+      "adv_position": false
+    },
+    "current_tab": 0
+  },
+  "engine_mp": {
+    "version": 1,
+    "motor_name": "0",
+    "motor_instance": {
+      "motor_id": 0,
+      "motor_name": "0"
+    },
+    "motor_base": {
+      "r": 0.1,
+      "ld": 0.0001,
+      "lq": 0.00012,
+      "flux": 0.001,
+      "kt": 0.1,
+      "pole_pairs": 7,
+      "rated_current": 5.0,
+      "peak_current": 15.0,
+      "max_speed": 300.0,
+      "dead_time_ns": 500.0,
+      "rated_voltage": 48.0,
+      "rated_speed_rpm": 3000.0,
+      "rated_torque": 8.0,
+      "peak_torque": 6.0,
+      "inertia": 0.00025,
+      "ke": 0.01,
+      "pwm_freq_hz": 20000,
+      "foc_freq_hz": 20000
+    },
+    "gearbox_param": {
+      "gear_ratio": 10000.0,
+      "gear_efficiency": 0.85,
+      "output_torque_const": 10.0,
+      "gear_backlash": 0.01
+    },
+    "encoder_param": {
+      "enc_lines": 4000,
+      "enc_direction": 1,
+      "enc_offset": 0,
+      "elec_angle_bias": 0.0,
+      "pos_filter_alpha": 0.1,
+      "enc_type": 0,
+      "enc_auto_calib": 1,
+      "speed_obs_gain": 100.0
+    },
+    "position_limit": {
+      "multiturn_enable": 1,
+      "pos_min_limit": -12.566,
+      "pos_max_limit": 12.566,
+      "limit_sw_enable": 0
+    },
+    "homing_param": {
+      "homing_method": 0,
+      "homing_speed_fast": 5.0,
+      "homing_speed_slow": 0.5,
+      "homing_offset": 0.0,
+      "homing_current": 2.0
+    },
+    "current_loop": {
+      "current_kp_d": 0.15,
+      "current_ki_d": 10.0,
+      "current_kp_q": 0.5,
+      "current_ki_q": 10.0,
+      "current_integral_limit": 10.0,
+      "decoupling_gain": 0.0,
+      "deadtime_comp_v": 0.0,
+      "pwm_max_duty": 0.9,
+      "current_bandwidth_hz": 1000.0,
+      "current_filter_alpha": 1.0,
+      "d_feedforward_gain": 0.0,
+      "q_feedforward_gain": 0.0
+    },
+    "position_loop": {
+      "speed_kp": 0.8,
+      "speed_ki": 1.0,
+      "speed_integral_limit": 10.0,
+      "velocity_ff_gain": 0.0,
+      "accel_ff_gain": 0.0,
+      "position_kp": 25.0,
+      "position_integral_limit": 0.0,
+      "friction_coulomb": 0.0,
+      "friction_viscous": 0.0,
+      "notch_freq_hz": 200.0,
+      "notch_width_hz": 20.0,
+      "notch_depth_db": 40.0,
+      "notch_enable": 0,
+      "speed_bandwidth_hz": 100.0,
+      "speed_filter_alpha": 0.0,
+      "position_bandwidth_hz": 20.0,
+      "follow_error_threshold": 5.0,
+      "max_accel": 0.0
+    },
+    "impedance_ctrl": {
+      "impedance_kp": 10.0,
+      "impedance_kd": 0.1,
+      "iq_max": 10.0
+    },
+    "thermal_model": {
+      "thermal_resistance": 1.0,
+      "thermal_time_const": 60.0,
+      "derating_temp_start": 70.0,
+      "fet_over_temp_threshold": 80.0,
+      "motor_over_temp_threshold": 90.0
+    },
+    "protection_param": {
+      "protect_over_current": 20.0,
+      "protect_over_voltage": 58.0,
+      "protect_under_voltage": 15.0,
+      "protect_over_speed": 400.0,
+      "protect_over_temp": 85.0,
+      "protect_under_temp": -20.0,
+      "protect_pos_error": 1000,
+      "protect_enable_mask": 4294967295
+    }
+  }
+}

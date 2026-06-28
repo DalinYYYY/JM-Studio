@@ -74,6 +74,8 @@ class DigitalTwinEngine:
         self._current_cmd = MotorCmd()
         self._last_telemetry = {}
         self._follow_err = 0.0
+        self._prev_ctrl_type = RefCtrlType.IDLE   # 上一拍参考类型(检测进入 IDLE 边沿)
+        self._ref_pos = 0.0       # 位置环参考轨迹位置(vel_setpoint 积分, 电机端 rad)
 
     # ---------- 主步进 ----------
     def step(self):
@@ -91,11 +93,16 @@ class DigitalTwinEngine:
 
         # 1. 取物理反馈
         fb_phys = self.physics.snapshot()
-        # 跟随误差(位置模式): 控制环在电机端, 与固件 multiturn=theta_m 一致
+        # 跟随误差(位置模式): 实际位置 vs 位置环参考轨迹位置(_ref_pos), 而非终点目标。
+        #   位置环输出速度设定受 max_speed 限幅, 大行程时终点目标与实际位置的瞬时差
+        #   可达数百 rad, 若用终点目标算跟随误差会在正常加速段误触发 FOLLOW_ERROR。
+        #   固件跟随误差同样针对插补/限速后的期望轨迹, 不是最终目标。
+        #   控制环在电机端(theta_m), _ref_pos 亦为电机端积分。
         if self.fsm.control_mode == ControlMode.POSITION:
-            self._follow_err = self.fsm.target_pos - fb_phys['theta_m']
+            self._follow_err = self._ref_pos - fb_phys['theta_m']
         else:
             self._follow_err = 0.0
+            self._ref_pos = fb_phys['theta_m']   # 非位置模式: 参考位置跟随实际, 切回时无突跳
         fb_phys['follow_err'] = self._follow_err
 
         # 2. 故障检测(每个FOC周期)
@@ -107,6 +114,18 @@ class DigitalTwinEngine:
         # 4. 取控制参考
         ref = self.fsm.get_ref()
 
+        # 4.5 进入 IDLE 边沿(失能/停止/故障/安全): 清零控制器 PID 积分状态。
+        #   IDLE 态 ControllerCore.run 直接返回 (0,0), FOC/级联 PID 不再被调用,
+        #   积分项会冻结残留; 若不清零, 下次启动残留积分立即产生冲击电流/力矩。
+        #   对齐真实驱动器: 失能(关断功率级)时电流环积分复位。
+        if ref.ctrl_type == RefCtrlType.IDLE and self._prev_ctrl_type != RefCtrlType.IDLE:
+            self.controller.reset()
+        # 进入 POSITION 模式边沿: 参考轨迹位置对齐当前实际位置, 从当前点起算跟随误差,
+        #   避免从其它模式切入时 _ref_pos 残留导致首拍跟随误差突跳误报。
+        if ref.ctrl_type == RefCtrlType.POSITION and self._prev_ctrl_type != RefCtrlType.POSITION:
+            self._ref_pos = fb_phys['theta_m']
+        self._prev_ctrl_type = ref.ctrl_type
+
         # 5. 控制器: 位置环分频, 速度环+电流环
         # 控制环反馈用电机端(theta_m/omega_m), 对齐固件:
         #   fb.pos = multiturn.get_position = theta_m (电机端多圈 rad)
@@ -117,6 +136,14 @@ class DigitalTwinEngine:
             pos=fb_phys['theta_m'], vel=fb_phys['omega_m'],
             id=fb_phys['id'], iq=fb_phys['iq'])
         ud, uq = self.controller.run(ref, fb_cascade)
+
+        # 5.5 位置环参考轨迹位置积分(供跟随误差判定)。
+        #   位置模式下 vel_setpoint 是位置环限速后的期望速度, 积分即期望轨迹位置。
+        #   进入 IDLE(失能/停止/故障/安全)时 _ref_pos 重新对齐实际位置, 避免残留误差。
+        if ref.ctrl_type == RefCtrlType.POSITION:
+            self._ref_pos += self.controller.cascade.vel_setpoint * dt
+        elif ref.ctrl_type == RefCtrlType.IDLE:
+            self._ref_pos = fb_phys['theta_m']
 
         # 6. 负载模型
         t_load_motor, J_load = self.load.update(fb_phys['pos'], fb_phys['vel_out'], dt)
@@ -159,7 +186,8 @@ class DigitalTwinEngine:
             'enc_theta': fb_phys['enc_theta'], 'enc_vel': fb_phys['enc_vel'],
             # 控制量
             'ud': ud, 'uq': uq,
-            'id_ref': self.controller.foc.foc.id, 'iq_ref': self.controller.foc.foc.iq,
+            'id_ref': self.controller.last_id_ref, 'iq_ref': self.controller.last_iq_ref,
+            'id_meas': self.controller.foc.foc.id, 'iq_meas': self.controller.foc.foc.iq,
             'vel_setpoint': self.controller.cascade.vel_setpoint,
             # 负载
             't_load': t_load, 't_gravity': load_snap['t_gravity'],

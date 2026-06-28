@@ -633,6 +633,9 @@ class ControllerCore:
 
         self._pos_counter = 0
         self._pos_ratio = dt_pos_ratio
+        # 最近一拍的电流环参考(供遥测/显示, 区别于 FOC 实测电流)
+        self.last_id_ref = 0.0
+        self.last_iq_ref = 0.0
 
     def run(self, ref: MotorRef, fb: CascadeFeedback) -> tuple:
         """运行一个 FOC 周期: 级联 → 电流环 → ud/uq。
@@ -651,6 +654,9 @@ class ControllerCore:
 
         # 速度环 + 入环分发 → id_ref/iq_ref
         out = self.cascade.run(ref, fb)
+        # 记录电流环参考(供遥测显示, 区别于 FOC 实测滤波电流)
+        self.last_id_ref = out.id_ref
+        self.last_iq_ref = out.iq_ref
 
         # 开环电压模式: 直接用 ref.voltage 作为 uq, 带 d轴解耦 + 电流软限位
         # (对齐真实驱动器: 开环模式也有电流保护; d轴解耦防止交叉耦合使 id 发散)
@@ -664,6 +670,8 @@ class ControllerCore:
             ud = self._decouple_d(fb)
             return (ud, uq)
         if ref.ctrl_type == RefCtrlType.IDLE:
+            self.last_id_ref = 0.0
+            self.last_iq_ref = 0.0
             return (0.0, 0.0)
 
         # 电流环(FOC PI) → ud/uq
@@ -681,6 +689,8 @@ class ControllerCore:
         self.cascade.reset()
         self.foc.reset()
         self._pos_counter = 0
+        self.last_id_ref = 0.0
+        self.last_iq_ref = 0.0
 
     def _speed_soft_limit(self, uq_cmd: float, fb: CascadeFeedback) -> float:
         """速度软限位: 当转速接近 max_speed 时衰减 uq, 避免开环模式超速。

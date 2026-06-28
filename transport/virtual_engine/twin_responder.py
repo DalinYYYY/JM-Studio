@@ -42,6 +42,21 @@ _CTRL_TO_RUN = {
     ControlMode.VOLTAGE:    int(RunState.VOLTAGE_VECTOR),
 }
 
+# twin ControlMode -> 协议 JmCmd 命令码 (状态帧第3字节 ctrl_mode)。
+# 状态机面板运行模式图的节点 key 是 JmCmd 命令码(POSITION=21/VELOCITY=20/...),
+# 故状态帧上报的 ctrl_mode 必须是 JmCmd 值, 而非 twin ControlMode 枚举值(POSITION=1/...),
+# 否则面板永远点不亮当前模式块。IMPEDANCE 复用 MIT 块(面板未单列阻抗节点)。
+_CTRL_TO_JMCMD = {
+    ControlMode.NONE:       0,
+    ControlMode.CURRENT:    int(JmCmd.CURRENT),
+    ControlMode.TORQUE:     int(JmCmd.TORQUE),
+    ControlMode.IMPEDANCE:  int(JmCmd.MIT),
+    ControlMode.VELOCITY:   int(JmCmd.VELOCITY),
+    ControlMode.POSITION:   int(JmCmd.POSITION),
+    ControlMode.DUTY:       int(JmCmd.DUTY_CYCLE),
+    ControlMode.VOLTAGE:    int(JmCmd.VOLTAGE_VECTOR),
+}
+
 
 class TwinResponder:
     """数字孪生应答器: 协议命令 <-> DigitalTwinEngine。"""
@@ -245,6 +260,10 @@ class TwinResponder:
     def _run_state(self) -> int:
         return _CTRL_TO_RUN.get(self.engine.fsm.control_mode, int(RunState.IDLE))
 
+    def _ctrl_mode_jmcmd(self) -> int:
+        """当前控制模式对应的 JmCmd 命令码(状态帧第3字节, 供面板运行模式图点亮)。"""
+        return _CTRL_TO_JMCMD.get(self.engine.fsm.control_mode, 0)
+
     def _feedback_frame(self):
         t = self._tlm()
         payload = struct.pack('<fffffH',
@@ -258,7 +277,7 @@ class TwinResponder:
         t = self._tlm()
         return (int(JmCmd.READ_STATE),
                 bytes([self._top_fsm() & 0xFF, self._run_state() & 0xFF,
-                       int(t.get('control_mode', 0)) & 0xFF,
+                       self._ctrl_mode_jmcmd() & 0xFF,
                        1 if self._top_fsm() in (int(TopFsm.READY), int(TopFsm.RUN)) else 0,
                        int(t.get('run_state', 0)) & 0xFF]))  # 第5字节: 运动子状态(STANDSTILL/MOVING/...)
 
@@ -321,7 +340,7 @@ class TwinResponder:
             out += struct.pack('<II', int(t.get('fault_flags', 0)), 0)
         if mask & JmTlmBit.STATE:
             out += bytes([self._top_fsm() & 0xFF, self._run_state() & 0xFF,
-                          int(t.get('control_mode', 0)) & 0xFF,
+                          self._ctrl_mode_jmcmd() & 0xFF,
                           1 if self._top_fsm() in (int(TopFsm.READY), int(TopFsm.RUN)) else 0,
                           int(t.get('run_state', 0)) & 0xFF])  # 第5字节: 运动子状态
         return (int(JmCmd.TELEMETRY), bytes(out))

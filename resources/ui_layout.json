@@ -6,12 +6,12 @@
     "display_buffer_max": 21200,
     "main_window": {
       "width": 1749,
-      "height": 1070,
-      "x": 852,
-      "y": 210
+      "height": 1066,
+      "x": 1503,
+      "y": 194
     },
     "right_splitter": [
-      1014,
+      1010,
       0
     ],
     "log_splitter_sizes": [
@@ -20,7 +20,7 @@
     ],
     "layout_edit": false,
     "telemetry": {
-      "mask": 511,
+      "mask": 391,
       "period_ms": 1
     },
     "feedback_poll": {
@@ -64,9 +64,9 @@
       }
     },
     "motion": {
-      "current_cmd": 20,
+      "current_cmd": 21,
       "fields": {
-        "vel_ref": 1.0
+        "pos_ref": 0.0
       }
     },
     "motor_param": {
@@ -260,7 +260,7 @@
         "adv_velocity": false,
         "adv_position": false
       },
-      "current_tab": 1
+      "current_tab": 0
     },
     "fault_info": {
       "disable_mask": 0,
