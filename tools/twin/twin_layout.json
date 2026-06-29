@@ -1,7 +1,7 @@
 {
   "main_window": {
-    "width": 1553,
-    "height": 930
+    "width": 1818,
+    "height": 1024
   },
   "twin_param": {
     "adv_enabled": {
@@ -9,14 +9,14 @@
       "adv_velocity": false,
       "adv_position": false
     },
-    "current_tab": 3
+    "current_tab": 0
   },
   "engine_mp": {
     "version": 1,
-    "motor_name": "0",
+    "motor_name": "TwinMotor",
     "motor_instance": {
       "motor_id": 0,
-      "motor_name": "0"
+      "motor_name": "TwinMotor"
     },
     "motor_base": {
       "r": 0.1,
@@ -25,21 +25,21 @@
       "flux": 0.001,
       "kt": 0.1,
       "pole_pairs": 7,
-      "rated_current": 5.0,
-      "peak_current": 15.0,
-      "max_speed": 300.0,
-      "dead_time_ns": 500.0,
+      "rated_current": 20.0,
+      "peak_current": 60.0,
+      "max_speed": 50.0,
+      "dead_time_ns": 500,
       "rated_voltage": 48.0,
-      "rated_speed_rpm": 3000.0,
-      "rated_torque": 8.0,
-      "peak_torque": 6.0,
-      "inertia": 0.00025,
+      "rated_speed_rpm": 3000,
+      "rated_torque": 10.0,
+      "peak_torque": 30.0,
+      "inertia": 0.0005,
       "ke": 0.01,
       "pwm_freq_hz": 20000,
       "foc_freq_hz": 20000
     },
     "gearbox_param": {
-      "gear_ratio": 10000.0,
+      "gear_ratio": 200.0,
       "gear_efficiency": 0.85,
       "output_torque_const": 10.0,
       "gear_backlash": 0.01
@@ -47,7 +47,7 @@
     "encoder_param": {
       "enc_lines": 4000,
       "enc_direction": 1,
-      "enc_offset": 0,
+      "enc_offset": 0.0,
       "elec_angle_bias": 0.0,
       "pos_filter_alpha": 0.1,
       "enc_type": 0,
@@ -68,7 +68,7 @@
       "homing_current": 2.0
     },
     "current_loop": {
-      "current_kp_d": 0.15,
+      "current_kp_d": 0.5,
       "current_ki_d": 10.0,
       "current_kp_q": 0.5,
       "current_ki_q": 10.0,
@@ -82,12 +82,12 @@
       "q_feedforward_gain": 0.0
     },
     "position_loop": {
-      "speed_kp": 0.8,
+      "speed_kp": 0.1,
       "speed_ki": 1.0,
       "speed_integral_limit": 10.0,
       "velocity_ff_gain": 0.0,
       "accel_ff_gain": 0.0,
-      "position_kp": 25.0,
+      "position_kp": 10.0,
       "position_integral_limit": 0.0,
       "friction_coulomb": 0.0,
       "friction_viscous": 0.0,

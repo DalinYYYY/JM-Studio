@@ -18,11 +18,11 @@ from PyQt6.QtGui import QColor, QPixmap, QPainter, QPainterPath, QBrush, QPen
 # 键为语义名(扁平命名空间), 同名键在两套色板中一一对应。
 DARK = {
     # 通用结构
-    "app_bg": "#16181F",
-    "panel_bg": "#1E222B",
-    "card_top": "#2A2F3D",
-    "card_bottom": "#232733",
-    "border": "#383E4E",
+    "app_bg": "#0B0F1A",
+    "panel_bg": "#121826",
+    "card_top": "#1B2335",
+    "card_bottom": "#141B29",
+    "border": "#2A3850",
     "text": "#D8DCE6",
     "text_strong": "#F0F2F8",
     "muted": "#7C8294",
@@ -59,8 +59,19 @@ DARK = {
     "danger_text": "#FFFFFF",
     "warn": "#C8963C",
     # ---- 画布/自绘图 ----
-    "bg_top": "#232733",
-    "bg_bottom": "#191C24",
+    "bg_top": "#162031",
+    "bg_bottom": "#0A0E18",
+    # ---- 数字孪生可视化专用 ----
+    "twin_bg_top": "#141E33",        # 中央画布渐变顶
+    "twin_bg_bottom": "#070B14",     # 中央画布渐变底
+    "twin_panel_bg": "16,23,39,230",     # 半透明面板底 (rgba)
+    "twin_glass": "#5FD4FF",         # 玻璃外壳高光/描边基色 (青)
+    "twin_glass_fill": "95,212,255,28",  # 玻璃外壳半透明填充 (rgba)
+    "twin_copper": "#E0913C",        # 铜绕组色
+    "twin_copper_glow": "224,145,60,90",  # 铜绕组辉光 (rgba)
+    "twin_brass": "#C9A24B",         # 金色支架色
+    "twin_brass_dark": "#6E5520",    # 支架暗部
+    "twin_leader": "127,160,200,200",    # 引线色 (rgba)
     # FOC 框图块
     "block_top": "#3A4150",
     "block_bottom": "#2C313D",
@@ -157,6 +168,17 @@ LIGHT = {
     # 画布/自绘图(浅)
     "bg_top": "#FAFBFE",
     "bg_bottom": "#ECEFF5",
+    # ---- 数字孪生可视化专用(浅) ----
+    "twin_bg_top": "#E8EEF8",
+    "twin_bg_bottom": "#D4DEEC",
+    "twin_panel_bg": "255,255,255,235",
+    "twin_glass": "#1E88C7",
+    "twin_glass_fill": "30,136,199,30",
+    "twin_copper": "#B5701E",
+    "twin_copper_glow": "181,112,30,80",
+    "twin_brass": "#A6852F",
+    "twin_brass_dark": "#6E5520",
+    "twin_leader": "90,98,117,200",
     "block_top": "#FFFFFF",
     "block_bottom": "#EAEEF5",
     "block_border": "#C2CAD8",

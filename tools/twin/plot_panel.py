@@ -5,6 +5,8 @@
 """
 
 from dataclasses import dataclass
+import math
+import warnings
 import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer
@@ -24,6 +26,13 @@ if pg is not None:
         pg.setConfigOptions(antialias=False, useOpenGL=True)
     except Exception:
         pg.setConfigOptions(antialias=False)
+    # pyqtgraph 0.14 + numpy 2.x: ViewBox autorange 在做坐标 cast 时会抛
+    # "overflow encountered in cast" RuntimeWarning (上游已知问题, 仅告警不影响绘图)。
+    # 作用域限定到 ViewBox 模块, 避免淹没真实告警。
+    warnings.filterwarnings(
+        "ignore", message="overflow encountered in cast",
+        category=RuntimeWarning,
+        module=r"pyqtgraph\.graphicsItems\.ViewBox\.ViewBox")
 
 
 @dataclass
@@ -204,10 +213,15 @@ class TwinPlotPanel(QWidget):
             if val is None:
                 continue
             try:
-                buf.push(ts, float(val))
-                self._dirty.add(key)   # 标记该曲线有新数据
+                fv = float(val)
             except (ValueError, TypeError):
-                pass
+                continue
+            # 跳过非有限值 (inf/NaN): 否则 pyqtgraph autorange 会触发
+            # numpy 2.x "overflow encountered in cast" 警告甚至坐标轴异常
+            if not math.isfinite(fv):
+                continue
+            buf.push(ts, fv)
+            self._dirty.add(key)   # 标记该曲线有新数据
         self._fps_cnt += 1
 
     # ---------- 事件标记线 (Round 7) ----------

@@ -436,6 +436,14 @@ class TwinMainWindow(QMainWindow):
                 if mp_from_dict(self._bridge.engine.mp, mp_snap, section='all'):
                     # 启动阶段(未运行)用 rebuild 让物理模型/控制器/fsm 全部用新参数生效
                     self._bridge.engine.rebuild()
+                    # 重新同步各引擎绑定面板: 快照已写入 mp, 但面板控件仍停留在
+                    # set_engine 时加载的默认值 — 不重载会导致"给定参数显示默认值,
+                    # 实际 mp/可视化用快照值"的错位 (如减速比 100 vs 10000)。
+                    self._twin_param_panel.set_engine(self._bridge.engine)
+                    self._feedback_panel.set_engine(self._bridge.engine)
+                    self._control_panel.set_engine(self._bridge.engine)
+                    self._plot_panel.set_engine(self._bridge.engine)
+                    self._motor_view_panel.set_engine(self._bridge.engine)
                     self._log_panel.log("OK", "已加载引擎参数快照")
             except Exception as e:
                 self._log_panel.log("WARN", f"引擎参数快照加载失败: {e}")
