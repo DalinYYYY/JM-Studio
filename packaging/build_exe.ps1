@@ -44,6 +44,9 @@ $IconIco = Join-Path $Resources "pic\log_ioc.ico"
 $RuntimeReq = Join-Path $Root "requirements.txt"
 $BuildReq = Join-Path $ScriptDir "requirements-build.txt"
 $AddData = "$Resources;resources"
+$DateTag = Get-Date -Format "yyyyMMdd"
+$BuildName = $Name
+$BuildDir = "${Name}_${DateTag}"
 
 if (!(Test-Path $Entry)) {
     throw "Entry file not found: $Entry"
@@ -54,7 +57,7 @@ if (!(Test-Path $Resources)) {
 
 Write-Host "Project : $Root"
 Write-Host "Python  : $PythonExe"
-Write-Host "Target  : $Name"
+Write-Host "Target  : $BuildDir"
 Write-Host "Mode    : $(if ($OneFile) { 'onefile' } else { 'onedir' })"
 
 if (!$SkipInstall) {
@@ -75,7 +78,7 @@ Invoke-Step "Check PyInstaller" {
 $PyiArgs = @(
     "--noconfirm",
     "--windowed",
-    "--name", $Name,
+    "--name", $BuildName,
     "--distpath", (Join-Path $Root "dist"),
     "--workpath", (Join-Path $Root "build"),
     "--specpath", (Join-Path $Root "build"),
@@ -106,10 +109,22 @@ Invoke-Step "Build EXE" {
     & $PythonExe -m PyInstaller @PyiArgs
 }
 
+$Output = $null
 if ($OneFile) {
-    $Output = Join-Path $Root "dist\$Name.exe"
+    $Output = Join-Path $Root "dist\$BuildName.exe"
 } else {
-    $Output = Join-Path $Root "dist\$Name\$Name.exe"
+    $DistRoot = Join-Path $Root "dist"
+    $SourceDir = Join-Path $DistRoot $BuildName
+    $TargetDir = Join-Path $DistRoot $BuildDir
+    if (Test-Path $TargetDir) {
+        Remove-Item $TargetDir -Recurse -Force
+    }
+    if (Test-Path $SourceDir) {
+        Move-Item $SourceDir $TargetDir
+    } else {
+        throw "Build output directory not found: $SourceDir"
+    }
+    $Output = Join-Path $TargetDir "$BuildName.exe"
 }
 
 Write-Host ""
