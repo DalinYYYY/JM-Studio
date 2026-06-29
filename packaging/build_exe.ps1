@@ -127,7 +127,13 @@ if ($OneFile) {
     $SourceDir = Join-Path $DistRoot $BuildName
     $TargetDir = Join-Path $DistRoot $BuildDir
     if (Test-Path $TargetDir) {
-        Remove-Item $TargetDir -Recurse -Force
+        $TimeTag = Get-Date -Format "HHmmss"
+        $TargetDir = Join-Path $DistRoot "${BuildDir}_$TimeTag"
+        $Seq = 1
+        while (Test-Path $TargetDir) {
+            $TargetDir = Join-Path $DistRoot ("{0}_{1:00}" -f "${BuildDir}_$TimeTag", $Seq)
+            $Seq++
+        }
     }
     if (Test-Path $SourceDir) {
         Move-Item $SourceDir $TargetDir
