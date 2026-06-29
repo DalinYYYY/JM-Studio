@@ -1,7 +1,12 @@
 {
   "main_window": {
+<<<<<<< HEAD
     "width": 1818,
     "height": 1024
+=======
+    "width": 1234,
+    "height": 800
+>>>>>>> 844c51c723d1652ba40340e70b1a545617d9ce0a
   },
   "twin_param": {
     "adv_enabled": {
@@ -11,6 +16,7 @@
     },
     "current_tab": 0
   },
+  "virtual_motor_mode": false,
   "engine_mp": {
     "version": 1,
     "motor_name": "TwinMotor",
