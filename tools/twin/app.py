@@ -49,6 +49,9 @@ class TwinMainWindow(QMainWindow):
         # 引擎桥接
         self._bridge = TwinEngineBridge(self)
 
+        # 虚拟电机模式待应用状态 (引擎就绪前缓存配置中的开关值)
+        self._pending_virtual_mode = False
+
         self._build_ui()
         self._connect_signals()
 
@@ -106,6 +109,10 @@ class TwinMainWindow(QMainWindow):
         self._tabs.addTab(self._fault_history_panel, "故障历史")
         self._tabs.addTab(self._log_panel, "事件日志")
         self._tabs.setCurrentWidget(self._motor_view_panel)
+        # 虚拟电机模式默认关闭: 初始隐藏孪生参数与故障历史 Tab
+        # (由工具栏"虚拟电机模式"开关在引擎运行后控制显隐)
+        self._tabs.setTabVisible(self._tabs.indexOf(self._twin_param_panel), False)
+        self._tabs.setTabVisible(self._tabs.indexOf(self._fault_history_panel), False)
         right_v.addWidget(self._tabs)
         splitter.addWidget(right)
 
@@ -168,6 +175,18 @@ class TwinMainWindow(QMainWindow):
 
         tb.addSeparator()
 
+        # 虚拟电机模式开关: 仅在虚拟引擎运行时可用, 控制孪生参数/故障历史等虚拟电机专属视图的显隐
+        self._act_virtual_mode = QAction("虚拟电机模式", self)
+        self._act_virtual_mode.setCheckable(True)
+        self._act_virtual_mode.setChecked(False)
+        self._act_virtual_mode.setEnabled(False)   # 引擎未运行前禁用
+        self._act_virtual_mode.setToolTip(
+            "仅在连接虚拟引擎时可用。开启后显示孪生参数、虚拟电机故障注入与错误历史表。")
+        self._act_virtual_mode.toggled.connect(self._on_virtual_mode_toggled)
+        tb.addAction(self._act_virtual_mode)
+
+        tb.addSeparator()
+
         act_theme = QAction("切换主题", self)
         act_theme.triggered.connect(self._on_toggle_theme)
         tb.addAction(act_theme)
@@ -226,7 +245,43 @@ class TwinMainWindow(QMainWindow):
     def _on_running_changed(self, running: bool):
         self._act_start.setEnabled(not running)
         self._act_stop.setEnabled(running)
+        # 虚拟电机模式开关: 仅在虚拟引擎运行时可用
+        if running:
+            self._act_virtual_mode.setEnabled(True)
+            # 引擎就绪后, 若配置要求开启则自动勾选
+            if self._pending_virtual_mode and not self._act_virtual_mode.isChecked():
+                self._act_virtual_mode.setChecked(True)
+            self._pending_virtual_mode = False
+        else:
+            # 引擎停止: 禁用开关并强制取消勾选 (同步隐藏虚拟电机专属视图)
+            self._act_virtual_mode.setEnabled(False)
+            if self._act_virtual_mode.isChecked():
+                self._act_virtual_mode.setChecked(False)
         self._log_panel.log("SYS", f"仿真{'启动' if running else '停止'}")
+
+    def _on_virtual_mode_toggled(self, on: bool):
+        """虚拟电机模式开关: 控制孪生参数 / 故障历史 (虚拟电机故障注入与错误表) 显隐。
+
+        开关仅在虚拟引擎运行时可勾选 (由 _on_running_changed 联动 enable);
+        关闭时隐藏孪生参数 Tab 和故障历史 Tab。
+        """
+        # 守卫: 引擎未运行时拒绝开启 (开关应已 disabled, 此为程序化调用兜底)
+        if on and not self._bridge.is_running():
+            self._act_virtual_mode.blockSignals(True)
+            self._act_virtual_mode.setChecked(False)
+            self._act_virtual_mode.blockSignals(False)
+            return
+        idx_param = self._tabs.indexOf(self._twin_param_panel)
+        idx_fault = self._tabs.indexOf(self._fault_history_panel)
+        self._tabs.setTabVisible(idx_param, on)
+        self._tabs.setTabVisible(idx_fault, on)
+        # 当前选中的 Tab 被隐藏时, 切回首页 (电机可视化)
+        if not on and self._tabs.currentWidget() in (self._twin_param_panel,
+                                                     self._fault_history_panel):
+            self._tabs.setCurrentWidget(self._motor_view_panel)
+        self._log_panel.log("SYS",
+                            f"虚拟电机模式: {'开启' if on else '关闭'}")
+        self._log(f"虚拟电机模式: {'开启' if on else '关闭'}")
 
     # ==================== 命令处理 ====================
     def _on_system_command(self, name: str):
@@ -447,6 +502,10 @@ class TwinMainWindow(QMainWindow):
                             int(mw.get("height", self.height())))
             except Exception:
                 pass
+        # 虚拟电机模式开关 (引擎就绪后由 _on_running_changed 应用)
+        vm = d.get("virtual_motor_mode")
+        if isinstance(vm, bool):
+            self._pending_virtual_mode = vm
 
     def _collect_config(self) -> dict:
         cfg = {"main_window": {"width": int(self.width()), "height": int(self.height())}}
@@ -454,6 +513,8 @@ class TwinMainWindow(QMainWindow):
             cfg["twin_param"] = self._twin_param_panel.get_opts()
         except Exception:
             pass
+        # 虚拟电机模式开关状态
+        cfg["virtual_motor_mode"] = bool(self._act_virtual_mode.isChecked())
         # 引擎参数完整快照 (满足"所有参数持久化"硬约束)
         try:
             from transport.virtual_engine.twin_config import mp_to_dict
@@ -471,6 +532,8 @@ class TwinMainWindow(QMainWindow):
 
     # ==================== 退出 ====================
     def closeEvent(self, event):
-        self._bridge.stop()
+        # 先保存配置 (此时虚拟电机模式开关 checked 仍是用户最后状态),
+        # 再停止引擎 (stop 会触发 _on_running_changed 把 checked 重置为 False)
         self._save_config()
+        self._bridge.stop()
         super().closeEvent(event)
