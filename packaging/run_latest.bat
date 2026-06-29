@@ -3,11 +3,11 @@ setlocal EnableExtensions
 
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..") do set "ROOT=%%~fI"
-set "DIST=%ROOT%\dist"
+set "DIST=dist"
 set "BASE=JointMotorController"
 
 if not exist "%DIST%" (
-    echo Dist directory not found: "%DIST%"
+    echo Dist directory not found: "%ROOT%\%DIST%"
     exit /b 1
 )
 

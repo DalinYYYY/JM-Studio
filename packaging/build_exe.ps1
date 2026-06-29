@@ -10,8 +10,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Root = (Resolve-Path (Join-Path $ScriptDir "..")).Path
-Set-Location $Root
+$ProjectRoot = (Resolve-Path (Join-Path $ScriptDir "..")).Path
+Set-Location $ProjectRoot
 
 function Invoke-Step {
     param(
@@ -29,19 +29,29 @@ function Invoke-Step {
 }
 
 if ([string]::IsNullOrWhiteSpace($Python)) {
-    $cmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($null -eq $cmd) {
-        throw "python was not found. Pass -Python C:\path\to\python.exe"
+    $PythonExe = $null
+    $CondaPrefix = $env:CONDA_PREFIX
+    if (-not [string]::IsNullOrWhiteSpace($CondaPrefix)) {
+        $CondaPython = Join-Path $CondaPrefix "python.exe"
+        if (Test-Path $CondaPython) {
+            $PythonExe = (Resolve-Path $CondaPython).Path
+        }
     }
-    $PythonExe = $cmd.Source
+    if (-not $PythonExe) {
+        $cmd = Get-Command python -ErrorAction SilentlyContinue
+        if ($null -eq $cmd) {
+            throw "python was not found. Pass -Python C:\path\to\python.exe"
+        }
+        $PythonExe = $cmd.Source
+    }
 } else {
     $PythonExe = (Resolve-Path $Python).Path
 }
 
-$Entry = Join-Path $Root "main.py"
-$Resources = Join-Path $Root "resources"
+$Entry = "main.py"
+$Resources = Join-Path $ProjectRoot "resources"
 $IconIco = Join-Path $Resources "pic\log_ioc.ico"
-$RuntimeReq = Join-Path $Root "requirements.txt"
+$RuntimeReq = "requirements.txt"
 $BuildReq = Join-Path $ScriptDir "requirements-build.txt"
 $AddData = "$Resources;resources"
 $DateTag = Get-Date -Format "yyyyMMdd"
@@ -49,13 +59,13 @@ $BuildName = $Name
 $BuildDir = "${Name}_${DateTag}"
 
 if (!(Test-Path $Entry)) {
-    throw "Entry file not found: $Entry"
+    throw "Entry file not found: $ProjectRoot\$Entry"
 }
 if (!(Test-Path $Resources)) {
     throw "Resources directory not found: $Resources"
 }
 
-Write-Host "Project : $Root"
+Write-Host "Project : ."
 Write-Host "Python  : $PythonExe"
 Write-Host "Target  : $BuildDir"
 Write-Host "Mode    : $(if ($OneFile) { 'onefile' } else { 'onedir' })"
@@ -79,10 +89,10 @@ $PyiArgs = @(
     "--noconfirm",
     "--windowed",
     "--name", $BuildName,
-    "--distpath", (Join-Path $Root "dist"),
-    "--workpath", (Join-Path $Root "build"),
-    "--specpath", (Join-Path $Root "build"),
-    "--paths", $Root,
+    "--distpath", "dist",
+    "--workpath", "build",
+    "--specpath", "build",
+    "--paths", ".",
     "--add-data", $AddData,
     "--collect-all", "PyQt6",
     "--collect-all", "pyqtgraph",
@@ -111,9 +121,9 @@ Invoke-Step "Build EXE" {
 
 $Output = $null
 if ($OneFile) {
-    $Output = Join-Path $Root "dist\$BuildName.exe"
+    $Output = "dist\$BuildName.exe"
 } else {
-    $DistRoot = Join-Path $Root "dist"
+    $DistRoot = "dist"
     $SourceDir = Join-Path $DistRoot $BuildName
     $TargetDir = Join-Path $DistRoot $BuildDir
     if (Test-Path $TargetDir) {
