@@ -1,7 +1,7 @@
 {
   "main_window": {
-    "width": 1553,
-    "height": 930
+    "width": 1234,
+    "height": 800
   },
   "twin_param": {
     "adv_enabled": {
@@ -9,14 +9,15 @@
       "adv_velocity": false,
       "adv_position": false
     },
-    "current_tab": 3
+    "current_tab": 0
   },
+  "virtual_motor_mode": false,
   "engine_mp": {
     "version": 1,
-    "motor_name": "0",
+    "motor_name": "TwinMotor",
     "motor_instance": {
       "motor_id": 0,
-      "motor_name": "0"
+      "motor_name": "TwinMotor"
     },
     "motor_base": {
       "r": 0.1,
