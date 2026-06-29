@@ -6,12 +6,12 @@
     "display_buffer_max": 21200,
     "main_window": {
       "width": 1749,
-      "height": 1066,
-      "x": 1503,
-      "y": 194
+      "height": 1065,
+      "x": 254,
+      "y": 120
     },
     "right_splitter": [
-      1010,
+      1009,
       0
     ],
     "log_splitter_sizes": [
@@ -20,8 +20,8 @@
     ],
     "layout_edit": false,
     "telemetry": {
-      "mask": 391,
-      "period_ms": 1
+      "mask": 39,
+      "period_ms": 10
     },
     "feedback_poll": {
       "enabled": true,
@@ -40,9 +40,9 @@
       "follow": true,
       "auto_y": true,
       "current_visibility": {
-        "id": true,
-        "iq": true,
-        "ibus": true,
+        "id": false,
+        "iq": false,
+        "ibus": false,
         "ia": true,
         "ib": true,
         "ic": true
@@ -64,9 +64,9 @@
       }
     },
     "motion": {
-      "current_cmd": 21,
+      "current_cmd": 20,
       "fields": {
-        "pos_ref": 0.0
+        "vel_ref": 1.0
       }
     },
     "motor_param": {
@@ -161,7 +161,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 481,
+        "5": 461,
         "6": 72,
         "7": 72
       }
@@ -249,7 +249,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 481,
+        "5": 461,
         "6": 72,
         "7": 72
       }

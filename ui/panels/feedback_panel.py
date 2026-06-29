@@ -827,6 +827,8 @@ class FeedbackPanel(QWidget):
         self.setObjectName("fbRoot")
         self._enabled = False
         self._last_state = (None, None, None, None)
+        self._pole_pairs = _MotorView.DEFAULT_POLE_PAIRS
+        self._elec_bias = 0.0     # elec_angle_bias (rad), 由 set_motor_params 注入
         self._poll_timer = QTimer(self)
         self._poll_timer.setSingleShot(False)
         self._poll_timer.timeout.connect(self._on_poll_tick)
@@ -874,11 +876,12 @@ class FeedbackPanel(QWidget):
             ("温度 FET", "temp_fet", "{:.1f}", "°C"),
             ("温度 电机", "temp_motor", "{:.1f}", "°C"),
         ])
-        self._card_motion = _ParamCard("位置 / 速度", [
-            ("位置 pos", "pos", "{:.4f}", "rad"),
-            ("速度 vel", "vel", "{:.4f}", "rad/s"),
+        self._card_motion = _ParamCard("位置 / 角度 / 速度", [
+            ("电机位置", "pos", "{:+.4f}", "rad"),
+            ("电机速度", "vel", "{:+.4f}", "rad/s"),
+            ("机械角度", "_mech_deg", "{:.2f}", "°"),
+            ("电角度", "_elec_deg", "{:.2f}", "°"),
             ("多圈计数", "multiturn", "{}", ""),
-            ("单圈位置", "single", "{:.4f}", "rad"),
         ])
         self._card_state = _ParamCard("状态 / 故障", [
             ("顶层状态", "_fsm", "{}", ""),
@@ -1005,6 +1008,16 @@ class FeedbackPanel(QWidget):
         self._card_bus.update_values(fb)
         self._card_motion.update_values(fb)
 
+        # 机械角度(单圈 0~360°) + 电角度(0~360°): 由 single + pole_pairs + elec_bias 计算。
+        # theta_e = (theta_m * pp + bias) % 2π, 而 theta_m ≡ single (mod 2π),
+        # 故 theta_e = (single * pp + bias) % 2π, 与物理引擎一致且适用真机固件。
+        single = float(getattr(fb, "single", 0.0) or 0.0)
+        mech_deg = math.degrees(single) % 360.0
+        elec_rad = (single * self._pole_pairs + self._elec_bias) % (2.0 * math.pi)
+        elec_deg = math.degrees(elec_rad) % 360.0
+        self._card_motion.set_text("_mech_deg", f"{mech_deg:.2f}")
+        self._card_motion.set_text("_elec_deg", f"{elec_deg:.2f}")
+
         # 电机旋转示意(单圈角 + 速度 + iq)
         self._motor.set_feedback(
             getattr(fb, "single", 0.0), getattr(fb, "vel", 0.0),
@@ -1062,6 +1075,10 @@ class FeedbackPanel(QWidget):
     def set_motor_params(self, params: dict):
         """电机本体参数(r/ld/lq/flux/kt/ke/pole_pairs), 转发到转子示意图下方显示。"""
         self._motor.set_motor_params(params)
+        pp = int(params.get("pole_pairs", 0) or 0)
+        if pp > 0:
+            self._pole_pairs = pp
+        self._elec_bias = float(params.get("elec_angle_bias", 0.0) or 0.0)
 
     def update_state(self, top_fsm, run_state, ctrl_mode, enable):
         self._last_state = (top_fsm, run_state, ctrl_mode, enable)

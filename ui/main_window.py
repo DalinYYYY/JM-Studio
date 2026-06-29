@@ -44,7 +44,8 @@ class MainWindow(QMainWindow):
     _MAX_FEEDBACK_BATCH_PER_TICK = 1000
 
     # 电机本体参数(转发到反馈面板转子示意图), code_name 对应 CSV 参数字段
-    _MOTOR_PARAM_KEYS = ("r", "ld", "lq", "flux", "kt", "ke", "pole_pairs")
+    _MOTOR_PARAM_KEYS = ("r", "ld", "lq", "flux", "kt", "ke", "pole_pairs",
+                         "elec_angle_bias")
 
     def __init__(self):
         super().__init__()
