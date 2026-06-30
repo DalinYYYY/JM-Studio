@@ -1,78 +1,85 @@
-﻿VariableName,NameZh,Category,Access,DataType,DefaultValue,Unit,Index,Remarks
-config_version,配置版本号,SystemParam,RW,uint32,65536,,,主版本:次版本
-enable_uart,接口使能,SystemParam,RW,uint32,0,,,"bit0:UART
-bit1:CAN
-bit2:CANFD
-bit3:USB"
-enable_bus_sensor,总线传感器使能,SystemParam,RW,uint32,1,,,0:禁用 1:启用
-safety_limit,安全限制使能,SystemParam,RW,uint32,1,,,0:禁用 1:启用
-is_calibrated,电机是否校准,MotorCalibParam,RW,uint32,0,,,0:未校准 1:已校准
-pole_pairs,电机极对数,MotorCalibParam,RW,uint32,7,pairs,,
-calibration_current,校准电流,MotorCalibParam,RW,single,5,A,,电阻电感校准电流
-resistance_calib_max_voltage,电阻校准最大电压,MotorCalibParam,RW,single,1,V,,
-phase_inductance_d,d轴相电感,MotorCalibParam,RW,single,0.0001,H,,
-phase_inductance_q,q轴相电感,MotorCalibParam,RW,single,0.00012,H,,
-phase_resistance,相电阻,MotorCalibParam,RW,single,0.1,ohm,,
-direction,电机方向,MotorCalibParam,RW,uint32,1,,,1:正向 -1:反向
-motor_type,电机类型,MotorCalibParam,RW,uint32,0,,,0:SPMSM 1:IPMSM 2:BLDC
-current_lim,电流限制,MotorCalibParam,RW,single,15,A,,峰值电流限制
-current_control_bandwidth,电流环带宽,MotorCalibParam,RW,single,1000,Hz,,
-flux_linkage,永磁体磁链,MotorCalibParam,RW,single,0.001,Wb,,
-torque_constant,转矩常数,MotorCalibParam,RW,single,0.1,Nm/A,,
-rotor_inertia,转子惯量,MotorCalibParam,RW,single,1e-05,kg·m²,,
-friction_coulomb,库仑摩擦力矩,MotorCalibParam,RW,single,0,Nm,,
-friction_viscous,粘滞摩擦系数,MotorCalibParam,RW,single,0,Nm/(rad/s),,
-device_zero,设备零度,DeviceParam,RW,single,0,rad,,机械零点位置
-device_time,设备生产日期,DeviceParam,RW,single,0,,,YYYYMMDD格式
-kp_ld,d轴比例增益,ControlParam,RW,single,0.5,V/A,,电流环d轴P增益
-ki_ld,d轴积分增益,ControlParam,RW,single,10,V/(A·s),,电流环d轴I增益
-kp_lq,q轴比例增益,ControlParam,RW,single,0.5,V/A,,电流环q轴P增益
-ki_lq,q轴积分增益,ControlParam,RW,single,10,V/(A·s),,电流环q轴I增益
-integral_limit,积分限幅,ControlParam,RW,single,10,V,,电流环积分输出限幅
-decoupling_gain,dq轴解耦增益,ControlParam,RW,single,1,,,0~1
-comp_du_V,死区补偿电压,ControlParam,RW,single,0,V,,
-pwm_duty_max,PWM最大占空比,ControlParam,RW,single,0.9,,,0~1
-kp_s,速度环比例增益,ControlParam,RW,single,0.1,A/(rad/s),,
-ki_s,速度环积分增益,ControlParam,RW,single,1,A/rad,,
-speed_integral_limit,速度环积分限幅,ControlParam,RW,single,10,A,,
-vff,速度前馈系数,ControlParam,RW,single,1,,,0~1
-aff,加速度前馈系数,ControlParam,RW,single,0,,,0~1
-jerk_ff,加加速度前馈系数,ControlParam,RW,single,0,,,0~1
-speed_filter_alpha,速度滤波系数,ControlParam,RW,single,0.1,,,一阶低通滤波系数
-speed_filter_enable,速度滤波使能,ControlParam,RW,uint32,0,,,0:禁用 1:启用
-kp_p,位置环比例增益,ControlParam,RW,single,10,Hz,,
-ki_p,位置环积分增益,ControlParam,RW,single,0,1/s,,
-position_integral_limit,位置环积分限幅,ControlParam,RW,single,0,rad,,
-position_filter_alpha,位置滤波系数,ControlParam,RW,single,0.1,,,一阶低通滤波系数
-position_filter_enable,位置滤波使能,ControlParam,RW,uint32,0,,,0:禁用 1:启用
-following_error_limit,跟随误差限制,ControlParam,RW,single,1000,P,,位置跟随误差保护阈值
-over_current_A,过流保护阈值,ProtectCommParam,RW,single,20,A,,
-over_voltage_V,过压保护阈值,ProtectCommParam,RW,single,58,V,,
-under_voltage_V,欠压保护阈值,ProtectCommParam,RW,single,15,V,,
-over_temp_drive,驱动器过温阈值,ProtectCommParam,RW,single,85,℃,,
-over_temp_motor,电机过温阈值,ProtectCommParam,RW,single,85,℃,,
-under_temp_d,欠温保护阈值,ProtectCommParam,RW,single,-20,℃,,
-over_speed_rad_s,过速保护阈值,ProtectCommParam,RW,single,400,rad/s,,
-position_following_error_p,位置跟随误差保护,ProtectCommParam,RW,int32,1000,P,,
-pos_limit_min,位置下限,ProtectCommParam,RW,int32,-1e+06,P,,硬件位置下限
-pos_limit_max,位置上限,ProtectCommParam,RW,int32,1e+06,P,,硬件位置上限
-error_enable_mask,保护使能掩码,ProtectCommParam,RW,uint32,4.294967295e+09,,,bit0:过流 bit1:过压...
-can_id,CAN节点ID,DeviceParam,RW,uint32,1,,,
-can_baudrate,CAN波特率,DeviceParam,RW,uint32,1e+06,bps,,
-can_timeout_s,CAN通信超时,DeviceParam,RW,single,0.5,s,,0=禁用超时
-can_fd_enable,CAN FD使能,DeviceParam,RW,uint32,0,,,0:传统CAN 1:CAN FD
-can_fd_baudrate,CAN FD数据波特率,DeviceParam,RW,uint32,8e+06,bps,,
-uart_baudrate,UART波特率,DeviceParam,RW,uint32,115200,bps,,
-uart_parity,UART校验位,DeviceParam,RW,uint32,0,,,0:无 1:奇 2:偶
-uart_stop_bits,UART停止位,DeviceParam,RW,uint32,1,,,1:1位 2:2位
-mit_kp,MIT位置刚度,AdvancedAlgoParam,RW,single,10,Nm/rad,,
-mit_kd,MIT速度阻尼,AdvancedAlgoParam,RW,single,0.1,Nm/(rad/s),,
-mit_max_current,MIT最大电流,AdvancedAlgoParam,RW,single,10,A,,
-mit_feedforward_torque,MIT前馈力矩,AdvancedAlgoParam,RW,single,0,Nm,,
-force_kp,力控比例增益,AdvancedAlgoParam,RW,single,1,A/Nm,,
-force_ki,力控积分增益,AdvancedAlgoParam,RW,single,0.1,A/(Nm·s),,
-force_limit,力控力矩限制,AdvancedAlgoParam,RW,single,10,Nm,,
-force_control_enable,力控使能,AdvancedAlgoParam,RW,uint32,0,,,0:禁用 1:启用
-homing_method,回零方法,AdvancedAlgoParam,RW,uint32,0,,,0:当前位置回零 1:限位回零
-homing_speed,回零速度,AdvancedAlgoParam,RW,single,10,rad/s,,
-homing_offset,回零偏移,AdvancedAlgoParam,RW,single,0,rad,,
+VariableName,NameZh,Category,Access,DataType,DefaultValue,Min,Max,Unit,BlockOffset,Index,Remarks
+config_version,配置版本号,SystemParam,RW,uint32_t,65536,0,4294967295,,0x0040,0,主版本:次版本(高16位.低16位) [SystemParam段0-15 本表占用0-4]
+enable_uart,接口使能,SystemParam,RW,uint32_t,0,0,15,,0x0040,1,bit0:UART bit1:CAN bit2:CANFD bit3:USB
+enable_bus_sensor,总线传感器使能,SystemParam,RW,uint32_t,1,0,1,,0x0040,2,0:禁用 1:启用
+safety_limit,安全限制使能,SystemParam,RW,uint32_t,1,0,1,,0x0040,3,0:禁用 1:启用
+total_runtime_s,累计运行时间,SystemParam,RW,uint32_t,0,0,4294967295,s,0x0040,4,掉电保存 运维数据 定期写入避免频繁擦写
+is_calibrated,电机是否校准,MotorCalibParam,RW,uint32_t,0,0,1,,0x0080,16,0:未校准 1:已校准 [MotorCalibParam段16-47 本表占用16-42]
+pole_pairs,电机极对数,MotorCalibParam,RW,uint32_t,7,1,64,pairs,0x0080,17,
+motor_type,电机类型,MotorCalibParam,RW,uint32_t,0,0,2,,0x0080,18,0:SPMSM 1:IPMSM 2:BLDC
+direction,电机方向,MotorCalibParam,RW,uint32_t,0,0,1,,0x0080,19,0:正向 1:反向
+phase_resistance,相电阻,MotorCalibParam,RW,float,0.1,0.001,10,ohm,0x0080,20,
+phase_inductance_d,d轴相电感,MotorCalibParam,RW,float,0.0001,0.00001,0.01,H,0x0080,21,
+phase_inductance_q,q轴相电感,MotorCalibParam,RW,float,0.00012,0.00001,0.01,H,0x0080,22,
+flux_linkage,永磁体磁链,MotorCalibParam,RW,float,0.001,0.0001,0.1,Wb,0x0080,23,
+torque_constant,转矩常数,MotorCalibParam,RW,float,0.1,0.01,10,Nm/A,0x0080,24,
+rotor_inertia,转子惯量,MotorCalibParam,RW,float,0.00001,0.0000001,0.01,kg·m²,0x0080,25,
+friction_coulomb,库仑摩擦力矩,MotorCalibParam,RW,float,0,0,100,Nm,0x0080,26,
+friction_viscous,粘滞摩擦系数,MotorCalibParam,RW,float,0,0,10,Nm/(rad/s),0x0080,27,
+gear_ratio,减速比,MotorCalibParam,RW,float,100,1,1000,,0x0080,28,电机转速/输出转速
+gear_efficiency,减速器效率,MotorCalibParam,RW,float,0.85,0.1,1,,0x0080,29,传动效率 0~1
+calibration_current,校准电流,MotorCalibParam,RW,float,5,0.1,20,A,0x0080,30,电阻电感校准电流
+resistance_calib_max_voltage,电阻校准最大电压,MotorCalibParam,RW,float,1,0.1,60,V,0x0080,31,
+current_lim,峰值电流限制,MotorCalibParam,RW,float,15,0.1,200,A,0x0080,32,
+current_control_bandwidth,电流环带宽,MotorCalibParam,RW,float,1000,100,5000,Hz,0x0080,33,
+enc_type,编码器类型,MotorCalibParam,RW,uint32_t,1,0,10,,0x0080,34,1:MT6701 2:MT6835 0:ABZ增量 3:霍尔 同板可换
+enc_lines,编码器分辨率,MotorCalibParam,RW,uint32_t,16384,100,1000000,CPR,0x0080,35,SPI绝对值为分辨率 增量式为CPR
+enc_direction,编码器计数方向,MotorCalibParam,RW,int32_t,1,-1,1,,0x0080,36,1:正向 -1:反向
+enc_offset,编码器初始位置偏移,MotorCalibParam,RW,int32_t,0,-2147483648,2147483647,counts,0x0080,37,校准后保存
+elec_angle_bias,电角度偏移,MotorCalibParam,RW,float,0,-3.1416,3.1416,rad,0x0080,38,FOC换相必需 校准后保存 最关键
+pwm_freq_hz,PWM载波频率,MotorCalibParam,RW,uint32_t,20000,5000,100000,Hz,0x0080,39,不同功率器件可能不同
+dead_time_ns,PWM死区时间,MotorCalibParam,RW,float,500,100,2000,ns,0x0080,40,不同功率器件可能不同
+shunt_resistance,电流采样电阻,MotorCalibParam,RW,float,0.01,0.001,1,ohm,0x0080,41,硬件相关 不同板子不同
+current_amp_gain,电流放大增益,MotorCalibParam,RW,float,50,1,1000,,0x0080,42,硬件相关 运放增益
+device_zero,设备零度,DeviceParam,RW,float,0,-12.566,12.566,rad,0x0100,48,机械零点位置 [DeviceParam段48-63 本表占用48-55]
+device_time,设备生产日期,DeviceParam,RW,uint32_t,0,0,99999999,,0x0100,49,YYYYMMDD格式
+can_id,CAN节点ID,DeviceParam,RW,uint32_t,1,0,2047,,0x0100,50,11位标准ID
+can_baudrate,CAN波特率,DeviceParam,RW,uint32_t,1000000,10000,8000000,bps,0x0100,51,
+can_timeout_s,CAN通信超时,DeviceParam,RW,float,0.5,0,10,s,0x0100,52,0=禁用超时
+can_fd_enable,CAN FD使能,DeviceParam,RW,uint32_t,0,0,1,,0x0100,53,0:传统CAN 1:CAN FD
+can_fd_baudrate,CAN FD数据波特率,DeviceParam,RW,uint32_t,8000000,100000,8000000,bps,0x0100,54,
+uart_baudrate,UART波特率,DeviceParam,RW,uint32_t,115200,1200,4000000,bps,0x0100,55,
+kp_ld,d轴比例增益,ControlParam,RW,float,0.5,0,100,V/A,0x0140,64,电流环d轴P增益 [ControlParam段64-127 本表占用64-85]
+ki_ld,d轴积分增益,ControlParam,RW,float,10,0,1000,V/(A·s),0x0140,65,电流环d轴I增益
+kp_lq,q轴比例增益,ControlParam,RW,float,0.5,0,100,V/A,0x0140,66,电流环q轴P增益
+ki_lq,q轴积分增益,ControlParam,RW,float,10,0,1000,V/(A·s),0x0140,67,电流环q轴I增益
+integral_limit,积分限幅,ControlParam,RW,float,10,0,100,V,0x0140,68,电流环积分输出限幅
+decoupling_gain,dq轴解耦增益,ControlParam,RW,float,1,0,1,,0x0140,69,0~1
+comp_du_V,死区补偿电压,ControlParam,RW,float,0,0,5,V,0x0140,70,
+pwm_duty_max,PWM最大占空比,ControlParam,RW,float,0.9,0.5,0.95,,0x0140,71,0~1
+kp_s,速度环比例增益,ControlParam,RW,float,0.1,0,100,A/(rad/s),0x0140,72,
+ki_s,速度环积分增益,ControlParam,RW,float,1,0,1000,A/rad,0x0140,73,
+speed_integral_limit,速度环积分限幅,ControlParam,RW,float,10,0,100,A,0x0140,74,
+vff,速度前馈系数,ControlParam,RW,float,1,0,1,,0x0140,75,0~1
+aff,加速度前馈系数,ControlParam,RW,float,0,0,1,,0x0140,76,0~1
+jerk_ff,加加速度前馈系数,ControlParam,RW,float,0,0,1,,0x0140,77,0~1
+speed_filter_alpha,速度滤波系数,ControlParam,RW,float,0.1,0,1,,0x0140,78,一阶低通滤波系数
+speed_filter_enable,速度滤波使能,ControlParam,RW,uint32_t,0,0,1,,0x0140,79,0:禁用 1:启用
+kp_p,位置环比例增益,ControlParam,RW,float,10,0,1000,Hz,0x0140,80,
+ki_p,位置环积分增益,ControlParam,RW,float,0,0,1000,1/s,0x0140,81,
+position_integral_limit,位置环积分限幅,ControlParam,RW,float,0,0,100,rad,0x0140,82,
+position_filter_alpha,位置滤波系数,ControlParam,RW,float,0.1,0,1,,0x0140,83,一阶低通滤波系数
+position_filter_enable,位置滤波使能,ControlParam,RW,uint32_t,0,0,1,,0x0140,84,0:禁用 1:启用
+following_error_limit,跟随误差限制,ControlParam,RW,float,1000,0,100000,P,0x0140,85,位置跟随误差保护阈值
+over_current_A,过流保护阈值,ProtectCommParam,RW,float,20,1,200,A,0x0280,128, [ProtectCommParam段128-159 本表占用128-138]
+over_voltage_V,过压保护阈值,ProtectCommParam,RW,float,58,20,100,V,0x0280,129,
+under_voltage_V,欠压保护阈值,ProtectCommParam,RW,float,15,5,30,V,0x0280,130,
+over_temp_drive,驱动器过温阈值,ProtectCommParam,RW,float,85,50,120,℃,0x0280,131,
+over_temp_motor,电机过温阈值,ProtectCommParam,RW,float,85,50,120,℃,0x0280,132,
+under_temp_d,欠温保护阈值,ProtectCommParam,RW,float,-20,-40,0,℃,0x0280,133,
+over_speed_rad_s,过速保护阈值,ProtectCommParam,RW,float,400,10,2000,rad/s,0x0280,134,
+position_following_error_p,位置跟随误差保护,ProtectCommParam,RW,int32_t,1000,100,100000,P,0x0280,135,
+pos_limit_min,位置下限,ProtectCommParam,RW,int32_t,-1000000,-1000000,0,P,0x0280,136,硬件位置下限
+pos_limit_max,位置上限,ProtectCommParam,RW,int32_t,1000000,0,1000000,P,0x0280,137,硬件位置上限
+error_enable_mask,保护使能掩码,ProtectCommParam,RW,uint32_t,4294967295,0,4294967295,,0x0280,138,bit0:过流 bit1:过压 bit2:欠压 bit3:过温 bit4:过速 bit5:跟随误差
+mit_kp,MIT位置刚度,AdvancedAlgoParam,RW,float,10,0,1000,Nm/rad,0x0300,160, [AdvancedAlgoParam段160-191 本表占用160-170]
+mit_kd,MIT速度阻尼,AdvancedAlgoParam,RW,float,0.1,0,100,Nm/(rad/s),0x0300,161,
+mit_max_current,MIT最大电流,AdvancedAlgoParam,RW,float,10,0,100,A,0x0300,162,
+mit_feedforward_torque,MIT前馈力矩,AdvancedAlgoParam,RW,float,0,0,100,Nm,0x0300,163,
+force_kp,力控比例增益,AdvancedAlgoParam,RW,float,1,0,1000,A/Nm,0x0300,164,
+force_ki,力控积分增益,AdvancedAlgoParam,RW,float,0.1,0,1000,A/(Nm·s),0x0300,165,
+force_limit,力控力矩限制,AdvancedAlgoParam,RW,float,10,0,100,Nm,0x0300,166,
+force_control_enable,力控使能,AdvancedAlgoParam,RW,uint32_t,0,0,1,,0x0300,167,0:禁用 1:启用
+homing_method,回零方法,AdvancedAlgoParam,RW,uint32_t,0,0,10,,0x0300,168,0:当前位置回零 1:限位回零
+homing_speed,回零速度,AdvancedAlgoParam,RW,float,10,0.01,50,rad/s,0x0300,169,
+homing_offset,回零偏移,AdvancedAlgoParam,RW,float,0,-6.283,6.283,rad,0x0300,170,

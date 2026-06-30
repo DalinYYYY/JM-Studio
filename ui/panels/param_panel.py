@@ -126,6 +126,10 @@ class ParamPanel(QGroupBox):
     def panel_name(self) -> str:
         return self._panel_name
 
+    def source(self) -> str:
+        """参数来源: 'motor_param'(运行时参数 0xE0-0xE5) 或 'motor_config'(电机配置 0xE6-0xEB)"""
+        return self._source
+
     def _build(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)

@@ -25,6 +25,8 @@ class JmClient(QObject):
     dev_info_received = pyqtSignal(int, int, bytes)    # hw_ver, fw_ver, uid
     dev_name_received = pyqtSignal(str)
     param_read_result = pyqtSignal(int, int, object)   # param_id, type, value_bytes
+    motor_info_read_result = pyqtSignal(int, int, object)   # param_id, type, value_bytes(固定4B)
+    motor_info_read_bulk_result = pyqtSignal(int, list)     # start_id, [(param_id, value_bytes)...]
     raw_frame = pyqtSignal(int, bytes)                 # cmd, payload(RX 入口, 日志面板格式化)
     tx_frame = pyqtSignal(int, bytes)                  # cmd, payload(TX 入口, 日志面板格式化)
 
@@ -140,6 +142,43 @@ class JmClient(QObject):
     def param_reset(self, param_id: int = 0xFFFF):
         return self._send(JmCmd.PARAM_RESET, codec.wr_u16(param_id))
 
+    # ---- 电机配置(motor_info)读写 0xE6~0xEB ----
+    # 与0xE0-0xE5的运行时参数独立, 面向Flash/EEPROM持久化的硬件配置/校准数据。
+    # 帧内 value 固定4字节, 上位机按 motor_info.csv 的 DataType 打包/解包。
+    def motor_info_read(self, param_id: int):
+        """读单个电机配置(0xE6): {param_id:u16}"""
+        return self._send(JmCmd.MOTOR_INFO_READ, codec.wr_u16(param_id))
+
+    def motor_info_write(self, param_id: int, value: bytes):
+        """写单个电机配置(0xE7, RAM生效): {param_id:u16;value:4B}。需调 motor_info_save 固化。"""
+        if len(value) != 4:
+            value = value[:4].ljust(4, b'\x00')
+        return self._send(JmCmd.MOTOR_INFO_WRITE, codec.wr_u16(param_id) + value)
+
+    def motor_info_read_bulk(self, start_id: int, count: int):
+        """批量读电机配置(0xE8): {start_id:u16;count:u16}。块内连续ID有效, 跨块返回NACK。"""
+        return self._send(JmCmd.MOTOR_INFO_READ_BULK,
+                          codec.wr_u16(start_id) + codec.wr_u16(count))
+
+    def motor_info_write_bulk(self, start_id: int, values: list):
+        """批量写电机配置(0xE9): {start_id:u16;count:u16;value:u32[]}。
+        values 为 4字节 bytes 列表, 数量即 count。块内连续ID有效。"""
+        count = len(values)
+        payload = codec.wr_u16(start_id) + codec.wr_u16(count)
+        for v in values:
+            if len(v) != 4:
+                v = v[:4].ljust(4, b'\x00')
+            payload += v
+        return self._send(JmCmd.MOTOR_INFO_WRITE_BULK, payload)
+
+    def motor_info_save(self):
+        """把motor_info整块写入Flash(0xEA)。"""
+        return self._send(JmCmd.MOTOR_INFO_SAVE)
+
+    def motor_info_reset(self, param_id: int = 0xFFFF):
+        """电机配置恢复默认(0xEB): param_id=0xFFFF 全部恢复。"""
+        return self._send(JmCmd.MOTOR_INFO_RESET, codec.wr_u16(param_id))
+
     # ---- 遥测订阅 / 遥控开关 ----
     def set_telemetry(self, enable: bool, mask: int, period_ms: int = 0):
         """遥控模式开关: enable=True 启动周期上报, False 停止。
@@ -224,6 +263,45 @@ class JmClient(QObject):
         # PARAM_WRITE 应答: param_id(u16) status(u8)
         if cmd == JmCmd.PARAM_WRITE and len(payload) >= 3:
             status = payload[2]
+            if status == JmErr.OK:
+                self.ack_received.emit(cmd)
+            else:
+                self.nack_received.emit(cmd, status)
+            return
+
+        # MOTOR_INFO_READ 应答(0xE6): param_id(u16) type(u8) value(4B)
+        if cmd == JmCmd.MOTOR_INFO_READ and len(payload) >= 3:
+            param_id = codec.rd_u16(payload, 0)
+            ptype = payload[2]
+            value_bytes = bytes(payload[3:7])  # 固定4字节
+            self.motor_info_read_result.emit(param_id, ptype, value_bytes)
+            return
+
+        # MOTOR_INFO_WRITE 应答(0xE7): param_id(u16) status(u8)
+        if cmd == JmCmd.MOTOR_INFO_WRITE and len(payload) >= 3:
+            status = payload[2]
+            if status == JmErr.OK:
+                self.ack_received.emit(cmd)
+            else:
+                self.nack_received.emit(cmd, status)
+            return
+
+        # MOTOR_INFO_READ_BULK 应答(0xE8): start_id(u16) count(u8) value[count*4]
+        if cmd == JmCmd.MOTOR_INFO_READ_BULK and len(payload) >= 3:
+            start_id = codec.rd_u16(payload, 0)
+            count = payload[2]
+            values = []
+            for i in range(count):
+                off = 3 + i * 4
+                if off + 4 > len(payload):
+                    break
+                values.append((start_id + i, bytes(payload[off:off + 4])))
+            self.motor_info_read_bulk_result.emit(start_id, values)
+            return
+
+        # MOTOR_INFO_WRITE_BULK(0xE9) / MOTOR_INFO_SAVE(0xEA): ACK{status:u8}
+        if cmd in (JmCmd.MOTOR_INFO_WRITE_BULK, JmCmd.MOTOR_INFO_SAVE) and len(payload) >= 1:
+            status = payload[0]
             if status == JmErr.OK:
                 self.ack_received.emit(cmd)
             else:

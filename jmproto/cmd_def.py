@@ -128,6 +128,14 @@ class JmCmd(IntEnum):
     PARAM_WRITE_BULK = 0xE3
     PARAM_SAVE = 0xE4
     PARAM_RESET = 0xE5
+    # 电机配置(motor_info)读写 0xE6~0xEB: 独立于0xE0-0xE5的运行时参数,
+    # 面向Flash/EEPROM持久化的硬件配置/校准数据。固定4字节值传输。
+    MOTOR_INFO_READ = 0xE6        # 读单个电机配置
+    MOTOR_INFO_WRITE = 0xE7       # 写单个电机配置(RAM, 需0xEA固化)
+    MOTOR_INFO_READ_BULK = 0xE8   # 批量读(块内连续ID, 固定4B/值)
+    MOTOR_INFO_WRITE_BULK = 0xE9  # 批量写(块内连续ID, 固定4B/值)
+    MOTOR_INFO_SAVE = 0xEA        # 把motor_info整块写入Flash
+    MOTOR_INFO_RESET = 0xEB       # 恢复默认(param_id=0xFFFF全部)
 
     # CAN管理与通用 0xF0~0xFF
     SET_CAN_ID = 0xF0

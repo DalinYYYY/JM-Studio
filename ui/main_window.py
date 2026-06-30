@@ -597,6 +597,7 @@ class MainWindow(QMainWindow):
         c.dev_info_received.connect(self._on_dev_info)
         c.dev_name_received.connect(self._on_dev_name)
         c.param_read_result.connect(self._on_param_result)
+        c.motor_info_read_result.connect(self._on_param_result)
 
         # 状态机面板: 周期请求 -> 拉取 READ_STATE
         self._state_panel.poll_state.connect(self._on_poll_state)
@@ -756,12 +757,7 @@ class MainWindow(QMainWindow):
 
     # ==================== 参数读写 ====================
     def _panel_remote_supported(self, panel: ParamPanel) -> bool:
-        if panel is self._config_panel:
-            self._log_panel.log_warn(
-                "[SKIP] motor_info config table is not implemented in firmware yet")
-            self.statusBar().showMessage(
-                "motor_info config callbacks are not implemented in firmware yet", 3000)
-            return False
+        # motor_config(motor_info 0xE6-0xEB) 与 motor_param(0xE0-0xE5) 均已支持
         return True
 
     def _on_param_read(self, panel: ParamPanel, param_id: int):
@@ -828,20 +824,35 @@ class MainWindow(QMainWindow):
         self._send_param_write_queued(panel, param_id, value)
 
     def _send_param_read_queued(self, panel: ParamPanel, param_id: int):
-        if self._client.is_open() and self._client.param_read(int(param_id)):
-            self._pending_param_reads.append(panel)
+        if not self._client.is_open():
+            return
+        # 按面板来源分派: motor_config -> 0xE6, motor_param -> 0xE0
+        if panel.source() == "motor_config":
+            if self._client.motor_info_read(int(param_id)):
+                self._pending_param_reads.append(panel)
+        else:
+            if self._client.param_read(int(param_id)):
+                self._pending_param_reads.append(panel)
 
     def _send_param_write_queued(self, panel: ParamPanel, param_id: int, value: bytes):
-        if self._client.is_open() and self._client.param_write(int(param_id), value):
-            panel.note_write_sent(int(param_id))
-            self._pending_param_writes.append(panel)
+        if not self._client.is_open():
+            return
+        if panel.source() == "motor_config":
+            if self._client.motor_info_write(int(param_id), value):
+                panel.note_write_sent(int(param_id))
+                self._pending_param_writes.append(panel)
+        else:
+            if self._client.param_write(int(param_id), value):
+                panel.note_write_sent(int(param_id))
+                self._pending_param_writes.append(panel)
 
     def _on_config_save(self):
         if not self._panel_remote_supported(self._config_panel):
             return
         if self._ensure_open():
-            self._client.param_save()
-            self._log_panel.log("[TX] 保存电机配置到Flash/EEPROM")
+            # 电机配置走 0xEA (motor_info_save), 区别于运行时参数的 0xE4
+            self._client.motor_info_save()
+            self._log_panel.log("[TX] 保存电机配置到Flash/EEPROM (0xEA)")
 
     def _on_param_result(self, param_id: int, ptype: int, value_bytes: bytes):
         panel = self._pending_param_reads.popleft() if self._pending_param_reads else self._param_panel
@@ -906,7 +917,8 @@ class MainWindow(QMainWindow):
 
     def _on_ack(self, cmd: int):
         self._log_panel.log(f"[RX] ACK {cmd_name(cmd)}(0x{cmd:02X})")
-        if cmd == JmCmd.PARAM_WRITE:
+        # 写完成: 0xE1(运行时参数) / 0xE7(电机配置) 共用同一待应答队列
+        if cmd in (JmCmd.PARAM_WRITE, JmCmd.MOTOR_INFO_WRITE):
             panel = self._pending_param_writes.popleft() if self._pending_param_writes else self._param_panel
             panel.confirm_pending_write()
             self._pump_param_write_queue()
@@ -918,10 +930,12 @@ class MainWindow(QMainWindow):
             f"NACK {cmd_name(cmd)}(0x{cmd:02X}) err={cn}(0x{err:02X})")
         # 故障信息面板加载 NACK 错误信息
         self._fault_info_panel.show_nack_error(cmd, err)
-        if cmd == JmCmd.PARAM_READ and self._pending_param_reads:
+        # 读失败: 0xE0 / 0xE6 共用同一待应答队列
+        if cmd in (JmCmd.PARAM_READ, JmCmd.MOTOR_INFO_READ) and self._pending_param_reads:
             self._pending_param_reads.popleft()
             self._pump_param_read_queue()
-        if cmd == JmCmd.PARAM_WRITE:
+        # 写失败: 0xE1 / 0xE7 共用同一待应答队列
+        if cmd in (JmCmd.PARAM_WRITE, JmCmd.MOTOR_INFO_WRITE):
             panel = self._pending_param_writes.popleft() if self._pending_param_writes else self._param_panel
             panel.reject_pending_write()
             self._pump_param_write_queue()

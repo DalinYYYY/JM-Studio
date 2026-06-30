@@ -98,7 +98,13 @@
 97,批量写参数,0xE3,Host->Motor,参数读写,{start_id:u16;count:u16;values:bytes},ACK{status:u8},变长,小端混合,-,0xE300|ID,CAN需分包,连续参数块写入
 98,参数存Flash,0xE4,Host->Motor,参数读写,无,ACK{status:u8},0,-,-,0xE400|ID,无,所有参数固化(同0xB3)
 99,参数恢复默认,0xE5,Host->Motor,参数读写,{param_id:u16=0xFFFF全部},ACK{status:u8},2,小端u16,-,0xE500|ID,pid[0:2],单参或全部恢复默认
-100,设置CAN_ID,0xF0,Host->Motor,CAN管理,{new_id:u8},ACK{new_id:u8},1,u8,1~127,0xF000|ID,nid[0],修改本机CAN地址需保存
-101,设置波特率,0xF1,Host->Motor,CAN管理,{baud_code:u8},ACK,1,u8,枚举,0xF100|ID,baud[0],0=1M 1=500K 2=250K 3=125K
-102,广播同步,0xF2,Host->All,CAN管理,无,无,0,-,-,0xF200|0x00,无,ID=0广播 所有电机同步执行缓存指令
-103,错误应答(NACK),0xFE,Motor->Host,通用,-,{cmd:u8;err_code:u8},2,小端,错误码,0xFE00|ID,cmd[0]err[1],任意命令失败时返回
+100,读电机配置,0xE6,Host->Motor,电机配置,{param_id:u16},{param_id:u16;type:u8;value:u32},2,小端u16,见motor_info.csv,0xE600|ID,pid[0:2]+应答,读motor_info单参 固定4字节值 type同0xE0
+101,写电机配置,0xE7,Host->Motor,电机配置,{param_id:u16;value:u32},ACK{param_id:u16;status:u8},6,小端混合,见motor_info.csv,0xE700|ID,pid[0:2]val[2:6],写motor_info单参 RAM生效 固定4字节值 需0xEA固化
+102,批量读电机配置,0xE8,Host->Motor,电机配置,{start_id:u16;count:u16},{start_id:u16;count:u8;value:u32[]},4,小端u16,见motor_info.csv,0xE800|ID,CAN需分包,块内连续ID批量读 固定4B/值 跨块间隔返回BAD_PARAM_ID
+103,批量写电机配置,0xE9,Host->Motor,电机配置,{start_id:u16;count:u16;value:u32[]},ACK{status:u8},变长,小端混合,见motor_info.csv,0xE900|ID,CAN需分包,块内连续ID批量写 固定4B/值
+104,电机配置存Flash,0xEA,Host->Motor,电机配置,无,ACK{status:u8},0,-,-,0xEA00|ID,无,把motor_info整块1024B写入Flash/EEPROM
+105,电机配置恢复默认,0xEB,Host->Motor,电机配置,{param_id:u16=0xFFFF全部},ACK{status:u8},2,小端u16,-,0xEB00|ID,pid[0:2],单参或全部恢复默认motor_info
+106,设置CAN_ID,0xF0,Host->Motor,CAN管理,{new_id:u8},ACK{new_id:u8},1,u8,1~127,0xF000|ID,nid[0],修改本机CAN地址需保存
+107,设置波特率,0xF1,Host->Motor,CAN管理,{baud_code:u8},ACK,1,u8,枚举,0xF100|ID,baud[0],0=1M 1=500K 2=250K 3=125K
+108,广播同步,0xF2,Host->All,CAN管理,无,无,0,-,-,0xF200|0x00,无,ID=0广播 所有电机同步执行缓存指令
+109,错误应答(NACK),0xFE,Motor->Host,通用,-,{cmd:u8;err_code:u8},2,小端,错误码,0xFE00|ID,cmd[0]err[1],任意命令失败时返回
