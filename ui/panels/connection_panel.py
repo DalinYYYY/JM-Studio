@@ -23,14 +23,16 @@ class ConnectionPanel(QGroupBox):
 
     def _build(self):
         self._layout = QGridLayout(self)
+        self._layout.setColumnStretch(1, 1)  # 中间列(下拉框)可伸缩, 允许压缩
 
         self._layout.addWidget(QLabel("串口号:"), 0, 0)
         self._combo_port = QComboBox()
-        self._combo_port.setMinimumWidth(200)
+        self._combo_port.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._combo_port.setMinimumContentsLength(12)  # 至少 12 字符宽, 不依赖长串项
         self._layout.addWidget(self._combo_port, 0, 1)
 
         self._btn_refresh = QPushButton("刷新")
-        self._btn_refresh.setFixedWidth(60)
+        self._btn_refresh.setMinimumWidth(48)
         self._btn_refresh.clicked.connect(self.refresh_ports)
         self._layout.addWidget(self._btn_refresh, 0, 2)
 

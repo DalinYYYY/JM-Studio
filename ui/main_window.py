@@ -116,16 +116,15 @@ class MainWindow(QMainWindow):
         root = QHBoxLayout(central)
 
         # 左侧: 控制类面板。整体放入滚动区, 小窗口或参数较多时不挤压控件。
-        left = QScrollArea()
-        left.setWidgetResizable(True)
-        left.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        left.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-        left.setMaximumWidth(440)
-        left.setMinimumWidth(420)
-        left.setFrameShape(QFrame.Shape.NoFrame)
+        self._left_scroll = QScrollArea()
+        self._left_scroll.setWidgetResizable(True)
+        self._left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._left_scroll.setMinimumWidth(220)  # 允许用户拖到很窄
+        self._left_scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         left_content = QWidget()
-        left.setWidget(left_content)
+        self._left_scroll.setWidget(left_content)
         left_layout = QVBoxLayout(left_content)
         left_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -192,8 +191,25 @@ class MainWindow(QMainWindow):
 
         right_layout.addWidget(self._right_splitter)
 
-        root.addWidget(left)
-        root.addWidget(right, 1)
+        # 左右分栏: 水平 QSplitter, 用户可拖动手柄调整左右宽度
+        self._main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._main_splitter.setChildrenCollapsible(False)  # 不允许完全折叠
+        self._main_splitter.setHandleWidth(8)
+        self._main_splitter.setStyleSheet("""
+            QSplitter::handle:horizontal {
+                background: #3A3A3A;
+                margin: 0 2px;
+            }
+            QSplitter::handle:horizontal:hover {
+                background: #5A8DFF;
+            }
+        """)
+        self._main_splitter.addWidget(self._left_scroll)
+        self._main_splitter.addWidget(right)
+        self._main_splitter.setStretchFactor(0, 0)  # 左侧不抢空间
+        self._main_splitter.setStretchFactor(1, 1)  # 右侧吃多余空间
+        self._main_splitter.setSizes([300, 900])    # 初始左 300 / 右 900
+        root.addWidget(self._main_splitter)
 
         self.statusBar().showMessage("未连接")
 

@@ -10,7 +10,7 @@ class ControlPanel(QGroupBox):
     """系统控制按钮组。点击发出 command(cmd:int) 信号。
 
     set_enabled_state(enabled) 按上报的真实使能态高亮对应按钮(当前所处态):
-      已使能 -> "使能 ENABLE" 高亮; 未使能 -> "去使能 DISABLE" 高亮。
+      已使能 -> "使能" 高亮; 未使能 -> "去使能" 高亮。
     """
 
     command = pyqtSignal(int)
@@ -26,8 +26,8 @@ class ControlPanel(QGroupBox):
         style_danger = "background-color: #F44336; color: white; padding: 6px;"
         style_normal = "padding: 6px;"
 
-        self._btn_enable = QPushButton("使能 ENABLE")
-        self._btn_disable = QPushButton("去使能 DISABLE")
+        self._btn_enable = QPushButton("使能")
+        self._btn_disable = QPushButton("去使能")
         self._btn_enable.clicked.connect(lambda: self.command.emit(int(JmCmd.ENABLE)))
         self._btn_disable.clicked.connect(lambda: self.command.emit(int(JmCmd.DISABLE)))
         layout.addWidget(self._btn_enable, 0, 0)
@@ -35,10 +35,10 @@ class ControlPanel(QGroupBox):
 
         # 其余命令按钮(样式固定)
         others = [
-            ("停止 STOP", JmCmd.STOP, style_normal, 1, 0),
-            ("待机 IDLE", JmCmd.IDLE, style_normal, 1, 1),
-            ("急停 ESTOP", JmCmd.ESTOP, style_danger, 2, 0),
-            ("清除故障 CLEAR_FAULT", JmCmd.CLEAR_FAULT, style_normal, 2, 1),
+            ("停止", JmCmd.STOP, style_normal, 1, 0),
+            ("待机", JmCmd.IDLE, style_normal, 1, 1),
+            ("急停", JmCmd.ESTOP, style_danger, 2, 0),
+            ("清除故障", JmCmd.CLEAR_FAULT, style_normal, 2, 1),
         ]
         for label, cmd, style, row, col in others:
             btn = QPushButton(label)
@@ -54,7 +54,7 @@ class ControlPanel(QGroupBox):
         self._refresh_enable_buttons()
 
     def _refresh_enable_buttons(self):
-        # 高亮"当前所处态": 已使能高亮 ENABLE(绿), 未使能高亮 DISABLE(橙); 未知则都置灰常态
+        # 高亮"当前所处态": 已使能高亮"使能"(绿), 未使能高亮"去使能"(橙); 未知则都置灰常态
         on = self._enabled_state
         active = "color: white; padding: 6px; font-weight: bold; border: 2px solid; "
         idle = "padding: 6px; "
