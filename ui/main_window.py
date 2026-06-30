@@ -857,9 +857,16 @@ class MainWindow(QMainWindow):
     def _on_param_result(self, param_id: int, ptype: int, value_bytes: bytes):
         panel = self._pending_param_reads.popleft() if self._pending_param_reads else self._param_panel
         val = panel.unpack_value(param_id, value_bytes)
-        disp = str(val) if val is not None else value_bytes.hex(' ')
-        panel.set_value(param_id, disp)
+        # float 用 %.6g 格式化(6位有效数字), 去掉 float32 表示误差产生的长尾小数
+        # 例: 0.10000000149011612 -> 0.1, 0.8500000238418579 -> 0.85, 1000 -> 1000
         spec = panel.get_param(param_id)
+        if val is None:
+            disp = value_bytes.hex(' ')
+        elif spec is not None and jp.codec.is_float_type(spec.dtype):
+            disp = f'{val:.6g}'
+        else:
+            disp = str(val)
+        panel.set_value(param_id, disp)
         name = spec.code_name if spec else f"id={param_id}"
         self._log_panel.log(f"[RX] {panel.panel_name()} {name}(id={param_id}) = {disp}")
         # 电机本体参数转发到反馈面板的转子示意图(电阻/电感/磁链/转矩常数/极对数等)
