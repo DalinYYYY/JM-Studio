@@ -7,8 +7,8 @@
     "main_window": {
       "width": 1749,
       "height": 1065,
-      "x": 254,
-      "y": 120
+      "x": 491,
+      "y": 197
     },
     "right_splitter": [
       1009,
@@ -35,6 +35,7 @@
       "raw": true,
       "autoscroll": true
     },
+    "virtual_motor_mode": false,
     "plot": {
       "window_seconds": 20,
       "follow": true,

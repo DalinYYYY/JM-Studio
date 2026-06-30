@@ -425,8 +425,10 @@ class TwinParamPanel(QGroupBox):
         self._hint_label = QLabel("⚠ 仅在连接 [虚拟数据引擎] 时可用")
         self._hint_label.setStyleSheet(
             f"color: {theme.hex('warn')}; padding: 4px; font-weight: bold;")
-        self._hint_label.setVisible(True)
+        # 先 addWidget 父级化, 再 setVisible; 否则 widget 无 parent 时被设为可见
+        # 会作为独立小窗口在 Windows 上短暂弹出 (setVisible(True) 本身冗余, 默认即可见)
         layout.addWidget(self._hint_label)
+        self._hint_label.setVisible(True)
 
         # 顶部工具栏
         toolbar = QHBoxLayout()

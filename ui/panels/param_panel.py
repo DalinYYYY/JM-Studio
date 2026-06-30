@@ -184,8 +184,10 @@ class ParamPanel(QGroupBox):
 
         self._btn_save = QPushButton(self._save_text)
         self._btn_save.clicked.connect(self.save_all)
-        self._btn_save.setVisible(self._show_save)
+        # 先 addWidget 父级化, 再 setVisible; 否则 widget 无 parent 时被设为可见
+        # 会作为独立小窗口在 Windows 上短暂弹出
         btn_layout.addWidget(self._btn_save)
+        self._btn_save.setVisible(self._show_save)
         btn_layout.addStretch()
         layout.addWidget(btn_row)
 

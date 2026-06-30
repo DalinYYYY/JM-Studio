@@ -838,10 +838,11 @@ class StateMachinePanel(QWidget):
         self._btn_export = QPushButton("导出布局")
         self._btn_export.setFixedHeight(24)
         self._btn_export.clicked.connect(self._on_export_layout)
-        self._btn_edit.setVisible(False)
-        self._btn_export.setVisible(False)
+        # 先 addWidget 父级化, 再 setVisible (与 param_panel/twin_param_panel 保持一致)
         lay.addWidget(self._btn_edit)
         lay.addWidget(self._btn_export)
+        self._btn_edit.setVisible(False)
+        self._btn_export.setVisible(False)
 
         return bar
 
