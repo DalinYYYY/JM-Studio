@@ -50,6 +50,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._motor_params = {}
+        # 虚拟电机模式开关的期望状态(从持久化读取, 连接虚拟引擎后套用)
+        self._pending_virtual_mode = False
         self._logo_path = Path(__file__).resolve().parent.parent / "resources" / "pic" / "log_ioc.png"
         if self._logo_path.exists():
             self.setWindowIcon(QIcon(str(self._logo_path)))
@@ -165,6 +167,9 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._twin_param_panel, "孪生参数")
         tabs.addTab(self._fault_info_panel, "故障信息")
         tabs.addTab(self._plot_panel, "实时曲线")
+        self._tabs = tabs
+        # 虚拟电机模式默认关闭: 初始隐藏孪生参数 Tab (故障信息面板内部子表/屏蔽区自行隐藏)
+        tabs.setTabVisible(tabs.indexOf(self._twin_param_panel), False)
 
         self._right_splitter = QSplitter(Qt.Orientation.Vertical)
         self._right_splitter.setChildrenCollapsible(False)
@@ -347,6 +352,8 @@ class MainWindow(QMainWindow):
             },
             "log_visible": self._log_panel_visible,
             "log_opts": self._log_panel.get_opts(),
+            # 虚拟电机模式开关状态(下次连接虚拟引擎时自动恢复)
+            "virtual_motor_mode": bool(self._btn_virtual_mode.isChecked()),
         }
         # 各面板配置 (容错: 单面板失败不影响整体保存)
         for key, panel in (
@@ -436,6 +443,11 @@ class MainWindow(QMainWindow):
         # 日志显隐: 若存值与当前不一致则切换(复用现有逻辑维护 splitter 尺寸)
         if "log_visible" in d and bool(d["log_visible"]) != self._log_panel_visible:
             self._toggle_log_panel()
+        # 虚拟电机模式开关: 仅记录期望状态, 待连接虚拟引擎后套用
+        # (开关可用性取决于是否连接虚拟引擎, 启动时未连接故保持禁用)
+        vm = d.get("virtual_motor_mode")
+        if isinstance(vm, bool):
+            self._pending_virtual_mode = vm
         # 各面板配置 (容错: 单面板失败不影响其他)
         for key, panel in (
             ("plot", self._plot_panel),
@@ -509,6 +521,21 @@ class MainWindow(QMainWindow):
         self._apply_menu_button_style(self._btn_theme)
         self._btn_theme.clicked.connect(self._on_toggle_theme)
         layout.addWidget(self._btn_theme, 1, 1)
+        # 虚拟电机模式开关: 仅在选中虚拟引擎并打开串口后可用。
+        # 开启后显示孪生参数 Tab、虚拟电机 Fault 位子表与故障屏蔽区。
+        self._btn_virtual_mode = QPushButton("虚拟电机: 关")
+        self._btn_virtual_mode.setCheckable(True)
+        self._btn_virtual_mode.setChecked(False)
+        self._btn_virtual_mode.setEnabled(False)  # 未连接虚拟引擎前禁用
+        self._btn_virtual_mode.setToolTip(
+            "仅在连接虚拟引擎时可用。开启后显示孪生参数、虚拟电机 Fault 位表与故障屏蔽区。")
+        self._apply_menu_button_style(self._btn_virtual_mode)
+        self._btn_virtual_mode.setStyleSheet(
+            self._btn_virtual_mode.styleSheet() +
+            "\nQPushButton:disabled{background:#2A2A2A;color:#777;border-color:#444;}"
+            "\nQPushButton:checked{background:#03A9F4;color:white;border-color:#29B6F6;}")
+        self._btn_virtual_mode.toggled.connect(self._on_virtual_mode_toggled)
+        layout.addWidget(self._btn_virtual_mode, 2, 0, 1, 2)
         return grp
 
     def _on_toggle_theme(self):
@@ -535,6 +562,26 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "布局编辑已开启: 在实时反馈/状态机页拖动方框, 完成点[导出布局]" if on
             else "布局编辑已关闭", 4000)
+
+    def _on_virtual_mode_toggled(self, on: bool):
+        """虚拟电机模式开关: 控制孪生参数 Tab 与故障信息面板内虚拟电机专属视图显隐。
+
+        守卫: 仅在连接虚拟引擎时允许开启; 否则强制取消勾选(由 setEnabled 联动保证)。
+        """
+        # 更新按钮文字
+        self._btn_virtual_mode.setText("虚拟电机: 开" if on else "虚拟电机: 关")
+        # 孪生参数 Tab 显隐
+        idx_param = self._tabs.indexOf(self._twin_param_panel)
+        self._tabs.setTabVisible(idx_param, on)
+        # 故障信息面板内: 虚拟电机 Fault 位子表 + 故障屏蔽区显隐
+        self._fault_info_panel.set_virtual_mode(on)
+        # 关闭模式时, 若当前正停在孪生参数 Tab, 切回首页(实时反馈)
+        if not on and self._tabs.currentWidget() is self._twin_param_panel:
+            self._tabs.setCurrentIndex(0)
+        self.statusBar().showMessage(
+            "虚拟电机模式: 开启 (孪生参数/虚拟电机 Fault 位/故障屏蔽已显示)" if on
+            else "虚拟电机模式: 关闭", 3000)
+
 
     # ==================== 信号连接 ====================
     def _connect_signals(self):
@@ -594,6 +641,12 @@ class MainWindow(QMainWindow):
                 self._twin_param_panel.set_engine(self._client.transport.get_engine())
                 # 故障屏蔽需要引擎句柄
                 self._fault_info_panel.set_engine(self._client.transport.get_engine())
+                # 虚拟电机模式开关: 连接虚拟引擎后才可用
+                self._btn_virtual_mode.setEnabled(True)
+                # 若上次保存的状态为开启, 自动勾选
+                if self._pending_virtual_mode and not self._btn_virtual_mode.isChecked():
+                    self._btn_virtual_mode.setChecked(True)
+                self._pending_virtual_mode = False
             return
         # 真实串口: 若当前是虚拟传输, 换回串口传输
         if not isinstance(self._client.transport, SerialTransport):
@@ -601,6 +654,18 @@ class MainWindow(QMainWindow):
         if self._client.open(port=port, baudrate=baud):
             self.statusBar().showMessage(f"已连接 {port} @{baud}")
             self._cur_port = port
+            # 连接真机: 虚拟电机模式开关必须关闭并禁用
+            self._force_disable_virtual_mode()
+
+    def _force_disable_virtual_mode(self):
+        """真机连接或断开时: 强制关闭并禁用虚拟电机模式开关, 隐藏相关视图。"""
+        self._btn_virtual_mode.setEnabled(False)
+        if self._btn_virtual_mode.isChecked():
+            # blockSignals 避免重复触发回调; 直接同步隐藏 UI
+            self._btn_virtual_mode.blockSignals(True)
+            self._btn_virtual_mode.setChecked(False)
+            self._btn_virtual_mode.blockSignals(False)
+            self._on_virtual_mode_toggled(False)
 
     def _on_disconnect(self):
         # 断开前若仍在周期上报, 通知下位机停止, 并复位面板开关
@@ -616,6 +681,8 @@ class MainWindow(QMainWindow):
         self._client.close()
         self._twin_param_panel.set_engine(None)
         self._fault_info_panel.set_engine(None)
+        # 断开连接: 强制关闭并禁用虚拟电机模式开关
+        self._force_disable_virtual_mode()
         self.statusBar().showMessage("已断开")
 
     def _on_connected(self, connected: bool):

@@ -206,9 +206,14 @@ class FaultInfoPanel(QGroupBox):
         # ----- 子选项卡: 三张故障定义表 -----
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_csv_tab(), "设备故障码 (CSV)")
-        self._tabs.addTab(self._build_fault_bit_tab(), "虚拟电机 Fault 位")
+        # 保存虚拟电机 Fault 位子表 widget, 供虚拟电机模式开关控制显隐
+        self._fault_bit_tab = self._build_fault_bit_tab()
+        self._tabs.addTab(self._fault_bit_tab, "虚拟电机 Fault 位")
         self._tabs.addTab(self._build_err_tab(), "协议错误码 (JmErr)")
         layout.addWidget(self._tabs, 1)
+        # 虚拟电机模式默认关闭: 初始隐藏"虚拟电机 Fault 位"子表与故障屏蔽区
+        self._tabs.setTabVisible(self._tabs.indexOf(self._fault_bit_tab), False)
+        self._disable_group.setVisible(False)
 
     # ---------- CSV 故障码表 ----------
     def _build_csv_tab(self) -> QWidget:
@@ -506,6 +511,22 @@ class FaultInfoPanel(QGroupBox):
                 self._sync_mask_to_ui(mask)
             except Exception:
                 pass
+
+    def set_virtual_mode(self, on: bool):
+        """虚拟电机模式开关联动: 控制虚拟电机专属子表与屏蔽区显隐。
+
+        与 set_engine() 正交:
+        - set_engine 控制屏蔽区"可编辑性"(engine 句柄是否存在);
+        - set_virtual_mode 控制"可见性"(是否处于虚拟电机模式)。
+        两者同时生效, 关闭任一条件屏蔽区均不可用/不可见。
+        """
+        # "虚拟电机 Fault 位"子表显隐
+        self._tabs.setTabVisible(self._tabs.indexOf(self._fault_bit_tab), on)
+        # "故障屏蔽(虚拟电机演示)"区域显隐
+        self._disable_group.setVisible(on)
+        # 关闭模式时, 若当前正停在该子表, 切回首页(CSV 故障码)
+        if not on and self._tabs.currentWidget() is self._fault_bit_tab:
+            self._tabs.setCurrentIndex(0)
 
     def _sync_mask_to_ui(self, mask: int):
         """把 engine 的 disable_mask 同步到勾选框 UI。"""
