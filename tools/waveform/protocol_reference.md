@@ -258,22 +258,23 @@ def crc16_calc(data: bytes) -> int:
 | 0x7A | TEST_CURRENT_LOOP | `{amp:f32; freq:f32}` |
 | 0x7B | TEST_VELOCITY_LOOP | `{amp:f32; freq:f32}` |
 
-### 5.6 校准 (0x90 ~ 0xAF)
+### 5.6 校准 (0x90 ~ 0x9F)
 
-| CMD | 名称 | 应答载荷 |
-|-----|------|----------|
-| 0x90 | CALIB_MOTOR_PARAM | `{R:f32; Ld:f32; Lq:f32; flux:f32}` |
-| 0x91 | CALIB_ENCODER_OFFSET | `{offset:i32; ebias:f32}` |
-| 0x92 | CALIB_ENCODER_LINEARITY | `{progress:u8}` |
-| 0x93 | CALIB_TORQUE_CONST | `{kt:f32}` |
-| 0x94 | CALIB_COGGING_COMP | `{progress:u8}` |
-| 0x95 | CALIB_FRICTION_COMP | `{coulomb:f32; viscous:f32}` |
-| 0x96 | CALIB_INERTIA | `{inertia:f32}` |
-| 0x97 | CALIB_ADC_OFFSET | `{ia_off:i16; ib_off:i16; ic_off:i16}` |
-| 0x98 | CALIB_ADC_GAIN | `{gain:f32}` |
-| 0x99 | CALIB_CURRENT_SENSOR | `{status:u8}` |
-| 0x9A | CALIB_TEMPERATURE | 请求 `{ref_temp:f32}`, 应答 `{status:u8}` |
-| 0x9B | CALIB_FULL_AUTO | `{progress:u8; step:u8}` |
+类别命令+子命令模式：0x90-0x96 的 payload[0] 为子模式 ID，进入 CALIB 态并启动标定。
+
+| CMD | 名称 | 请求载荷 | 应答 |
+|-----|------|----------|------|
+| 0x90 | CALIB_LEVEL1 | `{submode:u8}` | ACK |
+| 0x91 | CALIB_LEVEL2 | `{submode:u8}` | ACK |
+| 0x92 | CALIB_LEVEL3 | `{submode:u8}` | ACK |
+| 0x93 | CALIB_LEVEL4 | `{submode:u8}` | ACK |
+| 0x94 | CALIB_LEVEL5 | `{submode:u8}` | ACK |
+| 0x95 | CALIB_LEVEL6 | `{submode:u8}` | ACK |
+| 0x96 | CALIB_LEVEL7 | `{submode:u8}` | ACK |
+| 0x97 | CALIB_QUERY | 无 | ACK=完成 / NACK(0x0A)=进行中 / NACK(0x03)=未标定 |
+| 0x98 | CALIB_ABORT | 无 | ACK |
+
+子模式定义见固件 `User/MotorCalibration/calib_types.h`。
 
 ### 5.7 系统诊断 (0xB0 ~ 0xBF)
 

@@ -195,19 +195,16 @@ class JmCmd(IntEnum):
     TEST_CURRENT_LOOP = 0x7A
     TEST_VELOCITY_LOOP = 0x7B
 
-    # 校准 0x90~0xAF
-    CALIB_MOTOR_PARAM = 0x90
-    CALIB_ENCODER_OFFSET = 0x91
-    CALIB_ENCODER_LINEARITY = 0x92
-    CALIB_TORQUE_CONST = 0x93
-    CALIB_COGGING_COMP = 0x94
-    CALIB_FRICTION_COMP = 0x95
-    CALIB_INERTIA = 0x96
-    CALIB_ADC_OFFSET = 0x97
-    CALIB_ADC_GAIN = 0x98
-    CALIB_CURRENT_SENSOR = 0x99
-    CALIB_TEMPERATURE = 0x9A
-    CALIB_FULL_AUTO = 0x9B
+    # 校准 0x90~0xAF: 类别命令+子命令模式
+    CALIB_LEVEL1 = 0x90  # L1 驱动硬件底层, payload[0]=子模式
+    CALIB_LEVEL2 = 0x91  # L2 电机电气身份
+    CALIB_LEVEL3 = 0x92  # L3 编码器校准
+    CALIB_LEVEL4 = 0x93  # L4 转矩基础
+    CALIB_LEVEL5 = 0x94  # L5 非线性补偿
+    CALIB_LEVEL6 = 0x95  # L6 负载系统级
+    CALIB_LEVEL7 = 0x96  # L7 自动化集成
+    CALIB_QUERY = 0x97   # 进度查询
+    CALIB_ABORT = 0x98   # 中止标定
 
     # 系统诊断 0xB0~0xBF
     CLEAR_FAULT = 0xB0
