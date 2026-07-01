@@ -561,8 +561,11 @@ class _MotorView(QWidget):
     # 仅在可见时跑动画, 省 CPU
     def showEvent(self, e):
         super().showEvent(e)
+        # 切换回本面板时, 显示角度直接对齐到最新真实角度, 避免从历史位置缓慢旋转到当前
+        self._disp_th = self._tgt_th
         self._last_ms = self._clock.elapsed()
         self._timer.start()
+        self.update()
 
     def hideEvent(self, e):
         super().hideEvent(e)

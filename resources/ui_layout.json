@@ -7,15 +7,15 @@
     "main_window": {
       "width": 1458,
       "height": 885,
-      "x": 468,
-      "y": 328
+      "x": 458,
+      "y": 242
     },
     "right_splitter": [
       829,
       0
     ],
     "log_splitter_sizes": [
-      690,
+      341,
       127
     ],
     "layout_edit": false,
@@ -74,6 +74,7 @@
     "motor_param": {
       "edit_values": {
         "0": "0",
+        "1": "--",
         "2": "0",
         "3": "0",
         "4": "0",
@@ -278,7 +279,7 @@
       "current_tab": 2
     }
   },
-  "theme": "light",
+  "theme": "dark",
   "foc": {
     "blocks": {
       "ref": [
