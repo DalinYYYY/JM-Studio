@@ -32,6 +32,7 @@ from ui.panels.telemetry_panel import TelemetryPanel
 from ui.panels.plot_panel import PlotPanel
 from ui.panels.log_panel import LogPanel
 from ui.panels.state_machine_panel import StateMachinePanel
+from ui.panels.calibration_panel import CalibrationPanel
 from ui.panels.twin_param_panel import TwinParamPanel
 from ui.panels.fault_info_panel import FaultInfoPanel
 from ui.theme import theme
@@ -141,6 +142,7 @@ class MainWindow(QMainWindow):
             show_save=True, save_text="保存配置到Flash/EEPROM")
         self._plot_panel = PlotPanel()
         self._state_panel = StateMachinePanel()
+        self._calib_panel = CalibrationPanel()
         self._twin_param_panel = TwinParamPanel()
         self._fault_info_panel = FaultInfoPanel()
         self._log_panel = LogPanel()
@@ -161,6 +163,7 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(self._feedback_panel, "实时反馈")
         tabs.addTab(self._state_panel, "状态机")
+        tabs.addTab(self._calib_panel, "电机标定")
         tabs.addTab(self._param_panel, "电机参数")
         tabs.addTab(self._config_panel, "电机配置")
         tabs.addTab(self._twin_param_panel, "孪生参数")
@@ -377,6 +380,7 @@ class MainWindow(QMainWindow):
             ("motion", self._motion_panel),
             ("motor_param", self._param_panel),
             ("motor_config", self._config_panel),
+            ("calib", self._calib_panel),
             ("twin_param", self._twin_param_panel),
             ("fault_info", self._fault_info_panel),
         ):
@@ -470,6 +474,7 @@ class MainWindow(QMainWindow):
             ("motion", self._motion_panel),
             ("motor_param", self._param_panel),
             ("motor_config", self._config_panel),
+            ("calib", self._calib_panel),
             ("twin_param", self._twin_param_panel),
             ("fault_info", self._fault_info_panel),
         ):
@@ -565,7 +570,7 @@ class MainWindow(QMainWindow):
         self._btn_theme.setText("主题: 深色" if theme.is_dark else "主题: 浅色")
         for panel in (self._feedback_panel, self._state_panel, self._plot_panel,
                       self._log_panel, self._param_panel, self._config_panel,
-                      self._twin_param_panel, self._fault_info_panel):
+                      self._calib_panel, self._twin_param_panel, self._fault_info_panel):
             fn = getattr(panel, "apply_theme", None)
             if callable(fn):
                 fn()
@@ -624,6 +629,8 @@ class MainWindow(QMainWindow):
         self._conn_panel.disconnect_requested.connect(self._on_disconnect)
         self._control_panel.command.connect(self._on_control_command)
         self._motion_panel.send_command.connect(self._on_motion_command)
+        # 标定面板: 复用运动指令发送通道 (cmd=0x90~0x98, values={"submode":N} 或 {})
+        self._calib_panel.send_command.connect(self._on_motion_command)
         self._telemetry_panel.apply_telemetry.connect(self._on_apply_telemetry)
         self._param_panel.read_param.connect(
             lambda param_id, panel=self._param_panel: self._on_param_read(panel, param_id))
@@ -706,6 +713,7 @@ class MainWindow(QMainWindow):
         self._conn_panel.set_connected(connected)
         self._feedback_panel.set_link_active(connected)
         self._state_panel.set_link_active(connected)
+        self._calib_panel.set_link_active(connected)
         self._link_connected = connected
         if not connected:
             self._telemetry_panel.set_running(False)
@@ -905,6 +913,7 @@ class MainWindow(QMainWindow):
         if self._latest_state is not None:
             self._feedback_panel.update_state(*self._latest_state)
             self._state_panel.update_state(*self._latest_state)
+            self._calib_panel.update_state(*self._latest_state)
             self._control_panel.set_enabled_state(bool(self._latest_state[3]))
             self._latest_state = None
 
@@ -940,6 +949,8 @@ class MainWindow(QMainWindow):
 
     def _on_ack(self, cmd: int):
         self._log_panel.log(f"[RX] ACK {cmd_name(cmd)}(0x{cmd:02X})")
+        # 标定面板: 0x90~0x98 ACK 转发(内部按 cmd 过滤)
+        self._calib_panel.on_ack(cmd)
         # 写完成: 0xE1(运行时参数) / 0xE7(电机配置) 共用同一待应答队列
         if cmd in (JmCmd.PARAM_WRITE, JmCmd.MOTOR_INFO_WRITE):
             panel = self._pending_param_writes.popleft() if self._pending_param_writes else self._param_panel
@@ -953,6 +964,8 @@ class MainWindow(QMainWindow):
             f"NACK {cmd_name(cmd)}(0x{cmd:02X}) err={cn}(0x{err:02X})")
         # 故障信息面板加载 NACK 错误信息
         self._fault_info_panel.show_nack_error(cmd, err)
+        # 标定面板: 0x90~0x98 NACK 转发(内部按 cmd 过滤)
+        self._calib_panel.on_nack(cmd, err)
         # 读失败: 0xE0 / 0xE6 共用同一待应答队列
         if cmd in (JmCmd.PARAM_READ, JmCmd.MOTOR_INFO_READ) and self._pending_param_reads:
             self._pending_param_reads.popleft()

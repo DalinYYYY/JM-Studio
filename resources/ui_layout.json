@@ -11,12 +11,12 @@
       "y": 6
     },
     "right_splitter": [
-      829,
-      0
+      333,
+      135
     ],
     "log_splitter_sizes": [
-      341,
-      127
+      333,
+      135
     ],
     "layout_edit": false,
     "telemetry": {
@@ -265,6 +265,11 @@
         "6": 72,
         "7": 72
       }
+    },
+    "calib": {
+      "current_level": 0,
+      "current_submode": 0,
+      "auto_poll": true
     },
     "twin_param": {
       "adv_enabled": {
