@@ -1,25 +1,23 @@
 """电机标定面板
 
-封装标定指令(0x90~0x98):
-  - L1~L7 标定级别(0x90~0x96): 载荷 submode:u8, 进入 CALIB 态并启动标定
-  - 进度查询 (0x97): ACK=完成, NACK(0x0A)=进行中, NACK(0x03)=未标定
-  - 中止标定 (0x98): ACK
+封装标定指令(0x90~0x98) 与标定结果读写(0xE6~0xEA)。
 
-UI 由三部分组成:
-  1. 顶部状态卡: 显示链路状态 / 当前 top_fsm / 标定是否进行中 / 最近操作结果
-  2. 标定项选择: L1~L7 级别 + 子模式下拉, 含说明文字
-  3. 操作按钮: 启动标定 / 查询进度 / 中止标定 / 自动查询开关
-  4. 操作历史: 时间戳 + TX/ACK/NACK 文本, 滚动到最新
+UI 布局 (紧凑, 状态卡仅 2 行 ~70px):
+  1. 紧凑状态卡:
+     - 主信息行(单行, 横向排列): [●状态点] [状态文本] · [最近操作] [弹簧]
+       [已标定徽章][标记][清除] [查询][中止][自动查询]
+     - 当前选中任务行(小字, 带左侧高亮条): 级别>子项 CMD=0xXX submode=N · 描述
+  2. 标定任务: 顶部 QTabWidget, L1~L7 每级一个 Tab, 选中 Tab 才显示该级子项卡片,
+     点击子项卡片即启动该标定
+  3. 标定结果: 内嵌 ParamPanel(source="motor_config", groups=["MotorCalibParam"]),
+     展示下位机读回值/修改值/单位, 支持单读/单写/全读/全写/保存到Flash(0xEA)
+  4. 操作历史: 时间戳 + TX/ACK/NACK 文本
 
 数据来源:
   - registry "校准" 类命令 (joint_motor_command_list.csv 第 58~66 条)
+  - motor_info.csv 的 MotorCalibParam 分段(Index 16~42, 标定结果)
   - cmd_def.JmCmd.CALIB_* / JmErr.CALIB_BUSY / TopFsm.CALIB
   - 主窗口转发的 ACK/NACK/state_updated/connected 信号
-
-后续优化方向(用户后续自行迭代):
-  - 进度百分比展示(协议扩展后)
-  - 各 L 子项独立的预设/参数表单
-  - 标定结果验证(读 motor_info 校准数据并对比)
 """
 
 from collections import deque
@@ -27,9 +25,9 @@ from datetime import datetime
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
-    QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget, QFormLayout,
-    QSizePolicy,
+    QCheckBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+    QLabel, QPushButton, QTabWidget, QTextEdit, QVBoxLayout,
+    QWidget, QSizePolicy,
 )
 
 from jmproto import JmCmd, JmErr, TopFsm, cmd_name, err_name_cn, top_fsm_name
@@ -38,7 +36,7 @@ from ui.theme import theme
 
 # ==================== L1~L7 标定级别定义 ====================
 # 每条: (cmd, 级别名称, [(sub_id, 子模式名, 描述), ...])
-# 子模式范围严格对齐 CSV(joint_motor_command_list.csv 第 58~64 行备注)
+# L2 子模式按固件实际实现拆分(submode 3-6 分别对应 R/Ld/Lq/flux, 各有独立测试方法)
 _CALIB_LEVELS = [
     (JmCmd.CALIB_LEVEL1, "L1 驱动硬件底层", [
         (1, "ADC偏置",     "电流/电压采样通道零点偏置校正"),
@@ -51,7 +49,10 @@ _CALIB_LEVELS = [
     (JmCmd.CALIB_LEVEL2, "L2 电机电气身份", [
         (1, "相序",          "U/V/W 相序方向辨识"),
         (2, "极对数",        "电机极对数自动辨识"),
-        (3, "R/Ld/Lq/flux",  "定子电阻 / dq 电感 / 磁链辨识"),
+        (3, "R 相电阻",      "相电阻辨识 (DC法)"),
+        (4, "Ld d轴电感",    "d轴电感辨识 (阶跃响应)"),
+        (5, "Lq q轴电感",    "q轴电感辨识 (阶跃响应)"),
+        (6, "flux 磁链",     "永磁体磁链辨识 (反电势法)"),
     ]),
     (JmCmd.CALIB_LEVEL3, "L3 编码器校准", [
         (1, "零位",          "编码器电角度零点对齐"),
@@ -111,6 +112,11 @@ class CalibrationPanel(QGroupBox):
         self._calib_running = False     # 本地推测: 标定是否进行中
         self._last_op = ""              # 最近一次操作结果文本
         self._history = deque(maxlen=self._MAX_HISTORY)
+        # 当前选中任务: (cmd, sub_id, level_name, sub_name, sub_desc)
+        self._active_task_key = None
+        self._active_task_text = "当前选中: —"
+        # Task 3 注入的内嵌标定结果面板
+        self._config_panel = None
 
         self._build()
 
@@ -130,7 +136,13 @@ class CalibrationPanel(QGroupBox):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        # ----- 顶部状态卡 -----
+        self._build_status_card(layout)      # 含标定操作(查询/中止/自动查询)
+        self._build_task_launcher(layout)    # L1~L7 顶部 QTabWidget
+        self._build_results_placeholder(layout)
+        self._build_history(layout)
+
+    def _build_status_card(self, parent_layout):
+        """紧凑状态卡: 主信息行(单行) + 当前选中任务行(小字), 总高 ~70px."""
         self._status_card = QFrame()
         self._status_card.setFrameShape(QFrame.Shape.StyledPanel)
         self._status_card.setStyleSheet(f"""
@@ -140,92 +152,196 @@ class CalibrationPanel(QGroupBox):
                 border-radius: 4px;
             }}
         """)
-        sc_layout = QGridLayout(self._status_card)
-        sc_layout.setContentsMargins(12, 8, 12, 8)
-        sc_layout.setHorizontalSpacing(8)
-        sc_layout.setVerticalSpacing(4)
+        sc_layout = QVBoxLayout(self._status_card)
+        sc_layout.setContentsMargins(8, 5, 8, 5)
+        sc_layout.setSpacing(3)
+
+        # --- 主信息行(单行横向): 状态点+文本 · 最近操作 [弹簧] 已标定+按钮 + 操作按钮 ---
+        main_row = QHBoxLayout()
+        main_row.setContentsMargins(0, 0, 0, 0)
+        main_row.setSpacing(6)
 
         self._lbl_status_dot = QLabel("●")
         self._lbl_status_dot.setStyleSheet(
-            f"color: {theme.hex('muted')}; font-size: 18px; border:none;")
-        self._lbl_status_dot.setFixedWidth(20)
-        sc_layout.addWidget(self._lbl_status_dot, 0, 0)
+            f"color: {theme.hex('muted')}; font-size: 14px; border:none;")
+        self._lbl_status_dot.setFixedWidth(14)
+        main_row.addWidget(self._lbl_status_dot)
 
         self._lbl_status_text = QLabel("未连接")
         self._lbl_status_text.setStyleSheet(
-            f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 13px; "
+            f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 12px; "
             f"font-weight: bold; color: {theme.hex('muted')}; border:none;")
-        sc_layout.addWidget(self._lbl_status_text, 0, 1)
+        main_row.addWidget(self._lbl_status_text)
+
+        self._lbl_sep = QLabel("·")
+        self._lbl_sep.setStyleSheet(
+            f"color: {theme.hex('muted')}; font-size: 11px; border:none;")
+        main_row.addWidget(self._lbl_sep)
 
         self._lbl_last_op = QLabel("最近操作: —")
         self._lbl_last_op.setStyleSheet(
-            f"color: {theme.hex('muted')}; font-size: 12px; border:none;")
-        sc_layout.addWidget(self._lbl_last_op, 1, 0, 1, 2)
+            f"color: {theme.hex('muted')}; font-size: 11px; border:none;")
+        main_row.addWidget(self._lbl_last_op)
 
-        layout.addWidget(self._status_card)
+        main_row.addStretch()
 
-        # ----- 标定项选择 -----
-        sel_grp = QGroupBox("标定项选择")
-        sel_layout = QFormLayout(sel_grp)
-        sel_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        sel_layout.setContentsMargins(8, 6, 8, 6)
-        sel_layout.setSpacing(6)
+        # 已标定指示器 + 设置/清除按钮(Task 5 在此槽位插入; 这里先占位)
+        self._build_calib_flag_controls(main_row)
 
-        self._combo_level = QComboBox()
-        for cmd, level_name, submodes in _CALIB_LEVELS:
-            label = f"{level_name}  (0x{int(cmd):02X})"
-            self._combo_level.addItem(label, (int(cmd), level_name, submodes))
-        self._combo_level.currentIndexChanged.connect(self._on_level_changed)
-        sel_layout.addRow("标定级别:", self._combo_level)
-
-        self._combo_submode = QComboBox()
-        self._combo_submode.currentIndexChanged.connect(self._on_submode_changed)
-        sel_layout.addRow("子模式:", self._combo_submode)
-
-        self._lbl_desc = QLabel("")
-        self._lbl_desc.setWordWrap(True)
-        self._lbl_desc.setMinimumHeight(56)
-        self._lbl_desc.setTextFormat(Qt.TextFormat.PlainText)
-        sel_layout.addRow("说明:", self._lbl_desc)
-
-        layout.addWidget(sel_grp)
-
-        # ----- 操作按钮 -----
-        btn_grp = QGroupBox("标定操作")
-        btn_layout = QGridLayout(btn_grp)
-        btn_layout.setContentsMargins(8, 6, 8, 6)
-        btn_layout.setSpacing(6)
-
-        self._btn_start = QPushButton("启动标定")
-        self._btn_start.setStyleSheet(
-            f"background-color: {theme.hex('ok')}; color: {theme.hex('ok_text')}; "
-            f"font-weight: bold; padding: 8px;")
-        self._btn_start.clicked.connect(self._on_start_clicked)
-        btn_layout.addWidget(self._btn_start, 0, 0)
-
-        self._btn_query = QPushButton("查询进度")
+        # 标定操作嵌入状态卡右侧 (查询/中止/自动查询)
+        self._btn_query = QPushButton("查询")
+        self._btn_query.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_query.setFixedHeight(22)
+        self._btn_query.setStyleSheet(
+            f"QPushButton {{ background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
+            f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
+            f"padding: 1px 8px; font-size: 11px; }}"
+            f"QPushButton:hover {{ border-color: {theme.hex('accent')}; "
+            f"color: {theme.hex('accent')}; }}")
         self._btn_query.clicked.connect(self._on_query_clicked)
-        btn_layout.addWidget(self._btn_query, 0, 1)
+        main_row.addWidget(self._btn_query)
 
-        self._btn_abort = QPushButton("中止标定")
+        self._btn_abort = QPushButton("中止")
+        self._btn_abort.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_abort.setFixedHeight(22)
         self._btn_abort.setStyleSheet(
-            f"background-color: {theme.hex('danger')}; color: {theme.hex('danger_text')}; "
-            f"font-weight: bold; padding: 8px;")
+            f"QPushButton {{ background-color: {theme.hex('danger')}; color: {theme.hex('danger_text')}; "
+            f"border: 1px solid {theme.hex('danger')}; border-radius: 3px; "
+            f"padding: 1px 8px; font-size: 11px; font-weight: bold; }}"
+            f"QPushButton:hover {{ opacity: 0.85; }}")
         self._btn_abort.clicked.connect(self._on_abort_clicked)
-        btn_layout.addWidget(self._btn_abort, 0, 2)
+        main_row.addWidget(self._btn_abort)
 
-        self._chk_auto_poll = QCheckBox("标定进行中自动查询进度")
+        self._chk_auto_poll = QCheckBox("自动")
         self._chk_auto_poll.setChecked(True)
+        self._chk_auto_poll.setStyleSheet(
+            f"QCheckBox {{ color: {theme.hex('muted')}; font-size: 11px; spacing: 3px; }}")
         self._chk_auto_poll.toggled.connect(self._on_auto_poll_toggled)
-        btn_layout.addWidget(self._chk_auto_poll, 1, 0, 1, 3)
+        main_row.addWidget(self._chk_auto_poll)
 
-        layout.addWidget(btn_grp)
+        sc_layout.addLayout(main_row)
 
-        # ----- 操作历史 -----
-        hist_grp = QGroupBox("操作历史")
-        hist_layout = QVBoxLayout(hist_grp)
-        hist_layout.setContentsMargins(8, 6, 8, 6)
-        hist_layout.setSpacing(4)
+        # --- 当前选中任务行(小字, 带左侧高亮条) ---
+        self._lbl_active_task = QLabel(self._active_task_text)
+        self._lbl_active_task.setWordWrap(False)
+        self._lbl_active_task.setTextFormat(Qt.TextFormat.PlainText)
+        self._lbl_active_task.setStyleSheet(
+            f"color: {theme.hex('text')}; font-size: 11px; border:none; "
+            f"background: {theme.hex('card_bottom')}; "
+            f"border-left: 2px solid {theme.hex('accent')}; "
+            f"padding: 2px 8px; border-radius: 2px;")
+        sc_layout.addWidget(self._lbl_active_task)
+
+        parent_layout.addWidget(self._status_card)
+
+    def _build_calib_flag_controls(self, layout):
+        """已标定指示器 + 设置/清除按钮占位(Task 5 实现, 这里先放空 widget 保持槽位)."""
+        # Task 5 会在此插入 _lbl_calib_flag / _btn_mark_calibrated / _btn_clear_calibrated
+        # 占位 widget 避免 layout 在 Task 5 之前为空
+        placeholder = QWidget()
+        layout.addWidget(placeholder)
+
+    def _build_task_launcher(self, parent_layout):
+        """L1~L7 顶部 QTabWidget, 每个 Tab 显示该级别的子项卡片, 点击卡片即启动."""
+        grp = QGroupBox("标定任务  (选中级别 Tab → 点击子项启动)")
+        v = QVBoxLayout(grp)
+        v.setContentsMargins(8, 6, 8, 6)
+        v.setSpacing(6)
+
+        self._task_tabs = QTabWidget()
+        self._task_tabs.setDocumentMode(True)
+        self._task_tabs.setStyleSheet(self._tab_style())
+
+        self._task_buttons = {}  # (cmd, sub_id) -> QPushButton
+
+        for cmd, level_name, submodes in _CALIB_LEVELS:
+            page = QWidget()
+            page_layout = QHBoxLayout(page)
+            page_layout.setContentsMargins(8, 8, 8, 8)
+            page_layout.setSpacing(8)
+            page_layout.addStretch()
+            # 每个子项为可点击卡片(QPushButton 带描述), 横向排列
+            for sub_id, sub_name, sub_desc in submodes:
+                btn = QPushButton(f"{sub_name}\n{sub_desc}")
+                btn.setToolTip(f"CMD=0x{int(cmd):02X}  submode={sub_id}\n{sub_desc}")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setMinimumWidth(130)
+                btn.setMinimumHeight(54)
+                btn.setStyleSheet(self._task_btn_style(active=False))
+                btn.clicked.connect(
+                    lambda _=False, c=int(cmd), s=int(sub_id),
+                           ln=level_name, sn=sub_name, sd=sub_desc:
+                    self._on_task_clicked(c, s, ln, sn, sd))
+                self._task_buttons[(int(cmd), int(sub_id))] = btn
+                page_layout.addWidget(btn)
+            page_layout.addStretch()
+            tab_title = f"{level_name}  0x{int(cmd):02X}"
+            self._task_tabs.addTab(page, tab_title)
+
+        v.addWidget(self._task_tabs)
+        parent_layout.addWidget(grp)
+
+    def _tab_style(self) -> str:
+        return f"""
+            QTabWidget::pane {{
+                border: 1px solid {theme.hex('border')};
+                border-radius: 4px;
+                top: -1px;
+            }}
+            QTabBar::tab {{
+                background: {theme.hex('input_bg')};
+                color: {theme.hex('muted')};
+                border: 1px solid {theme.hex('border')};
+                border-bottom: none;
+                padding: 4px 12px;
+                margin-right: 2px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                font-size: 12px;
+            }}
+            QTabBar::tab:selected {{
+                background: {theme.hex('card_bottom')};
+                color: {theme.hex('accent')};
+                border-color: {theme.hex('border')};
+                font-weight: bold;
+            }}
+            QTabBar::tab:hover:!selected {{
+                color: {theme.hex('text')};
+            }}
+        """
+
+    def _build_results_placeholder(self, parent_layout):
+        """标定结果区占位 (Task 3 由 attach_results_panel 注入实际 ParamPanel)."""
+        self._results_container = QGroupBox("标定结果  (下位机读回值 / 修改 / 保存)")
+        v = QVBoxLayout(self._results_container)
+        v.setContentsMargins(8, 6, 8, 6)
+        self._results_placeholder = QLabel(
+            "（Task 3 注入: 连接后自动读回 MotorCalibParam 段 Index 16~42）")
+        self._results_placeholder.setStyleSheet(
+            f"color: {theme.hex('muted')}; font-size: 12px; padding: 12px;")
+        v.addWidget(self._results_placeholder)
+        parent_layout.addWidget(self._results_container)
+
+    def attach_results_panel(self, panel):
+        """Task 3: 注入内嵌 ParamPanel 替换占位 (Main_window 在初始化后调用)."""
+        if self._config_panel is not None:
+            return
+        self._config_panel = panel
+        # 清除占位
+        lay = self._results_container.layout()
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+        lay.addWidget(panel)
+
+    def _build_history(self, parent_layout):
+        """操作历史: 时间戳 + TX/ACK/NACK 文本, 滚动到最新."""
+        grp = QGroupBox("操作历史")
+        v = QVBoxLayout(grp)
+        v.setContentsMargins(8, 6, 8, 6)
+        v.setSpacing(4)
 
         self._history_view = QTextEdit()
         self._history_view.setReadOnly(True)
@@ -233,8 +349,9 @@ class CalibrationPanel(QGroupBox):
             f"background: {theme.hex('log_bg')}; color: {theme.hex('log_text')}; "
             f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 12px; "
             f"border: 1px solid {theme.hex('border')};")
-        self._history_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        hist_layout.addWidget(self._history_view, 1)
+        self._history_view.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                         QSizePolicy.Policy.Expanding)
+        v.addWidget(self._history_view, 1)
 
         op_row = QHBoxLayout()
         op_row.addStretch()
@@ -243,44 +360,70 @@ class CalibrationPanel(QGroupBox):
         self._btn_clear_history.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_clear_history.clicked.connect(self._on_clear_history)
         op_row.addWidget(self._btn_clear_history)
-        hist_layout.addLayout(op_row)
+        v.addLayout(op_row)
 
-        layout.addWidget(hist_grp, 1)
+        parent_layout.addWidget(grp, 1)
 
-        # 初始化子模式(触发 _on_level_changed -> _on_submode_changed)
-        if self._combo_level.count() > 0:
-            self._on_level_changed(0)
-
-    # ==================== 级别/子模式选择 ====================
-    def _on_level_changed(self, _idx: int):
-        data = self._combo_level.currentData()
-        if data is None:
-            self._lbl_desc.setText("")
-            return
-        _cmd, _level_name, submodes = data
-        self._combo_submode.blockSignals(True)
-        self._combo_submode.clear()
-        for sub_id, sub_name, sub_desc in submodes:
-            self._combo_submode.addItem(
-                f"{sub_name}  (sub={sub_id})", (sub_id, sub_name, sub_desc))
-        self._combo_submode.blockSignals(False)
-        # 手动触发一次说明刷新
-        self._on_submode_changed(0)
-
-    def _on_submode_changed(self, _idx: int):
-        data = self._combo_submode.currentData()
-        lvl_data = self._combo_level.currentData()
-        if data is None or lvl_data is None:
-            self._lbl_desc.setText("")
-            return
-        sub_id, sub_name, sub_desc = data
-        cmd, level_name, _ = lvl_data
-        text = (
-            f"[{level_name} > {sub_name}]\n"
-            f"CMD=0x{cmd:02X}, submode={sub_id}\n"
-            f"{sub_desc}"
+    # ==================== 任务按钮样式 (卡片式) ====================
+    def _task_btn_style(self, active: bool = False) -> str:
+        bg = theme.hex('accent') if active else theme.hex('input_bg')
+        fg = theme.hex('card_bottom') if active else theme.hex('text')
+        border = theme.hex('accent') if active else theme.hex('input_border')
+        return (
+            f"QPushButton {{"
+            f"  background-color: {bg}; color: {fg};"
+            f"  border: 1px solid {border}; border-radius: 6px;"
+            f"  padding: 6px 10px; font-size: 12px;"
+            f"  text-align: left;"
+            f"}}"
+            f"QPushButton:hover {{"
+            f"  background-color: {theme.hex('accent')}; color: {theme.hex('card_bottom')};"
+            f"  border-color: {theme.hex('accent')};"
+            f"}}"
         )
-        self._lbl_desc.setText(text)
+
+    def _refresh_task_buttons_style(self):
+        """刷新所有任务卡片样式 (按当前选中态)."""
+        for key, btn in self._task_buttons.items():
+            btn.setStyleSheet(self._task_btn_style(active=(key == self._active_task_key)))
+
+    # ==================== 任务点击 / 选中态 ====================
+    def _on_task_clicked(self, cmd: int, sub_id: int,
+                         level_name: str, sub_name: str, sub_desc: str):
+        """点击子项卡片: 启动标定并更新选中态."""
+        self._set_active_task(cmd, sub_id, level_name, sub_name, sub_desc)
+        if not self._link_active:
+            self._add_history("[未连接] 请先连接电机")
+            self._set_last_op("未连接, 无法启动")
+            return
+        self._add_history(
+            f"[TX] 启动 {cmd_name(cmd)} submode={sub_id} ({level_name}>{sub_name})")
+        self.send_command.emit(int(cmd), {"submode": int(sub_id)})
+
+    def _set_active_task(self, cmd: int, sub_id: int,
+                         level_name: str, sub_name: str, sub_desc: str):
+        """更新当前选中任务显示与卡片高亮."""
+        self._active_task_key = (int(cmd), int(sub_id))
+        self._active_task_text = (
+            f"当前选中: {level_name} > {sub_name}  "
+            f"CMD=0x{cmd:02X}, submode={sub_id}  ·  {sub_desc}")
+        self._lbl_active_task.setText(self._active_task_text)
+        self._refresh_task_buttons_style()
+        # 切到对应 Tab
+        for i in range(self._task_tabs.count()):
+            if int(_CALIB_LEVELS[i][0]) == int(cmd):
+                if self._task_tabs.currentIndex() != i:
+                    self._task_tabs.setCurrentIndex(i)
+                break
+
+    def _lookup_task(self, cmd: int, sub_id: int):
+        """根据 (cmd, sub_id) 反查 (level_name, sub_name, sub_desc), 找不到返回 (None,...)."""
+        for c, level_name, submodes in _CALIB_LEVELS:
+            if int(c) == int(cmd):
+                for sid, sn, sd in submodes:
+                    if int(sid) == int(sub_id):
+                        return level_name, sn, sd
+        return None, None, None
 
     # ==================== 状态接收 (由主窗口调用) ====================
     def set_link_active(self, active: bool):
@@ -325,13 +468,19 @@ class CalibrationPanel(QGroupBox):
             self._add_history(f"[ACK] {cmd_name(cmd)}(0x{cmd:02X}) 已中止")
         else:
             # 启动类(0x90~0x96) ACK: 表示已进入标定态(由 state_updated 同步)
-            lvl_data = self._combo_level.currentData()
-            sub_data = self._combo_submode.currentData()
-            level_name = lvl_data[1] if lvl_data else ""
-            sub_name = sub_data[1] if sub_data else ""
-            self._set_last_op(f"已启动: {level_name} > {sub_name}")
-            self._add_history(
-                f"[ACK] {cmd_name(cmd)}(0x{cmd:02X}) 启动 {level_name}>{sub_name}")
+            if self._active_task_key is not None:
+                cmd2, sub_id = self._active_task_key
+                level_name, sub_name, _ = self._lookup_task(cmd2, sub_id)
+                if level_name:
+                    self._set_last_op(f"已启动: {level_name} > {sub_name}")
+                    self._add_history(
+                        f"[ACK] {cmd_name(cmd)}(0x{cmd:02X}) 启动 {level_name}>{sub_name}")
+                else:
+                    self._set_last_op("已启动")
+                    self._add_history(f"[ACK] {cmd_name(cmd)}(0x{cmd:02X}) 启动")
+            else:
+                self._set_last_op("已启动")
+                self._add_history(f"[ACK] {cmd_name(cmd)}(0x{cmd:02X}) 启动")
         self._refresh_status()
 
     def on_nack(self, cmd: int, err: int):
@@ -368,21 +517,6 @@ class CalibrationPanel(QGroupBox):
         return int(JmCmd.CALIB_LEVEL1) <= cmd <= int(JmCmd.CALIB_ABORT)
 
     # ==================== 按钮回调 ====================
-    def _on_start_clicked(self):
-        if not self._link_active:
-            self._add_history("[未连接] 请先连接电机")
-            self._set_last_op("未连接, 无法启动")
-            return
-        lvl_data = self._combo_level.currentData()
-        sub_data = self._combo_submode.currentData()
-        if lvl_data is None or sub_data is None:
-            return
-        cmd, level_name, _ = lvl_data
-        sub_id, sub_name, _ = sub_data
-        self._add_history(
-            f"[TX] 启动 {cmd_name(cmd)} submode={sub_id} ({level_name}>{sub_name})")
-        self.send_command.emit(int(cmd), {"submode": int(sub_id)})
-
     def _on_query_clicked(self):
         if not self._link_active:
             self._add_history("[未连接] 请先连接电机")
@@ -446,10 +580,10 @@ class CalibrationPanel(QGroupBox):
                 if self._current_top_fsm is not None else "未知"
             text = f"已连接  (top_fsm={top_text})"
         self._lbl_status_dot.setStyleSheet(
-            f"color: {dot_color}; font-size: 18px; border:none;")
+            f"color: {dot_color}; font-size: 14px; border:none;")
         self._lbl_status_text.setStyleSheet(
             f"font-family: Consolas, 'Microsoft YaHei', monospace; "
-            f"font-size: 13px; font-weight: bold; color: {dot_color}; border:none;")
+            f"font-size: 12px; font-weight: bold; color: {dot_color}; border:none;")
         self._lbl_status_text.setText(text)
 
     # ==================== 主题 ====================
@@ -461,54 +595,72 @@ class CalibrationPanel(QGroupBox):
                 border-radius: 4px;
             }}
         """)
-        self._lbl_desc.setStyleSheet(
-            f"background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
-            f"border: 1px solid {theme.hex('input_border')}; border-radius: 4px; "
-            f"padding: 6px;")
-        self._btn_start.setStyleSheet(
-            f"background-color: {theme.hex('ok')}; color: {theme.hex('ok_text')}; "
-            f"font-weight: bold; padding: 8px;")
+        self._task_tabs.setStyleSheet(self._tab_style())
+        self._lbl_active_task.setStyleSheet(
+            f"color: {theme.hex('text')}; font-size: 11px; border:none; "
+            f"background: {theme.hex('card_bottom')}; "
+            f"border-left: 2px solid {theme.hex('accent')}; "
+            f"padding: 2px 8px; border-radius: 2px;")
         self._btn_abort.setStyleSheet(
-            f"background-color: {theme.hex('danger')}; color: {theme.hex('danger_text')}; "
-            f"font-weight: bold; padding: 8px;")
+            f"QPushButton {{ background-color: {theme.hex('danger')}; color: {theme.hex('danger_text')}; "
+            f"border: 1px solid {theme.hex('danger')}; border-radius: 3px; "
+            f"padding: 1px 8px; font-size: 11px; font-weight: bold; }}"
+            f"QPushButton:hover {{ opacity: 0.85; }}")
         self._history_view.setStyleSheet(
             f"background: {theme.hex('log_bg')}; color: {theme.hex('log_text')}; "
             f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 12px; "
             f"border: 1px solid {theme.hex('border')};")
+        self._refresh_task_buttons_style()
+        if self._config_panel is not None:
+            fn = getattr(self._config_panel, "apply_theme", None)
+            if callable(fn):
+                fn()
         self._refresh_status()
 
     # ==================== 配置持久化 ====================
     def get_opts(self) -> dict:
-        """收集可持久化的 UI 配置: 当前级别/子模式选择 + 自动查询开关."""
+        """收集可持久化的 UI 配置: 当前 Tab + 当前选中任务 + 自动查询开关 + 内嵌面板列宽。"""
         opts = {}
         try:
-            opts["current_level"] = int(self._combo_level.currentIndex())
-            opts["current_submode"] = int(self._combo_submode.currentIndex())
             opts["auto_poll"] = bool(self._chk_auto_poll.isChecked())
+            opts["task_tab_index"] = int(self._task_tabs.currentIndex())
+            if self._active_task_key is not None:
+                opts["active_task"] = list(self._active_task_key)
         except Exception:
             pass
+        if self._config_panel is not None:
+            try:
+                opts["config_panel"] = self._config_panel.get_opts()
+            except Exception:
+                pass
         return opts
 
     def set_opts(self, opts: dict):
         """启动时套用配置 (容错)."""
         if not isinstance(opts, dict):
             return
-        try:
-            lvl = int(opts.get("current_level", 0))
-            if 0 <= lvl < self._combo_level.count():
-                self._combo_level.setCurrentIndex(lvl)
-        except Exception:
-            pass
-        # 子模式依赖级别已加载, 但 setCurrentIndex 触发的 _on_level_changed
-        # 会重置 submode 列表(选中第0项), 故需在信号处理后再恢复
-        try:
-            sub = int(opts.get("current_submode", 0))
-            if 0 <= sub < self._combo_submode.count():
-                self._combo_submode.setCurrentIndex(sub)
-        except Exception:
-            pass
         if "auto_poll" in opts:
             try:
                 self._chk_auto_poll.setChecked(bool(opts["auto_poll"]))
+            except Exception:
+                pass
+        if "task_tab_index" in opts:
+            try:
+                idx = int(opts["task_tab_index"])
+                if 0 <= idx < self._task_tabs.count():
+                    self._task_tabs.setCurrentIndex(idx)
+            except Exception:
+                pass
+        if "active_task" in opts:
+            try:
+                cmd, sub_id = opts["active_task"]
+                lvl_name, sub_name, sub_desc = self._lookup_task(int(cmd), int(sub_id))
+                if lvl_name:
+                    self._set_active_task(int(cmd), int(sub_id), lvl_name, sub_name, sub_desc)
+            except Exception:
+                pass
+        if self._config_panel is not None and isinstance(opts.get("config_panel"), dict):
+            try:
+                self._config_panel.set_opts(opts["config_panel"])
             except Exception:
                 pass
