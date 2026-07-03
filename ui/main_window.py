@@ -142,10 +142,11 @@ class MainWindow(QMainWindow):
             show_save=True, save_text="保存配置到Flash/EEPROM")
         # 标定结果面板: 复用 motor_config 通道(0xE6 读 / 0xE7 写 / 0xEA 固化),
         # 仅展示 MotorCalibParam 段(Index 16~42), 注入到标定 Tab 内嵌展示。
+        # show_legend=False: 去掉图例行, 让表格直接占满
         self._calib_results_panel = ParamPanel(
             self._registry, title="标定结果", source="motor_config",
             groups=("MotorCalibParam",), show_save=True,
-            save_text="保存标定结果到Flash/EEPROM")
+            save_text="保存标定结果到Flash/EEPROM", show_legend=False)
         self._plot_panel = PlotPanel()
         self._state_panel = StateMachinePanel()
         self._calib_panel = CalibrationPanel()
@@ -563,7 +564,22 @@ class MainWindow(QMainWindow):
             "\nQPushButton:checked{background:#03A9F4;color:white;border-color:#29B6F6;}")
         self._btn_virtual_mode.toggled.connect(self._on_virtual_mode_toggled)
         layout.addWidget(self._btn_virtual_mode, 2, 0, 1, 2)
+        # 标定操作历史显隐开关: 默认隐藏, 让标定结果表格占满
+        self._btn_calib_history = QPushButton("历史: 隐")
+        self._btn_calib_history.setCheckable(True)
+        self._btn_calib_history.setChecked(False)
+        self._apply_menu_button_style(self._btn_calib_history)
+        self._btn_calib_history.setStyleSheet(self._btn_calib_history.styleSheet() +
+            "\nQPushButton:checked{background:#03A9F4;color:white;border-color:#29B6F6;}")
+        self._btn_calib_history.setToolTip("显示/隐藏 标定 Tab 的操作历史区")
+        self._btn_calib_history.toggled.connect(self._on_calib_history_toggled)
+        layout.addWidget(self._btn_calib_history, 3, 0, 1, 2)
         return grp
+
+    def _on_calib_history_toggled(self, on: bool):
+        """标定操作历史显隐开关."""
+        self._btn_calib_history.setText("历史: 显" if on else "历史: 隐")
+        self._calib_panel.set_history_visible(on)
 
     def _on_toggle_theme(self):
         theme.set("light" if theme.is_dark else "dark")

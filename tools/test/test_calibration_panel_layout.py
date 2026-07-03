@@ -58,14 +58,20 @@ check(panel._task_tabs.count() == 7,
 check(len(panel._task_buttons) == 27,
       f"任务按钮数应为 27, 实际 {len(panel._task_buttons)}")
 
-# 5. 点击子项按钮发 send_command(cmd, {submode:N}) — 需先连接
+# 5. 点击子项按钮只选中(不发送), 由「开始」按钮统一发送
 panel.set_link_active(True)
 sent = []
 panel.send_command.connect(lambda c, v: sent.append((int(c), dict(v))))
 btn = panel._task_buttons[(int(JmCmd.CALIB_LEVEL2), 3)]  # R 相电阻
 btn.click()
+check(sent == [], f"点击卡片只选中, 不应发命令, 实际 {sent}")
+check(panel._active_task_key == (int(JmCmd.CALIB_LEVEL2), 3),
+      f"点击后应选中 (0x91, 3), 实际 {panel._active_task_key}")
+check(panel._btn_start.isEnabled(), "选中后「开始」按钮应可用")
+# 点「开始」才发命令
+panel._btn_start.click()
 check(sent == [(int(JmCmd.CALIB_LEVEL2), {"submode": 3})],
-      f"点击 R 相电阻应发 (0x91, submode=3), 实际 {sent}")
+      f"点开始应发 (0x91, submode=3), 实际 {sent}")
 
 # 6. 状态卡存在且含 "当前选中" 标签
 check(hasattr(panel, "_lbl_active_task"), "应有 _lbl_active_task 标签")
@@ -99,10 +105,10 @@ txt2 = panel._lbl_active_task.text()
 check("L3" in txt2 and "submode=2" in txt2,
       f"set_opts active_task 应恢复 L3 submode=2, 实际: {txt2!r}")
 
-# 12. 状态卡高度应紧凑(无 _combo_level / _combo_submode / _btn_start / QFormLayout)
+# 12. 状态卡高度应紧凑(无 _combo_level / _combo_submode / QFormLayout)
 check(not hasattr(panel, "_combo_level"), "不应再有 _combo_level(改用 Tab)")
 check(not hasattr(panel, "_combo_submode"), "不应再有 _combo_submode(改用卡片)")
-check(not hasattr(panel, "_btn_start"), "不应再有 _btn_start(卡片直接启动)")
+check(hasattr(panel, "_btn_start"), "应有 _btn_start(右侧操作列, 统一启动)")
 
 # 13. main_window 契约方法仍在
 check(callable(getattr(panel, "set_link_active", None)), "应有 set_link_active")

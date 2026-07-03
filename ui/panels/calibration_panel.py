@@ -145,7 +145,7 @@ class CalibrationPanel(QGroupBox):
         self._build_history(layout)
 
     def _build_status_card(self, parent_layout):
-        """紧凑状态卡: 主信息行(单行) + 当前选中任务行(小字), 总高 ~70px."""
+        """紧凑状态卡: 左侧主信息(2行) + 右侧已标定独占列(徽章+标记+清除), 总高 ~70px."""
         self._status_card = QFrame()
         self._status_card.setFrameShape(QFrame.Shape.StyledPanel)
         self._status_card.setStyleSheet(f"""
@@ -155,11 +155,17 @@ class CalibrationPanel(QGroupBox):
                 border-radius: 4px;
             }}
         """)
-        sc_layout = QVBoxLayout(self._status_card)
-        sc_layout.setContentsMargins(8, 5, 8, 5)
-        sc_layout.setSpacing(3)
+        outer = QHBoxLayout(self._status_card)
+        outer.setContentsMargins(8, 5, 8, 5)
+        outer.setSpacing(10)
 
-        # --- 主信息行(单行横向): 状态点+文本 · 最近操作 [弹簧] 已标定+按钮 + 操作按钮 ---
+        # ============ 左侧: 主信息(2行) ============
+        left_wrap = QWidget()
+        left_layout = QVBoxLayout(left_wrap)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(3)
+
+        # 主信息行(单行): 状态点+文本 · 最近操作 [弹簧]
         main_row = QHBoxLayout()
         main_row.setContentsMargins(0, 0, 0, 0)
         main_row.setSpacing(6)
@@ -187,44 +193,9 @@ class CalibrationPanel(QGroupBox):
         main_row.addWidget(self._lbl_last_op)
 
         main_row.addStretch()
+        left_layout.addLayout(main_row)
 
-        # 已标定指示器 + 设置/清除按钮(Task 5 在此槽位插入; 这里先占位)
-        self._build_calib_flag_controls(main_row)
-
-        # 标定操作嵌入状态卡右侧 (查询/中止/自动查询)
-        self._btn_query = QPushButton("查询")
-        self._btn_query.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_query.setFixedHeight(22)
-        self._btn_query.setStyleSheet(
-            f"QPushButton {{ background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
-            f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
-            f"padding: 1px 8px; font-size: 11px; }}"
-            f"QPushButton:hover {{ border-color: {theme.hex('accent')}; "
-            f"color: {theme.hex('accent')}; }}")
-        self._btn_query.clicked.connect(self._on_query_clicked)
-        main_row.addWidget(self._btn_query)
-
-        self._btn_abort = QPushButton("中止")
-        self._btn_abort.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_abort.setFixedHeight(22)
-        self._btn_abort.setStyleSheet(
-            f"QPushButton {{ background-color: {theme.hex('danger')}; color: {theme.hex('danger_text')}; "
-            f"border: 1px solid {theme.hex('danger')}; border-radius: 3px; "
-            f"padding: 1px 8px; font-size: 11px; font-weight: bold; }}"
-            f"QPushButton:hover {{ opacity: 0.85; }}")
-        self._btn_abort.clicked.connect(self._on_abort_clicked)
-        main_row.addWidget(self._btn_abort)
-
-        self._chk_auto_poll = QCheckBox("自动")
-        self._chk_auto_poll.setChecked(True)
-        self._chk_auto_poll.setStyleSheet(
-            f"QCheckBox {{ color: {theme.hex('muted')}; font-size: 11px; spacing: 3px; }}")
-        self._chk_auto_poll.toggled.connect(self._on_auto_poll_toggled)
-        main_row.addWidget(self._chk_auto_poll)
-
-        sc_layout.addLayout(main_row)
-
-        # --- 当前选中任务行(小字, 带左侧高亮条) ---
+        # 当前选中任务行(小字, 带左侧高亮条)
         self._lbl_active_task = QLabel(self._active_task_text)
         self._lbl_active_task.setWordWrap(False)
         self._lbl_active_task.setTextFormat(Qt.TextFormat.PlainText)
@@ -233,12 +204,17 @@ class CalibrationPanel(QGroupBox):
             f"background: {theme.hex('card_bottom')}; "
             f"border-left: 2px solid {theme.hex('accent')}; "
             f"padding: 2px 8px; border-radius: 2px;")
-        sc_layout.addWidget(self._lbl_active_task)
+        left_layout.addWidget(self._lbl_active_task)
+
+        outer.addWidget(left_wrap, 1)
+
+        # ============ 右侧: 已标定独占列 (徽章 + 标记/清除) ============
+        self._build_calib_flag_controls(outer)
 
         parent_layout.addWidget(self._status_card)
 
-    def _build_calib_flag_controls(self, layout):
-        """已标定指示徽章 + 标记/清除按钮 (Task 5).
+    def _build_calib_flag_controls(self, outer_layout):
+        """右侧已标定独占列: 徽章(大字醒目) + 标记/清除按钮横排.
 
         徽章文本由 Index 16 (is_calibrated) 读回值驱动:
           - "1"  -> "已标定" (绿/accent)
@@ -248,13 +224,22 @@ class CalibrationPanel(QGroupBox):
         标记/清除按钮走 _config_panel.write_param(16, "1"/"0") -> 0xE7 motor_info_write,
         与标定结果面板共用同一通道, 写完后由主窗口读回 Index 16 同步实际状态。
         """
+        col = QWidget()
+        col.setFixedWidth(170)
+        col_layout = QVBoxLayout(col)
+        col_layout.setContentsMargins(12, 0, 0, 0)
+        col_layout.setSpacing(5)
+        col_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         self._lbl_calib_flag = QLabel(self._calib_flag_text)
         self._lbl_calib_flag.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._lbl_calib_flag.setFixedHeight(20)
-        self._lbl_calib_flag.setMinimumWidth(64)
+        self._lbl_calib_flag.setFixedHeight(26)
+        self._lbl_calib_flag.setMinimumWidth(140)
         self._lbl_calib_flag.setStyleSheet(self._calib_flag_style())
-        layout.addWidget(self._lbl_calib_flag)
+        col_layout.addWidget(self._lbl_calib_flag)
 
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(5)
         self._btn_mark_calibrated = QPushButton("标记")
         self._btn_mark_calibrated.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_mark_calibrated.setFixedHeight(22)
@@ -262,7 +247,7 @@ class CalibrationPanel(QGroupBox):
         self._btn_mark_calibrated.setStyleSheet(self._calib_action_btn_style())
         self._btn_mark_calibrated.clicked.connect(self._on_mark_calibrated)
         self._btn_mark_calibrated.setEnabled(False)
-        layout.addWidget(self._btn_mark_calibrated)
+        btn_row.addWidget(self._btn_mark_calibrated)
 
         self._btn_clear_calibrated = QPushButton("清除")
         self._btn_clear_calibrated.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -271,17 +256,24 @@ class CalibrationPanel(QGroupBox):
         self._btn_clear_calibrated.setStyleSheet(self._calib_action_btn_style())
         self._btn_clear_calibrated.clicked.connect(self._on_clear_calibrated)
         self._btn_clear_calibrated.setEnabled(False)
-        layout.addWidget(self._btn_clear_calibrated)
+        btn_row.addWidget(self._btn_clear_calibrated)
+        col_layout.addLayout(btn_row)
 
+        outer_layout.addWidget(col)
         self._refresh_calib_flag()
 
     def _build_task_launcher(self, parent_layout):
-        """L1~L7 顶部 QTabWidget, 每个 Tab 显示该级别的子项卡片, 点击卡片即启动."""
-        grp = QGroupBox("标定任务  (选中级别 Tab → 点击子项启动)")
-        v = QVBoxLayout(grp)
-        v.setContentsMargins(8, 6, 8, 6)
-        v.setSpacing(6)
+        """L1~L7 顶部 QTabWidget + 右侧操作列(开始/中止/查询/自动).
 
+        子项左对齐排列; 点击子项只选中(高亮), 不发送命令;
+        命令由右侧「开始」按钮统一发出。
+        """
+        grp = QGroupBox("标定任务  (选中级别 Tab → 选中子项, 点「开始」启动)")
+        outer = QHBoxLayout(grp)
+        outer.setContentsMargins(8, 6, 8, 6)
+        outer.setSpacing(8)
+
+        # ============ 左侧: Tab + 子项卡片(左对齐) ============
         self._task_tabs = QTabWidget()
         self._task_tabs.setDocumentMode(True)
         self._task_tabs.setStyleSheet(self._tab_style())
@@ -293,8 +285,7 @@ class CalibrationPanel(QGroupBox):
             page_layout = QHBoxLayout(page)
             page_layout.setContentsMargins(8, 8, 8, 8)
             page_layout.setSpacing(8)
-            page_layout.addStretch()
-            # 每个子项为可点击卡片(QPushButton 带描述), 横向排列
+            # 左对齐: 不加前导 stretch, 仅尾部 stretch
             for sub_id, sub_name, sub_desc in submodes:
                 btn = QPushButton(f"{sub_name}\n{sub_desc}")
                 btn.setToolTip(f"CMD=0x{int(cmd):02X}  submode={sub_id}\n{sub_desc}")
@@ -312,8 +303,74 @@ class CalibrationPanel(QGroupBox):
             tab_title = f"{level_name}  0x{int(cmd):02X}"
             self._task_tabs.addTab(page, tab_title)
 
-        v.addWidget(self._task_tabs)
+        outer.addWidget(self._task_tabs, 1)
+
+        # ============ 右侧: 操作列 (开始/中止/查询/自动) ============
+        self._build_task_actions(outer)
         parent_layout.addWidget(grp)
+
+    def _build_task_actions(self, outer_layout):
+        """标定任务右侧操作列: 开始/中止/查询/自动, 全部小按钮竖排."""
+        col = QWidget()
+        col.setFixedWidth(110)
+        col_layout = QVBoxLayout(col)
+        col_layout.setContentsMargins(0, 18, 0, 0)
+        col_layout.setSpacing(6)
+
+        # 开始按钮 (绿色, 启动当前选中任务)
+        self._btn_start = QPushButton("▶ 开始")
+        self._btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_start.setFixedHeight(26)
+        self._btn_start.setEnabled(False)  # 未选中任务时禁用
+        self._btn_start.setStyleSheet(
+            f"QPushButton {{ background-color: {theme.hex('ok')}; color: white; "
+            f"border: 1px solid {theme.hex('ok')}; border-radius: 3px; "
+            f"padding: 1px 8px; font-size: 12px; font-weight: bold; }}"
+            f"QPushButton:hover {{ opacity: 0.85; }}"
+            f"QPushButton:disabled {{ background: {theme.hex('input_bg')}; "
+            f"color: {theme.hex('muted')}; border-color: {theme.hex('border')}; }}")
+        self._btn_start.clicked.connect(self._on_start_clicked)
+        col_layout.addWidget(self._btn_start)
+
+        # 中止按钮 (红色)
+        self._btn_abort = QPushButton("■ 中止")
+        self._btn_abort.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_abort.setFixedHeight(26)
+        self._btn_abort.setStyleSheet(
+            f"QPushButton {{ background-color: {theme.hex('danger')}; color: {theme.hex('danger_text')}; "
+            f"border: 1px solid {theme.hex('danger')}; border-radius: 3px; "
+            f"padding: 1px 8px; font-size: 12px; font-weight: bold; }}"
+            f"QPushButton:hover {{ opacity: 0.85; }}")
+        self._btn_abort.clicked.connect(self._on_abort_clicked)
+        col_layout.addWidget(self._btn_abort)
+
+        # 查询按钮
+        self._btn_query = QPushButton("查询")
+        self._btn_query.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_query.setFixedHeight(26)
+        self._btn_query.setStyleSheet(
+            f"QPushButton {{ background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
+            f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
+            f"padding: 1px 8px; font-size: 12px; }}"
+            f"QPushButton:hover {{ border-color: {theme.hex('accent')}; "
+            f"color: {theme.hex('accent')}; }}")
+        self._btn_query.clicked.connect(self._on_query_clicked)
+        col_layout.addWidget(self._btn_query)
+
+        # 自动查询复选框
+        self._chk_auto_poll = QCheckBox("自动")
+        self._chk_auto_poll.setChecked(True)
+        self._chk_auto_poll.setStyleSheet(
+            f"QCheckBox {{ color: {theme.hex('muted')}; font-size: 12px; spacing: 3px; }}")
+        self._chk_auto_poll.toggled.connect(self._on_auto_poll_toggled)
+        chk_row = QHBoxLayout()
+        chk_row.setContentsMargins(0, 0, 0, 0)
+        chk_row.addWidget(self._chk_auto_poll)
+        chk_row.addStretch()
+        col_layout.addLayout(chk_row)
+
+        col_layout.addStretch()
+        outer_layout.addWidget(col)
 
     def _tab_style(self) -> str:
         return f"""
@@ -371,9 +428,13 @@ class CalibrationPanel(QGroupBox):
         lay.addWidget(panel)
 
     def _build_history(self, parent_layout):
-        """操作历史: 时间戳 + TX/ACK/NACK 文本, 滚动到最新."""
-        grp = QGroupBox("操作历史")
-        v = QVBoxLayout(grp)
+        """操作历史: 时间戳 + TX/ACK/NACK 文本, 滚动到最新.
+
+        默认隐藏(让标定结果表格占满垂直空间); 由菜单配置「历史:显/隐」开关控制。
+        隐藏时仍记录日志, 重新显示后可见。
+        """
+        self._history_grp = QGroupBox("操作历史")
+        v = QVBoxLayout(self._history_grp)
         v.setContentsMargins(8, 6, 8, 6)
         v.setSpacing(4)
 
@@ -396,7 +457,18 @@ class CalibrationPanel(QGroupBox):
         op_row.addWidget(self._btn_clear_history)
         v.addLayout(op_row)
 
-        parent_layout.addWidget(grp, 1)
+        parent_layout.addWidget(self._history_grp, 1)
+        # 默认隐藏: 让标定结果表格占满剩余空间
+        self._history_grp.setVisible(False)
+        self._history_visible = False
+
+    def set_history_visible(self, visible: bool):
+        """显示/隐藏操作历史区(由菜单配置开关调用)."""
+        self._history_visible = bool(visible)
+        self._history_grp.setVisible(self._history_visible)
+
+    def is_history_visible(self) -> bool:
+        return self._history_visible
 
     # ==================== 任务按钮样式 (卡片式) ====================
     def _task_btn_style(self, active: bool = False) -> str:
@@ -424,11 +496,22 @@ class CalibrationPanel(QGroupBox):
     # ==================== 任务点击 / 选中态 ====================
     def _on_task_clicked(self, cmd: int, sub_id: int,
                          level_name: str, sub_name: str, sub_desc: str):
-        """点击子项卡片: 启动标定并更新选中态."""
+        """点击子项卡片: 只选中(高亮), 不发送命令; 命令由「开始」按钮统一发出."""
         self._set_active_task(cmd, sub_id, level_name, sub_name, sub_desc)
+        self._add_history(f"[选中] {level_name} > {sub_name}  CMD=0x{cmd:02X} submode={sub_id}")
+
+    def _on_start_clicked(self):
+        """点「开始」按钮: 发送当前选中任务的标定指令."""
         if not self._link_active:
             self._add_history("[未连接] 请先连接电机")
             self._set_last_op("未连接, 无法启动")
+            return
+        if self._active_task_key is None:
+            self._add_history("[未选中] 请先选中一个子项")
+            return
+        cmd, sub_id = self._active_task_key
+        level_name, sub_name, _ = self._lookup_task(cmd, sub_id)
+        if level_name is None:
             return
         self._add_history(
             f"[TX] 启动 {cmd_name(cmd)} submode={sub_id} ({level_name}>{sub_name})")
@@ -443,6 +526,8 @@ class CalibrationPanel(QGroupBox):
             f"CMD=0x{cmd:02X}, submode={sub_id}  ·  {sub_desc}")
         self._lbl_active_task.setText(self._active_task_text)
         self._refresh_task_buttons_style()
+        # 「开始」按钮可用态: 已选中即可(未连接时点击会提示)
+        self._btn_start.setEnabled(True)
         # 切到对应 Tab
         for i in range(self._task_tabs.count()):
             if int(_CALIB_LEVELS[i][0]) == int(cmd):
@@ -721,11 +806,27 @@ class CalibrationPanel(QGroupBox):
             f"background: {theme.hex('card_bottom')}; "
             f"border-left: 2px solid {theme.hex('accent')}; "
             f"padding: 2px 8px; border-radius: 2px;")
+        # 操作列按钮(开始/中止/查询)
+        self._btn_start.setStyleSheet(
+            f"QPushButton {{ background-color: {theme.hex('ok')}; color: white; "
+            f"border: 1px solid {theme.hex('ok')}; border-radius: 3px; "
+            f"padding: 1px 8px; font-size: 12px; font-weight: bold; }}"
+            f"QPushButton:hover {{ opacity: 0.85; }}"
+            f"QPushButton:disabled {{ background: {theme.hex('input_bg')}; "
+            f"color: {theme.hex('muted')}; border-color: {theme.hex('border')}; }}")
         self._btn_abort.setStyleSheet(
             f"QPushButton {{ background-color: {theme.hex('danger')}; color: {theme.hex('danger_text')}; "
             f"border: 1px solid {theme.hex('danger')}; border-radius: 3px; "
-            f"padding: 1px 8px; font-size: 11px; font-weight: bold; }}"
+            f"padding: 1px 8px; font-size: 12px; font-weight: bold; }}"
             f"QPushButton:hover {{ opacity: 0.85; }}")
+        self._btn_query.setStyleSheet(
+            f"QPushButton {{ background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
+            f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
+            f"padding: 1px 8px; font-size: 12px; }}"
+            f"QPushButton:hover {{ border-color: {theme.hex('accent')}; "
+            f"color: {theme.hex('accent')}; }}")
+        self._chk_auto_poll.setStyleSheet(
+            f"QCheckBox {{ color: {theme.hex('muted')}; font-size: 12px; spacing: 3px; }}")
         self._history_view.setStyleSheet(
             f"background: {theme.hex('log_bg')}; color: {theme.hex('log_text')}; "
             f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 12px; "
@@ -743,11 +844,12 @@ class CalibrationPanel(QGroupBox):
 
     # ==================== 配置持久化 ====================
     def get_opts(self) -> dict:
-        """收集可持久化的 UI 配置: 当前 Tab + 当前选中任务 + 自动查询开关 + 内嵌面板列宽。"""
+        """收集可持久化的 UI 配置: 当前 Tab + 当前选中任务 + 自动查询开关 + 历史显隐 + 内嵌面板列宽。"""
         opts = {}
         try:
             opts["auto_poll"] = bool(self._chk_auto_poll.isChecked())
             opts["task_tab_index"] = int(self._task_tabs.currentIndex())
+            opts["history_visible"] = bool(self._history_visible)
             if self._active_task_key is not None:
                 opts["active_task"] = list(self._active_task_key)
         except Exception:
@@ -773,6 +875,11 @@ class CalibrationPanel(QGroupBox):
                 idx = int(opts["task_tab_index"])
                 if 0 <= idx < self._task_tabs.count():
                     self._task_tabs.setCurrentIndex(idx)
+            except Exception:
+                pass
+        if "history_visible" in opts:
+            try:
+                self.set_history_visible(bool(opts["history_visible"]))
             except Exception:
                 pass
         if "active_task" in opts:

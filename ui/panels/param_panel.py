@@ -68,13 +68,15 @@ class ParamPanel(QGroupBox):
 
     def __init__(self, registry, parent=None, title="电机参数",
                  source="motor_param", show_save=False, save_text="保存到Flash",
-                 groups=None):
+                 groups=None, show_legend=True):
         super().__init__("", parent)
         self._panel_name = title
         self._reg = registry
         self._source = source
         self._show_save = bool(show_save)
         self._save_text = save_text
+        # 是否显示图例(固有/可配置 色块说明); 内嵌场景(如标定结果)可关闭
+        self._show_legend = bool(show_legend)
         # 仅展示指定分组(按 motor_info.csv / param_index.csv 的 group 名);
         # None 表示不过滤(向后兼容)。
         self._groups = tuple(groups) if groups else None
@@ -140,23 +142,24 @@ class ParamPanel(QGroupBox):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(4)
 
-        # 图例: 固有(只读)/可配置(可改) 颜色区分说明
-        legend = QHBoxLayout()
-        legend.setContentsMargins(4, 0, 4, 0)
-        legend.setSpacing(12)
-        sw_ro = _ColorSwatch(theme.c("card_bottom"))
-        sw_rw = _ColorSwatch(theme.c("table_bg"))
-        legend.addWidget(QLabel("■ 固有参数"))
-        legend.addWidget(sw_ro)
-        legend.addWidget(QLabel("只读"))
-        legend.addSpacing(8)
-        legend.addWidget(QLabel("■ 可配置参数"))
-        legend.addWidget(sw_rw)
-        legend.addWidget(QLabel("可改"))
-        legend.addStretch()
-        legend_w = QWidget()
-        legend_w.setLayout(legend)
-        layout.addWidget(legend_w)
+        # 图例: 固有(只读)/可配置(可改) 颜色区分说明 (可由 show_legend 关闭)
+        if self._show_legend:
+            legend = QHBoxLayout()
+            legend.setContentsMargins(4, 0, 4, 0)
+            legend.setSpacing(12)
+            sw_ro = _ColorSwatch(theme.c("card_bottom"))
+            sw_rw = _ColorSwatch(theme.c("table_bg"))
+            legend.addWidget(QLabel("■ 固有参数"))
+            legend.addWidget(sw_ro)
+            legend.addWidget(QLabel("只读"))
+            legend.addSpacing(8)
+            legend.addWidget(QLabel("■ 可配置参数"))
+            legend.addWidget(sw_rw)
+            legend.addWidget(QLabel("可改"))
+            legend.addStretch()
+            legend_w = QWidget()
+            legend_w.setLayout(legend)
+            layout.addWidget(legend_w)
 
         self._table = QTableWidget(0, 8)
         self._table.setHorizontalHeaderLabels(["参数", "ID", "类型/单位", "当前值", "修改值", "描述", "读", "写"])
