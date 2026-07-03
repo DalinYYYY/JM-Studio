@@ -704,7 +704,7 @@ class _RunModeView(_DiagramView):
         self._nodes = [
             _Node("IDLE_GW", "待机模式", 0.00, 0.05, 0.16, 0.16, "state"),
             _Node("FAULT_GW", "异常模式", 0.00, 0.56, 0.16, 0.16, "fault"),
-            _Node("ENTER", "IDLE", 0.205, 0.30, 0.115, 0.16, "mode"),
+            _Node("ENTER", "就绪", 0.205, 0.30, 0.115, 0.16, "mode"),
             _Node("RUN", "运行模式", 0.37, 0.02, 0.61, 0.96, "group"),
             *_build_run_mode_nodes(),
         ]
@@ -712,7 +712,9 @@ class _RunModeView(_DiagramView):
             ("IDLE_GW", "ENTER", "主动切换", {'from': 'R', 'to': 'L', 'ft': 0.5, 'tt': 0.35}),
             ("FAULT_GW", "ENTER", "异常自动切回", {'from': 'R', 'to': 'L', 'ft': 0.5, 'tt': 0.75}),
             ("ENTER", "RUN", "", {'from': 'R', 'to': 'L'}),
+            # B1: RUN→异常(下方) 与 RUN→待机(上方) 上下对称, 均从 RUN 左侧出发到网关顶/底
             ("RUN", "FAULT_GW", "运行模式切换", {'from': 'L', 'to': 'T', 'ft': 0.85}),
+            ("RUN", "IDLE_GW", "退回待机", {'from': 'L', 'to': 'B', 'ft': 0.85}),
         ]
         self.set_note("运动模式间不能相互切换, 须从待机进入")
 

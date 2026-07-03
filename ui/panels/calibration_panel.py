@@ -26,8 +26,8 @@ from datetime import datetime
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
-    QLabel, QPushButton, QTabWidget, QTextEdit, QVBoxLayout,
-    QWidget, QSizePolicy,
+    QLabel, QPushButton, QSpinBox, QSplitter, QTabWidget, QTextEdit,
+    QVBoxLayout, QWidget, QSizePolicy,
 )
 
 from jmproto import JmCmd, JmErr, TopFsm, cmd_name, err_name_cn, top_fsm_name
@@ -139,10 +139,10 @@ class CalibrationPanel(QGroupBox):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        self._build_status_card(layout)      # 含标定操作(查询/中止/自动查询)
-        self._build_task_launcher(layout)    # L1~L7 顶部 QTabWidget
-        self._build_results_placeholder(layout)
-        self._build_history(layout)
+        self._build_status_card(layout)      # 状态卡(含已标定独占列)
+        self._build_task_launcher(layout)    # L1~L7 顶部 QTabWidget + 右侧操作列(固定高度)
+        # 标定结果 + 操作历史 用 QSplitter: 历史显示时可拖动调整与结果的垂直比例
+        self._build_results_history_split(layout)
 
     def _build_status_card(self, parent_layout):
         """紧凑状态卡: 左侧主信息(2行) + 右侧已标定独占列(徽章+标记+清除), 总高 ~70px."""
@@ -267,8 +267,12 @@ class CalibrationPanel(QGroupBox):
 
         子项左对齐排列; 点击子项只选中(高亮), 不发送命令;
         命令由右侧「开始」按钮统一发出。
+        框体保持最小高度不被压缩, 额外垂直空间全部留给标定结果。
         """
         grp = QGroupBox("标定任务  (选中级别 Tab → 选中子项, 点「开始」启动)")
+        # A1: 固定高度, 不吃额外空间(额外高度给标定结果)
+        grp.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        grp.setMinimumHeight(170)
         outer = QHBoxLayout(grp)
         outer.setContentsMargins(8, 6, 8, 6)
         outer.setSpacing(8)
@@ -310,12 +314,18 @@ class CalibrationPanel(QGroupBox):
         parent_layout.addWidget(grp)
 
     def _build_task_actions(self, outer_layout):
-        """标定任务右侧操作列: 开始/中止/查询/自动, 全部小按钮竖排."""
+        """标定任务右侧操作列: 开始/中止/查询/自动 + 查询周期(ms), 全部小按钮竖排.
+
+        A5: 整列上对齐(不拉伸, 顶部对齐到 Tab 内容区顶部)。
+        A4: 自动查询复选框下方增加查询周期(ms) QSpinBox。
+        """
         col = QWidget()
-        col.setFixedWidth(110)
+        col.setFixedWidth(120)
+        col.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         col_layout = QVBoxLayout(col)
-        col_layout.setContentsMargins(0, 18, 0, 0)
+        col_layout.setContentsMargins(0, 4, 0, 0)
         col_layout.setSpacing(6)
+        col_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # 开始按钮 (绿色, 启动当前选中任务)
         self._btn_start = QPushButton("▶ 开始")
@@ -323,7 +333,7 @@ class CalibrationPanel(QGroupBox):
         self._btn_start.setFixedHeight(26)
         self._btn_start.setEnabled(False)  # 未选中任务时禁用
         self._btn_start.setStyleSheet(
-            f"QPushButton {{ background-color: {theme.hex('ok')}; color: white; "
+            f"QPushButton {{ background-color: {theme.hex('ok')}; color: {theme.hex('ok_text')}; "
             f"border: 1px solid {theme.hex('ok')}; border-radius: 3px; "
             f"padding: 1px 8px; font-size: 12px; font-weight: bold; }}"
             f"QPushButton:hover {{ opacity: 0.85; }}"
@@ -357,19 +367,34 @@ class CalibrationPanel(QGroupBox):
         self._btn_query.clicked.connect(self._on_query_clicked)
         col_layout.addWidget(self._btn_query)
 
-        # 自动查询复选框
+        # 自动查询复选框 + 查询周期(ms) QSpinBox
         self._chk_auto_poll = QCheckBox("自动")
         self._chk_auto_poll.setChecked(True)
         self._chk_auto_poll.setStyleSheet(
             f"QCheckBox {{ color: {theme.hex('muted')}; font-size: 12px; spacing: 3px; }}")
         self._chk_auto_poll.toggled.connect(self._on_auto_poll_toggled)
-        chk_row = QHBoxLayout()
-        chk_row.setContentsMargins(0, 0, 0, 0)
-        chk_row.addWidget(self._chk_auto_poll)
-        chk_row.addStretch()
-        col_layout.addLayout(chk_row)
+        col_layout.addWidget(self._chk_auto_poll)
 
-        col_layout.addStretch()
+        # A4: 查询周期(ms) — 仅在「自动」勾选时生效
+        period_row = QHBoxLayout()
+        period_row.setContentsMargins(2, 0, 0, 0)
+        period_row.setSpacing(3)
+        self._spin_poll_period = QSpinBox()
+        self._spin_poll_period.setRange(100, 10000)
+        self._spin_poll_period.setSingleStep(100)
+        self._spin_poll_period.setSuffix(" ms")
+        self._spin_poll_period.setValue(self._POLL_PERIOD_MS)
+        self._spin_poll_period.setFixedHeight(22)
+        self._spin_poll_period.setToolTip("自动查询周期 (毫秒), 仅在「自动」勾选时生效")
+        self._spin_poll_period.setStyleSheet(
+            f"QSpinBox {{ background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
+            f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
+            f"padding: 0 2px; font-size: 11px; }}"
+            f"QSpinBox::up-button, QSpinBox::down-button {{ width: 14px; }}")
+        self._spin_poll_period.valueChanged.connect(self._on_poll_period_changed)
+        period_row.addWidget(self._spin_poll_period)
+        col_layout.addLayout(period_row)
+
         outer_layout.addWidget(col)
 
     def _tab_style(self) -> str:
@@ -401,7 +426,42 @@ class CalibrationPanel(QGroupBox):
             }}
         """
 
-    def _build_results_placeholder(self, parent_layout):
+    def _build_results_history_split(self, parent_layout):
+        """A1+A3: 标定结果 + 操作历史 用垂直 QSplitter, 历史显示时可拖动调整比例.
+
+        - 历史默认隐藏, 隐藏时标定结果 stretch 占满
+        - 历史显示时 splitter 手柄可拖动, 两区皆可缩放
+        - 历史开关按钮放到标定结果保存按钮同一行最右(由 attach_results_panel 注入)
+        """
+        self._results_split = QSplitter(Qt.Orientation.Vertical)
+        self._results_split.setChildrenCollapsible(False)
+        self._results_split.setHandleWidth(6)
+        self._results_split.setStyleSheet("""
+            QSplitter::handle:vertical {
+                background: #3A3A3A;
+                margin: 1px 0;
+            }
+            QSplitter::handle:vertical:hover {
+                background: #5A8DFF;
+            }
+        """)
+
+        # 标定结果容器(占位, attach_results_panel 注入实际 ParamPanel)
+        self._build_results_placeholder()
+
+        # 操作历史
+        self._build_history()
+
+        self._results_split.addWidget(self._results_container)
+        self._results_split.addWidget(self._history_grp)
+        # 默认比例: 结果 4 : 历史 1
+        self._results_split.setStretchFactor(0, 4)
+        self._results_split.setStretchFactor(1, 1)
+        self._results_split.setSizes([400, 100])
+
+        parent_layout.addWidget(self._results_split, 1)
+
+    def _build_results_placeholder(self):
         """标定结果区占位 (Task 3 由 attach_results_panel 注入实际 ParamPanel)."""
         self._results_container = QGroupBox("标定结果  (下位机读回值 / 修改 / 保存)")
         v = QVBoxLayout(self._results_container)
@@ -411,10 +471,12 @@ class CalibrationPanel(QGroupBox):
         self._results_placeholder.setStyleSheet(
             f"color: {theme.hex('muted')}; font-size: 12px; padding: 12px;")
         v.addWidget(self._results_placeholder)
-        parent_layout.addWidget(self._results_container)
 
     def attach_results_panel(self, panel):
-        """Task 3: 注入内嵌 ParamPanel 替换占位 (Main_window 在初始化后调用)."""
+        """Task 3: 注入内嵌 ParamPanel 替换占位 (Main_window 在初始化后调用).
+
+        A3: 同时把「历史:显/隐」开关按钮注入到 ParamPanel 保存按钮所在行最右。
+        """
         if self._config_panel is not None:
             return
         self._config_panel = panel
@@ -427,11 +489,33 @@ class CalibrationPanel(QGroupBox):
                 w.setParent(None)
         lay.addWidget(panel)
 
-    def _build_history(self, parent_layout):
+        # A3: 历史开关按钮 — 注入到 ParamPanel 保存按钮同行最右
+        self._btn_history_toggle = QPushButton("历史: 隐")
+        self._btn_history_toggle.setCheckable(True)
+        self._btn_history_toggle.setChecked(False)
+        self._btn_history_toggle.setFixedHeight(24)
+        self._btn_history_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_history_toggle.setToolTip("显示/隐藏 操作历史 (显示后可拖动手柄调整与标定结果的高度比例)")
+        self._btn_history_toggle.setStyleSheet(
+            f"QPushButton {{ background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
+            f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
+            f"padding: 0 10px; font-size: 12px; }}"
+            f"QPushButton:hover {{ border-color: {theme.hex('accent')}; "
+            f"color: {theme.hex('accent')}; }}"
+            f"QPushButton:checked {{ background: {theme.hex('accent')}; color: {theme.hex('card_bottom')}; "
+            f"border-color: {theme.hex('accent')}; font-weight: bold; }}")
+        self._btn_history_toggle.toggled.connect(self._on_history_toggle)
+        panel.add_footer_widget(self._btn_history_toggle)
+        # 恢复持久化的历史显隐态
+        if getattr(self, "_history_visible", False):
+            self._btn_history_toggle.setChecked(True)
+
+    def _build_history(self):
         """操作历史: 时间戳 + TX/ACK/NACK 文本, 滚动到最新.
 
-        默认隐藏(让标定结果表格占满垂直空间); 由菜单配置「历史:显/隐」开关控制。
+        默认隐藏(让标定结果表格占满垂直空间); 由「历史:显/隐」开关控制。
         隐藏时仍记录日志, 重新显示后可见。
+        历史显示时, 与标定结果用 QSplitter 分隔, 可拖动手柄调整高度比例。
         """
         self._history_grp = QGroupBox("操作历史")
         v = QVBoxLayout(self._history_grp)
@@ -457,15 +541,23 @@ class CalibrationPanel(QGroupBox):
         op_row.addWidget(self._btn_clear_history)
         v.addLayout(op_row)
 
-        parent_layout.addWidget(self._history_grp, 1)
         # 默认隐藏: 让标定结果表格占满剩余空间
         self._history_grp.setVisible(False)
         self._history_visible = False
 
+    def _on_history_toggle(self, on: bool):
+        """A3: 保存按钮同行右侧的「历史:显/隐」开关."""
+        self._btn_history_toggle.setText("历史: 显" if on else "历史: 隐")
+        self.set_history_visible(on)
+
     def set_history_visible(self, visible: bool):
-        """显示/隐藏操作历史区(由菜单配置开关调用)."""
+        """显示/隐藏操作历史区(由开关按钮调用)."""
         self._history_visible = bool(visible)
         self._history_grp.setVisible(self._history_visible)
+        # splitter 在历史隐藏时, 让标定结果独占空间
+        if hasattr(self, "_results_split"):
+            self._results_split.setStretchFactor(0, 4 if not self._history_visible else 4)
+            self._results_split.setStretchFactor(1, 1 if self._history_visible else 0)
 
     def is_history_visible(self) -> bool:
         return self._history_visible
@@ -660,6 +752,10 @@ class CalibrationPanel(QGroupBox):
         else:
             self._poll_timer.stop()
 
+    def _on_poll_period_changed(self, ms: int):
+        """A4: 自动查询周期可调 (100~10000 ms)."""
+        self._poll_timer.setInterval(max(100, int(ms)))
+
     def _on_poll_tick(self):
         if self._link_active and self._calib_running:
             self.send_command.emit(int(JmCmd.CALIB_QUERY), {})
@@ -808,7 +904,7 @@ class CalibrationPanel(QGroupBox):
             f"padding: 2px 8px; border-radius: 2px;")
         # 操作列按钮(开始/中止/查询)
         self._btn_start.setStyleSheet(
-            f"QPushButton {{ background-color: {theme.hex('ok')}; color: white; "
+            f"QPushButton {{ background-color: {theme.hex('ok')}; color: {theme.hex('ok_text')}; "
             f"border: 1px solid {theme.hex('ok')}; border-radius: 3px; "
             f"padding: 1px 8px; font-size: 12px; font-weight: bold; }}"
             f"QPushButton:hover {{ opacity: 0.85; }}"
@@ -827,6 +923,21 @@ class CalibrationPanel(QGroupBox):
             f"color: {theme.hex('accent')}; }}")
         self._chk_auto_poll.setStyleSheet(
             f"QCheckBox {{ color: {theme.hex('muted')}; font-size: 12px; spacing: 3px; }}")
+        self._spin_poll_period.setStyleSheet(
+            f"QSpinBox {{ background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
+            f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
+            f"padding: 0 2px; font-size: 11px; }}"
+            f"QSpinBox::up-button, QSpinBox::down-button {{ width: 14px; }}")
+        # 历史开关(注入到保存按钮行的)主题刷新
+        if hasattr(self, "_btn_history_toggle"):
+            self._btn_history_toggle.setStyleSheet(
+                f"QPushButton {{ background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
+                f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
+                f"padding: 0 10px; font-size: 12px; }}"
+                f"QPushButton:hover {{ border-color: {theme.hex('accent')}; "
+                f"color: {theme.hex('accent')}; }}"
+                f"QPushButton:checked {{ background: {theme.hex('accent')}; color: {theme.hex('card_bottom')}; "
+                f"border-color: {theme.hex('accent')}; font-weight: bold; }}")
         self._history_view.setStyleSheet(
             f"background: {theme.hex('log_bg')}; color: {theme.hex('log_text')}; "
             f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 12px; "
@@ -844,10 +955,11 @@ class CalibrationPanel(QGroupBox):
 
     # ==================== 配置持久化 ====================
     def get_opts(self) -> dict:
-        """收集可持久化的 UI 配置: 当前 Tab + 当前选中任务 + 自动查询开关 + 历史显隐 + 内嵌面板列宽。"""
+        """收集可持久化的 UI 配置: 当前 Tab + 当前选中任务 + 自动查询开关 + 查询周期 + 历史显隐 + 内嵌面板列宽。"""
         opts = {}
         try:
             opts["auto_poll"] = bool(self._chk_auto_poll.isChecked())
+            opts["poll_period_ms"] = int(self._spin_poll_period.value())
             opts["task_tab_index"] = int(self._task_tabs.currentIndex())
             opts["history_visible"] = bool(self._history_visible)
             if self._active_task_key is not None:
@@ -870,6 +982,11 @@ class CalibrationPanel(QGroupBox):
                 self._chk_auto_poll.setChecked(bool(opts["auto_poll"]))
             except Exception:
                 pass
+        if "poll_period_ms" in opts:
+            try:
+                self._spin_poll_period.setValue(int(opts["poll_period_ms"]))
+            except Exception:
+                pass
         if "task_tab_index" in opts:
             try:
                 idx = int(opts["task_tab_index"])
@@ -879,7 +996,12 @@ class CalibrationPanel(QGroupBox):
                 pass
         if "history_visible" in opts:
             try:
-                self.set_history_visible(bool(opts["history_visible"]))
+                vis = bool(opts["history_visible"])
+                self._history_visible = vis
+                if hasattr(self, "_btn_history_toggle"):
+                    self._btn_history_toggle.setChecked(vis)
+                else:
+                    self.set_history_visible(vis)
             except Exception:
                 pass
         if "active_task" in opts:

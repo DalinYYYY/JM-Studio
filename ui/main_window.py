@@ -179,6 +179,8 @@ class MainWindow(QMainWindow):
         self._tabs = tabs
         # 虚拟电机模式默认关闭: 初始隐藏孪生参数 Tab (故障信息面板内部子表/屏蔽区自行隐藏)
         tabs.setTabVisible(tabs.indexOf(self._twin_param_panel), False)
+        # A2: 切到标定 Tab 且已连接时, 自动读一次标定结果(MotorCalibParam 全段)
+        tabs.currentChanged.connect(self._on_main_tab_changed)
 
         self._right_splitter = QSplitter(Qt.Orientation.Vertical)
         self._right_splitter.setChildrenCollapsible(False)
@@ -564,21 +566,11 @@ class MainWindow(QMainWindow):
             "\nQPushButton:checked{background:#03A9F4;color:white;border-color:#29B6F6;}")
         self._btn_virtual_mode.toggled.connect(self._on_virtual_mode_toggled)
         layout.addWidget(self._btn_virtual_mode, 2, 0, 1, 2)
-        # 标定操作历史显隐开关: 默认隐藏, 让标定结果表格占满
-        self._btn_calib_history = QPushButton("历史: 隐")
-        self._btn_calib_history.setCheckable(True)
-        self._btn_calib_history.setChecked(False)
-        self._apply_menu_button_style(self._btn_calib_history)
-        self._btn_calib_history.setStyleSheet(self._btn_calib_history.styleSheet() +
-            "\nQPushButton:checked{background:#03A9F4;color:white;border-color:#29B6F6;}")
-        self._btn_calib_history.setToolTip("显示/隐藏 标定 Tab 的操作历史区")
-        self._btn_calib_history.toggled.connect(self._on_calib_history_toggled)
-        layout.addWidget(self._btn_calib_history, 3, 0, 1, 2)
+        # 注: 标定操作历史开关已移到标定结果保存按钮同行最右 (CalibrationPanel 内部)
         return grp
 
     def _on_calib_history_toggled(self, on: bool):
-        """标定操作历史显隐开关."""
-        self._btn_calib_history.setText("历史: 显" if on else "历史: 隐")
+        """标定操作历史显隐开关 (已移至标定结果保存按钮同行, 此处保留兼容)."""
         self._calib_panel.set_history_visible(on)
 
     def _on_toggle_theme(self):
@@ -804,6 +796,22 @@ class MainWindow(QMainWindow):
             self._client.send_command(cmd, values)
         except Exception as e:
             QMessageBox.critical(self, "错误", f"发送异常: {e}")
+
+    def _on_main_tab_changed(self, index: int):
+        """A2: 切到标定 Tab 且已连接时, 自动读一次标定结果(MotorCalibParam 全段 + Index 16 已标定)."""
+        try:
+            w = self._tabs.widget(index)
+        except Exception:
+            return
+        if w is not self._calib_panel:
+            return
+        if not self._client.is_open():
+            return
+        # 已连接: 触发标定结果面板批量读取 (含 Index 16 is_calibrated)
+        try:
+            self._calib_results_panel.read_all()
+        except Exception:
+            pass
 
     def _on_apply_telemetry(self, enable: bool, mask: int, period_ms: int):
         if not self._ensure_open():

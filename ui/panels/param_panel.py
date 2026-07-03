@@ -89,6 +89,8 @@ class ParamPanel(QGroupBox):
         self._pending_writes = deque()  # (param_id, sent_text)
         self._syncing_table = False
         self._row_of_pid = {}                # param_id -> 行号(用于主题刷新只读行)
+        self._btn_layout = None              # 保存按钮所在 QHBoxLayout (供 add_footer_widget 注入)
+        self._btn_row = None
         self._btn_base_style = """
             QPushButton {
                 padding: 0 8px;
@@ -136,6 +138,24 @@ class ParamPanel(QGroupBox):
     def source(self) -> str:
         """参数来源: 'motor_param'(运行时参数 0xE0-0xE5) 或 'motor_config'(电机配置 0xE6-0xEB)"""
         return self._source
+
+    def add_footer_widget(self, widget):
+        """在保存按钮所在行的最右侧(stretch 之后)追加一个 widget.
+
+        用于内嵌场景(标定结果面板)把外部开关(如历史显隐)放到保存按钮同行最右。
+        """
+        if self._btn_layout is not None:
+            self._btn_layout.addWidget(widget)
+
+    def param_ids(self):
+        """返回当前面板展示的所有 param_id (按表格顺序). 用于外部触发批量读取。"""
+        return list(self._param_specs.keys())
+
+    def read_all(self):
+        """触发批量读取当前面板全部参数 (发 read_params 信号)."""
+        ids = self.param_ids()
+        if ids:
+            self.read_params.emit(list(ids))
 
     def _build(self):
         layout = QVBoxLayout(self)
@@ -201,6 +221,8 @@ class ParamPanel(QGroupBox):
         btn_layout.addWidget(self._btn_save)
         self._btn_save.setVisible(self._show_save)
         btn_layout.addStretch()
+        self._btn_layout = btn_layout   # 保留引用, 供 add_footer_widget 注入
+        self._btn_row = btn_row
         layout.addWidget(btn_row)
 
         self._table.itemChanged.connect(self._on_item_changed)
