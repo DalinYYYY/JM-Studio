@@ -507,11 +507,6 @@ class CalibrationPanel(QGroupBox):
         if self._config_panel is not None:
             return
         self._config_panel = panel
-        # 需求6: 内嵌 ParamPanel(QGroupBox title="") 去掉 border/margin-top/padding-top,
-        # 透明融入外层 _results_container, 消除"框中框"
-        panel.setStyleSheet(
-            f"QGroupBox {{ border: none; margin-top: 0px; padding-top: 0px; "
-            f"background: {theme.hex('panel_bg')}; }}")
         # 清除占位
         lay = self._results_container.layout()
         while lay.count():
