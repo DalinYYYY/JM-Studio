@@ -117,6 +117,9 @@ class CalibrationPanel(QGroupBox):
         self._active_task_text = "当前选中: —"
         # Task 3 注入的内嵌标定结果面板
         self._config_panel = None
+        # Task 5: 已标定徽章当前文本 ("未读取" / "已标定" / "未标定")
+        # Index 16 (is_calibrated) 读回值驱动, 主窗口在 _on_param_result 中转发
+        self._calib_flag_text = "未读取"
 
         self._build()
 
@@ -235,11 +238,42 @@ class CalibrationPanel(QGroupBox):
         parent_layout.addWidget(self._status_card)
 
     def _build_calib_flag_controls(self, layout):
-        """已标定指示器 + 设置/清除按钮占位(Task 5 实现, 这里先放空 widget 保持槽位)."""
-        # Task 5 会在此插入 _lbl_calib_flag / _btn_mark_calibrated / _btn_clear_calibrated
-        # 占位 widget 避免 layout 在 Task 5 之前为空
-        placeholder = QWidget()
-        layout.addWidget(placeholder)
+        """已标定指示徽章 + 标记/清除按钮 (Task 5).
+
+        徽章文本由 Index 16 (is_calibrated) 读回值驱动:
+          - "1"  -> "已标定" (绿/accent)
+          - "0"  -> "未标定" (红/danger)
+          - 其他 -> "未读取" (灰/muted)
+
+        标记/清除按钮走 _config_panel.write_param(16, "1"/"0") -> 0xE7 motor_info_write,
+        与标定结果面板共用同一通道, 写完后由主窗口读回 Index 16 同步实际状态。
+        """
+        self._lbl_calib_flag = QLabel(self._calib_flag_text)
+        self._lbl_calib_flag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_calib_flag.setFixedHeight(20)
+        self._lbl_calib_flag.setMinimumWidth(64)
+        self._lbl_calib_flag.setStyleSheet(self._calib_flag_style())
+        layout.addWidget(self._lbl_calib_flag)
+
+        self._btn_mark_calibrated = QPushButton("标记")
+        self._btn_mark_calibrated.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_mark_calibrated.setFixedHeight(22)
+        self._btn_mark_calibrated.setToolTip("标记为已标定 (写 Index 16 = 1, 走 0xE7)")
+        self._btn_mark_calibrated.setStyleSheet(self._calib_action_btn_style())
+        self._btn_mark_calibrated.clicked.connect(self._on_mark_calibrated)
+        self._btn_mark_calibrated.setEnabled(False)
+        layout.addWidget(self._btn_mark_calibrated)
+
+        self._btn_clear_calibrated = QPushButton("清除")
+        self._btn_clear_calibrated.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_clear_calibrated.setFixedHeight(22)
+        self._btn_clear_calibrated.setToolTip("清除已标定 (写 Index 16 = 0, 走 0xE7)")
+        self._btn_clear_calibrated.setStyleSheet(self._calib_action_btn_style())
+        self._btn_clear_calibrated.clicked.connect(self._on_clear_calibrated)
+        self._btn_clear_calibrated.setEnabled(False)
+        layout.addWidget(self._btn_clear_calibrated)
+
+        self._refresh_calib_flag()
 
     def _build_task_launcher(self, parent_layout):
         """L1~L7 顶部 QTabWidget, 每个 Tab 显示该级别的子项卡片, 点击卡片即启动."""
@@ -432,6 +466,8 @@ class CalibrationPanel(QGroupBox):
             self._calib_running = False
             self._poll_timer.stop()
         self._refresh_status()
+        # Task 5: 标记/清除按钮可用态跟随连接
+        self._refresh_calib_flag()
 
     def update_state(self, top_fsm: int, run_state: int, ctrl_mode: int, enable: int):
         """接收主窗口转发的状态机更新, 用于判断是否处于 CALIB 态."""
@@ -561,6 +597,90 @@ class CalibrationPanel(QGroupBox):
         self._last_op = text
         self._lbl_last_op.setText(f"最近操作: {text}")
 
+    # ==================== Task 5: 已标定徽章 ====================
+    def set_calibrated_value(self, text):
+        """主窗口在收到 param_id==16 (is_calibrated) 读回值时调用.
+
+        容错: "1"/"1.0"/1.0 -> 已标定; "0"/"0.0"/0.0 -> 未标定;
+              空串/非数字 -> 未读取.
+        """
+        try:
+            v = str(text).strip()
+        except Exception:
+            v = ""
+        if v in ("1", "1.0"):
+            self._calib_flag_text = "已标定"
+        elif v in ("0", "0.0"):
+            self._calib_flag_text = "未标定"
+        else:
+            try:
+                f = float(v)
+                if f == 1.0:
+                    self._calib_flag_text = "已标定"
+                elif f == 0.0:
+                    self._calib_flag_text = "未标定"
+                else:
+                    self._calib_flag_text = "未读取"
+            except (ValueError, TypeError):
+                self._calib_flag_text = "未读取"
+        self._refresh_calib_flag()
+
+    def _refresh_calib_flag(self):
+        """刷新徽章文本/样式 + 按钮可用态 (跟随 _link_active)."""
+        self._lbl_calib_flag.setText(self._calib_flag_text)
+        self._lbl_calib_flag.setStyleSheet(self._calib_flag_style())
+        enabled = self._link_active
+        self._btn_mark_calibrated.setEnabled(enabled)
+        self._btn_clear_calibrated.setEnabled(enabled)
+
+    def _on_mark_calibrated(self):
+        """点 "标记": 乐观更新为已标定 + 发 write_param(16, "1") 走 0xE7 通道."""
+        if not self._link_active:
+            return
+        self._calib_flag_text = "已标定"
+        self._refresh_calib_flag()
+        if self._config_panel is not None:
+            self._config_panel.write_param.emit(16, "1")
+        self._add_history("[TX] 标记已标定 (write is_calibrated=1, Index 16, 0xE7)")
+
+    def _on_clear_calibrated(self):
+        """点 "清除": 乐观更新为未标定 + 发 write_param(16, "0")."""
+        if not self._link_active:
+            return
+        self._calib_flag_text = "未标定"
+        self._refresh_calib_flag()
+        if self._config_panel is not None:
+            self._config_panel.write_param.emit(16, "0")
+        self._add_history("[TX] 清除已标定 (write is_calibrated=0, Index 16, 0xE7)")
+
+    def _calib_flag_style(self) -> str:
+        """徽章样式: 已标定绿 / 未标定红 / 未读取灰."""
+        text = self._calib_flag_text
+        if "已标定" in text:
+            bg = theme.hex('accent')
+            fg = theme.hex('card_bottom')
+        elif "未标定" in text:
+            bg = theme.hex('danger')
+            fg = theme.hex('danger_text')
+        else:  # 未读取
+            bg = theme.hex('input_bg')
+            fg = theme.hex('muted')
+        return (f"QLabel {{ background: {bg}; color: {fg}; "
+                f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
+                f"padding: 1px 8px; font-size: 11px; font-weight: bold; }}")
+
+    def _calib_action_btn_style(self) -> str:
+        """标记/清除按钮样式 (与查询按钮同款, 主题色驱动)."""
+        return (
+            f"QPushButton {{ background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
+            f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
+            f"padding: 1px 8px; font-size: 11px; }}"
+            f"QPushButton:hover {{ border-color: {theme.hex('accent')}; "
+            f"color: {theme.hex('accent')}; }}"
+            f"QPushButton:disabled {{ color: {theme.hex('muted')}; "
+            f"border-color: {theme.hex('border')}; background: {theme.hex('input_bg')}; }}"
+        )
+
     # ==================== 状态显示 ====================
     def _refresh_status(self):
         if not self._link_active:
@@ -610,6 +730,10 @@ class CalibrationPanel(QGroupBox):
             f"background: {theme.hex('log_bg')}; color: {theme.hex('log_text')}; "
             f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 12px; "
             f"border: 1px solid {theme.hex('border')};")
+        # Task 5: 徽章 + 标记/清除按钮
+        self._lbl_calib_flag.setStyleSheet(self._calib_flag_style())
+        self._btn_mark_calibrated.setStyleSheet(self._calib_action_btn_style())
+        self._btn_clear_calibrated.setStyleSheet(self._calib_action_btn_style())
         self._refresh_task_buttons_style()
         if self._config_panel is not None:
             fn = getattr(self._config_panel, "apply_theme", None)

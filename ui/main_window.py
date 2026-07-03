@@ -914,6 +914,10 @@ class MainWindow(QMainWindow):
         panel.set_value(param_id, disp)
         name = spec.code_name if spec else f"id={param_id}"
         self._log_panel.log(f"[RX] {panel.panel_name()} {name}(id={param_id}) = {disp}")
+        # Task 5: Index 16 (is_calibrated) 读回值同步到标定面板的已标定徽章
+        # (无论哪个 panel 收到, 都转发给 calib_panel; 写后 ACK 不自动读回时徽章靠乐观更新)
+        if param_id == 16:
+            self._calib_panel.set_calibrated_value(disp)
         # 电机本体参数转发到反馈面板的转子示意图(电阻/电感/磁链/转矩常数/极对数等)
         if spec is not None and val is not None and spec.code_name in self._MOTOR_PARAM_KEYS:
             self._motor_params[spec.code_name] = val

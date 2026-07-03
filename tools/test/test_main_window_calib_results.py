@@ -63,6 +63,12 @@ check("self._calib_results_panel.read_param.connect(" in src,
 check("self._calib_results_panel.save_all.connect(self._on_config_save)" in src,
       "应连接 save_all 到 _on_config_save (0xEA)")
 
+# Task 5: Index 16 (is_calibrated) 读回值应转发到 calib_panel.set_calibrated_value
+check("if param_id == 16:" in src,
+      "_on_param_result 应有 param_id == 16 分支")
+check("self._calib_panel.set_calibrated_value(disp)" in src,
+      "Index 16 读回值应转发到 calib_panel.set_calibrated_value")
+
 # 3. 端到端: 模拟 main_window 的连接逻辑, 验证信号驱动队列
 reg = get_registry()
 calib = CalibrationPanel()
