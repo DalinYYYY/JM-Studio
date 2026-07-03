@@ -190,6 +190,30 @@ check(all(e.p1_override is None and e.p2_override is None for e in diag3._edges)
       "缺 edges 节时所有连线 override 应保持 None")
 
 
+# ============ 10. 需求2: 增大命中区(8→14px), 端点偏移 10px 也能命中 ============
+print("\n[TEST 10] 需求2: 增大命中区, 端点偏移 10px 也能命中")
+from ui.panels._edit_mixin import _EDGE_HANDLE_PX
+check(_EDGE_HANDLE_PX >= 14.0, f"_EDGE_HANDLE_PX 应 >=14, 实际 {_EDGE_HANDLE_PX}")
+# edge 0 的 p1 像素坐标, 偏移 10px(原 8px 半径会 miss, 现 14px 会 hit)
+idx0, p1_0, p2_0 = diag._iter_edges()[0]
+offset_pos = QPointF(p1_0.x() + 10.0, p1_0.y())
+mode, _k, key = diag._hit_test(offset_pos)
+check(mode == "edge_pt", f"偏移 10px 应命中端点(14px 命中区), 实际 mode={mode}")
+check(key == (0, "p1"), f"偏移命中 key 应为 (0,'p1'), 实际 {key}")
+
+
+# ============ 11. 需求2: _hover_edge 悬停态 ============
+print("\n[TEST 11] 需求2: _hover_edge 悬停态初始为 None, set_edit_mode 清空")
+diag4 = _FocDiagram()
+diag4.setGeometry(100, 100, 800, 500)
+diag4._ensure_edit_state()
+check(getattr(diag4, "_hover_edge", "MISS") is None, "_hover_edge 初始应为 None")
+# set_edit_mode(False) 清空
+diag4._hover_edge = (0, "p1")
+diag4.set_edit_mode(False)
+check(diag4._hover_edge is None, "set_edit_mode(False) 应清空 _hover_edge")
+
+
 print(f"\n{'='*60}")
 print(f"PASS={PASS}  FAIL={FAIL}")
 sys.exit(0 if FAIL == 0 else 1)

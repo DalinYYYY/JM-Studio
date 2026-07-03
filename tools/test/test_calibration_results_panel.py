@@ -210,18 +210,18 @@ if hasattr(results_panel, "_btn_read_all"):
           results_panel._btn_read_all.sizeHint().width() == 72,
           f"需求5: 全读按钮宽度应为 72(=列宽), 实际 {results_panel._btn_read_all.width()}")
 
-# ============ 需求6: 标定结果面板背景统一为 panel_bg ============
-# 24. 标定结果面板(show_bulk_rw)表格背景应为 panel_bg
+# ============ 需求1: 标定结果表格颜色与电机参数表格一致(移除 panel_bg 特殊化) ============
+# 24. 标定结果面板(show_bulk_rw)表格不再有特殊 panel_bg QSS, 用与电机参数表格相同的颜色逻辑
 table_css = results_panel._table.styleSheet()
-check(_theme.hex('panel_bg') in table_css,
-      f"需求6: 标定结果表格样式应含 panel_bg={_theme.hex('panel_bg')} 背景")
+check(_theme.hex('panel_bg') not in table_css,
+      f"需求1: 标定结果表格不应含 panel_bg 特殊 QSS(已统一用 table_bg/card_bottom), 实际 css={table_css!r}")
 
-# 25. show_bulk_rw 时 _style_row 用 panel_bg (而非 card_bottom/table_bg)
+# 25. 需求1: show_bulk_rw 时 _style_row 用 card_bottom(只读)/table_bg(可改), 与普通面板一致
 results_panel._style_row(0, writable=False)
 item0 = results_panel._table.item(0, COL_CURRENT)
 from ui.theme import theme as _theme
-check(item0.background().color() == _theme.c("panel_bg"),
-      "需求6: show_bulk_rw 时只读行底色应为 panel_bg")
+check(item0.background().color() == _theme.c("card_bottom"),
+      "需求1: show_bulk_rw 时只读行底色应为 card_bottom(与普通面板一致)")
 
 # 26. 对照面板(show_bulk_rw=False) _style_row 用 card_bottom(只读)/table_bg(可改)
 ref_panel2 = ParamPanel(reg, source="motor_config", groups=("MotorCalibParam",),

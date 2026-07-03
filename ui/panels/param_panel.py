@@ -152,20 +152,8 @@ class ParamPanel(QGroupBox):
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        # 需求6: 标定结果面板(show_bulk_rw)表格背景统一为 panel_bg, 关闭交替行,
-        # 表头只用 border-bottom 分隔(不再换底色), 与外层 QGroupBox 融为一体
-        if self._show_bulk_rw:
-            self._table.setAlternatingRowColors(False)
-            self._table.setStyleSheet(
-                f"QTableWidget {{ background: {theme.hex('panel_bg')}; "
-                f"alternate-background-color: {theme.hex('panel_bg')}; "
-                f"color: {theme.hex('text')}; gridline-color: {theme.hex('border')}; "
-                f"border: 1px solid {theme.hex('border')}; }}"
-                f"QHeaderView::section {{ background: {theme.hex('panel_bg')}; "
-                f"color: {theme.hex('title')}; border: none; "
-                f"border-bottom: 1px solid {theme.hex('border')}; padding: 4px; }}"
-                f"QTableCornerButton::section {{ background: {theme.hex('panel_bg')}; "
-                f"border: none; }}")
+        # 需求1: 标定结果表格与电机参数/配置表格用相同的颜色逻辑
+        # (交替行 + _style_row 逐行涂 table_bg/card_bottom), 不再特殊化
         self._table.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.SelectedClicked
@@ -443,12 +431,9 @@ class ParamPanel(QGroupBox):
 
     def _style_row(self, row: int, writable: bool):
         """按可写性涂行底色: 只读=card_bottom(暗), 可改=table_bg(亮)。
-        需求6: show_bulk_rw(标定结果面板)时统一用 panel_bg, 仅用前景色区分只读/可改。
+        需求1: 标定结果面板与电机参数/配置表格用相同颜色逻辑, 不再特殊化。
         """
-        if self._show_bulk_rw:
-            bg = theme.c("panel_bg")
-        else:
-            bg = theme.c("table_bg") if writable else theme.c("card_bottom")
+        bg = theme.c("table_bg") if writable else theme.c("card_bottom")
         fg = theme.c("text") if writable else theme.c("muted")
         for col in range(self._table.columnCount()):
             item = self._table.item(row, col)

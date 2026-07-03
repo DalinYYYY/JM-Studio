@@ -25,7 +25,9 @@ from PyQt6.QtGui import QPen, QColor, QPainterPath, QFont
 
 _GRID = 0.005          # 网格吸附步长
 _HANDLE_PX = 12.0      # 右下角缩放手柄命中区(像素)
-_EDGE_HANDLE_PX = 8.0  # 连线端点手柄命中半径(像素)
+_EDGE_HANDLE_PX = 14.0  # 需求2: 连线端点手柄命中半径(8→14 增大可点中性)
+_EDGE_VIS_R = 7.0      # 需求2: 端点手柄视觉半径(5→7)
+_EDGE_HOVER_R = 9.0    # 需求2: 端点手柄悬停时视觉半径(放大反馈)
 _MIN_W = 0.04
 _MIN_H = 0.04
 
@@ -46,8 +48,9 @@ class LayoutEditMixin:
         if not hasattr(self, "_edit"):
             self._edit = False
             self._drag_key = None
-            self._drag_mode = None      # 'move' / 'resize' / 'label'
+            self._drag_mode = None      # 'move' / 'resize' / 'label' / 'edge_pt'
             self._drag_off = (0.0, 0.0)
+            self._hover_edge = None     # 需求2: 悬停的端点 (idx, end) 或 None, 驱动手柄放大反馈
 
     @property
     def _box_min_w(self):
@@ -63,6 +66,7 @@ class LayoutEditMixin:
         self._edit = bool(on)
         self._drag_key = None
         self._drag_mode = None
+        self._hover_edge = None     # 需求2: 退出编辑时清空悬停态
         self.setMouseTracking(self._edit)
         self.setCursor(Qt.CursorShape.OpenHandCursor if self._edit else Qt.CursorShape.ArrowCursor)
         self.update()
@@ -136,6 +140,11 @@ class LayoutEditMixin:
         # 悬停光标提示(未拖动时)
         if self._drag_mode is None:
             mode, _k, _key = self._hit_test(e.position())
+            # 需求2: 记录悬停的端点, 变化时触发重绘以更新手柄放大反馈
+            new_hover = _key if mode == "edge_pt" else None
+            if new_hover != self._hover_edge:
+                self._hover_edge = new_hover
+                self.update()
             self.setCursor({"resize": Qt.CursorShape.SizeFDiagCursor,
                             "move": Qt.CursorShape.OpenHandCursor,
                             "label": Qt.CursorShape.PointingHandCursor,
@@ -223,17 +232,25 @@ class LayoutEditMixin:
             p.setPen(QPen(QColor("#7FD4FF"), 1.0))
             p.setBrush(QColor(127, 212, 255, 60))
             p.drawEllipse(QPointF(cx, cy), 4, 4)
-        # 连线端点手柄(可拖动调整箭头起终点)
+        # 需求2: 连线端点手柄(可拖动调整箭头起终点)
+        # 白色外圈描边 + 橙色填充, 在深/浅主题上均醒目; 悬停时放大反馈
         for idx, p1, p2 in self._iter_edges():
-            for pt in (p1, p2):
-                p.setPen(QPen(QColor("#FFB07A"), 1.4))
-                p.setBrush(QColor(255, 176, 122, 120))
-                p.drawEllipse(pt, 5, 5)
+            for end, pt in (("p1", p1), ("p2", p2)):
+                is_hover = self._hover_edge == (idx, end)
+                r = _EDGE_HOVER_R if is_hover else _EDGE_VIS_R
+                # 外圈白色描边(增强任意背景对比度)
+                p.setPen(QPen(QColor(255, 255, 255, 230), 2.0))
+                p.setBrush(QColor(255, 176, 122, 220))
+                p.drawEllipse(pt, r, r)
+                # 内部实心圆点(悬停时加深, 明确"可拖")
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor("#E55A1A") if is_hover else QColor("#FF7A2C"))
+                p.drawEllipse(pt, r - 3.0, r - 3.0)
         # 提示
         p.setPen(QColor("#FFD080"))
         p.setFont(_font(8, bold=True))
         p.drawText(QRectF(ox, oy - 2, w, 14), Qt.AlignmentFlag.AlignRight,
-                   "编辑: 拖方框移动·拖右下角改大小·拖圆点移文字/连线端点, 完成点[导出布局]")
+                   "编辑: 拖方框移动·拖右下角改大小·拖橙圆点移连线端点/文字, 完成点[导出布局]")
 
     # ---- 子类需实现(默认空实现, 避免误用崩溃) ----
     def _edit_geom(self):

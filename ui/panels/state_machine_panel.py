@@ -709,12 +709,15 @@ class _RunModeView(_DiagramView):
             *_build_run_mode_nodes(),
         ]
         self._edges = [
-            ("IDLE_GW", "ENTER", "主动切换", {'from': 'R', 'to': 'L', 'ft': 0.5, 'tt': 0.35}),
-            ("FAULT_GW", "ENTER", "异常自动切回", {'from': 'R', 'to': 'L', 'ft': 0.5, 'tt': 0.75}),
-            ("ENTER", "RUN", "", {'from': 'R', 'to': 'L'}),
-            # B1: RUN→异常(下方) 与 RUN→待机(上方) 上下对称, 均从 RUN 左侧出发到网关顶/底
-            ("RUN", "FAULT_GW", "运行模式切换", {'from': 'L', 'to': 'T', 'ft': 0.85}),
-            ("RUN", "IDLE_GW", "退回待机", {'from': 'L', 'to': 'B', 'ft': 0.85}),
+            # 需求4: 对齐主状态机关系 — 待机→就绪(使能), 就绪→运行(运动指令),
+            # 运行→异常(检测故障), 异常→待机(清除故障), 运行→待机(切换待机)
+            ("IDLE_GW", "ENTER", "使能", {'from': 'R', 'to': 'L', 'ft': 0.5, 'tt': 0.35}),
+            ("ENTER", "RUN", "运动指令", {'from': 'R', 'to': 'L'}),
+            # 运行→异常(检测故障), 运行→待机(切换待机): 从 RUN 左侧出发到网关顶/底
+            ("RUN", "FAULT_GW", "检测故障", {'from': 'L', 'to': 'T', 'ft': 0.85}),
+            ("RUN", "IDLE_GW", "切换待机", {'from': 'L', 'to': 'B', 'ft': 0.85}),
+            # 异常→待机(清除故障): 对齐主状态机 FAULT→IDLE, 不再经过就绪
+            ("FAULT_GW", "IDLE_GW", "清除故障", {'from': 'T', 'to': 'B'}),
         ]
         self.set_note("运动模式间不能相互切换, 须从待机进入")
 
@@ -742,7 +745,10 @@ class _RunModeView(_DiagramView):
                 keys.add("ENTER")
         elif top_fsm in (int(TopFsm.FAULT), int(TopFsm.SAFETY)):
             keys.add("FAULT_GW")
-        elif top_fsm in (int(TopFsm.IDLE), int(TopFsm.READY)):
+        elif top_fsm == int(TopFsm.READY):
+            # 需求4: 对齐主状态机 — READY 高亮就绪节点, 而非待机节点
+            keys.add("ENTER")
+        elif top_fsm == int(TopFsm.IDLE):
             keys.add("IDLE_GW")
         self.set_active(keys)
 

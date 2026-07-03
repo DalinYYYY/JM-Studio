@@ -314,9 +314,9 @@ class CalibrationPanel(QGroupBox):
         框体保持最小高度不被压缩, 额外垂直空间全部留给标定结果。
         """
         grp = QGroupBox("标定任务  (选中级别 Tab → 选中子项, 点「开始」启动)")
-        # A1: 固定高度, 不吃额外空间(额外高度给标定结果)
+        # 需求3: 降低总高度(原 170 过高留白多), 固定高度不吃额外空间
         grp.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        grp.setMinimumHeight(170)
+        grp.setMinimumHeight(140)
         outer = QHBoxLayout(grp)
         outer.setContentsMargins(8, 6, 8, 6)
         outer.setSpacing(8)
@@ -339,7 +339,7 @@ class CalibrationPanel(QGroupBox):
                 btn.setToolTip(f"CMD=0x{int(cmd):02X}  submode={sub_id}\n{sub_desc}")
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setMinimumWidth(130)
-                btn.setMinimumHeight(54)
+                btn.setMinimumHeight(48)
                 btn.setStyleSheet(self._task_btn_style(active=False))
                 btn.clicked.connect(
                     lambda _=False, c=int(cmd), s=int(sub_id),
@@ -374,7 +374,8 @@ class CalibrationPanel(QGroupBox):
         # 开始按钮 (绿色, 启动当前选中任务)
         self._btn_start = QPushButton("▶ 开始")
         self._btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_start.setFixedHeight(26)
+        # 需求3: 开始按钮增高(原 26 → 34), 更醒目易点击
+        self._btn_start.setFixedHeight(34)
         self._btn_start.setEnabled(False)  # 未选中任务时禁用
         self._btn_start.setStyleSheet(
             f"QPushButton {{ background-color: {theme.hex('ok')}; color: {theme.hex('ok_text')}; "
@@ -389,7 +390,7 @@ class CalibrationPanel(QGroupBox):
         # 中止按钮 (红色)
         self._btn_abort = QPushButton("■ 中止")
         self._btn_abort.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_abort.setFixedHeight(26)
+        self._btn_abort.setFixedHeight(34)
         self._btn_abort.setStyleSheet(
             f"QPushButton {{ background-color: {theme.hex('danger')}; color: {theme.hex('danger_text')}; "
             f"border: 1px solid {theme.hex('danger')}; border-radius: 3px; "
@@ -401,7 +402,7 @@ class CalibrationPanel(QGroupBox):
         # 查询按钮
         self._btn_query = QPushButton("查询")
         self._btn_query.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_query.setFixedHeight(26)
+        self._btn_query.setFixedHeight(34)
         self._btn_query.setStyleSheet(
             f"QPushButton {{ background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
             f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
@@ -999,7 +1000,7 @@ class CalibrationPanel(QGroupBox):
                 f"QPushButton:checked {{ background: {theme.hex('accent')}; color: {theme.hex('card_bottom')}; "
                 f"border-color: {theme.hex('accent')}; font-weight: bold; }}")
         self._history_view.setStyleSheet(
-            f"background: {theme.hex('log_bg')}; color: {theme.hex('log_text')}; "
+            f"background: {theme.hex('panel_bg')}; color: {theme.hex('text')}; "
             f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 12px; "
             f"border: 1px solid {theme.hex('border')};")
         # Task 5: 徽章 + 标记/清除按钮
