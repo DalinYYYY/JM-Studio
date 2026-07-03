@@ -48,7 +48,7 @@
     "encoder_param": {
       "enc_lines": 4000,
       "enc_direction": 1,
-      "enc_offset": 0,
+      "enc_offset": 0.0,
       "elec_angle_bias": 0.0,
       "pos_filter_alpha": 0.1,
       "enc_type": 0,

@@ -25,7 +25,7 @@ current_control_bandwidth,电流环带宽,MotorCalibParam,RW,float,1000,100,5000
 enc_type,编码器类型,MotorCalibParam,RW,uint32_t,1,0,10,,0x0080,34,1:MT6701 2:MT6835 0:ABZ增量 3:霍尔 同板可换
 enc_lines,编码器分辨率,MotorCalibParam,RW,uint32_t,16384,100,1000000,CPR,0x0080,35,SPI绝对值为分辨率 增量式为CPR
 enc_direction,编码器计数方向,MotorCalibParam,RW,int32_t,1,-1,1,,0x0080,36,1:正向 -1:反向
-enc_offset,编码器初始位置偏移,MotorCalibParam,RW,int32_t,0,-2147483648,2147483647,counts,0x0080,37,校准后保存
+enc_offset,编码器初始位置偏移,MotorCalibParam,RW,float,0,-360.0,360.0,deg,0x0080,37,校准后保存
 elec_angle_bias,电角度偏移,MotorCalibParam,RW,float,0,-3.1416,3.1416,rad,0x0080,38,FOC换相必需 校准后保存 最关键
 pwm_freq_hz,PWM载波频率,MotorCalibParam,RW,uint32_t,20000,5000,100000,Hz,0x0080,39,不同功率器件可能不同
 dead_time_ns,PWM死区时间,MotorCalibParam,RW,float,500,100,2000,ns,0x0080,40,不同功率器件可能不同

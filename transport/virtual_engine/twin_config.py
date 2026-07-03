@@ -64,7 +64,7 @@ class GearboxParam:
 class EncoderParam:
     enc_lines: int = 4000          # CPR
     enc_direction: int = 1         # 1=正向 -1=反向
-    enc_offset: int = 0            # counts
+    enc_offset: float = 0.0        # deg
     elec_angle_bias: float = 0.0   # rad
     pos_filter_alpha: float = 0.1
     enc_type: int = 0              # 0=ABZ 1=SPI 2=BiSS 3=霍尔

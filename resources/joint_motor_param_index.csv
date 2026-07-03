@@ -25,7 +25,7 @@ param_id,参数名(代码字段),中文含义,数据类型,字节数,单位,所�
 23,gear_backlash,回程间隙,f32,4,rad,减速器,RW
 24,enc_lines,编码器分辨率,u32,4,CPR,编码器,RW
 25,enc_direction,编码器计数方向,i8,1,-,编码器,RW
-26,enc_offset,编码器初始偏移,i32,4,counts,编码器,RW
+26,enc_offset,编码器初始偏移,f32,4,deg,编码器,RW
 27,elec_angle_bias,电角度偏移,f32,4,rad,编码器,RW
 28,pos_filter_alpha,位置滤波系数,f32,4,-,编码器,RW
 29,enc_type,编码器类型,u8,1,-,编码器,RW

@@ -71,7 +71,7 @@ _GIVEN_GROUPS = [
     ("编码器", "encoder_param", [
         # 单圈绝对值编码器: 无需类型/线数 CPR, 只需方向/偏置/电角度/滤波/PLL
         FieldSpec("encoder_param", "enc_direction", "方向(1/-1)", "", -1, 1, 1, 0, True),
-        FieldSpec("encoder_param", "enc_offset", "偏移", "rad", -6.28, 6.28, 0.001, 4),
+        FieldSpec("encoder_param", "enc_offset", "偏移", "deg", -360.0, 360.0, 0.01, 4),
         FieldSpec("encoder_param", "elec_angle_bias", "电角度偏置", "rad", -6.28, 6.28, 0.01, 4),
         FieldSpec("encoder_param", "pos_filter_alpha", "位置滤波系数", "", 0, 1, 0.01, 3),
         FieldSpec("encoder_param", "enc_auto_calib", "自动校准", "", 0, 1, 1, 0, True),

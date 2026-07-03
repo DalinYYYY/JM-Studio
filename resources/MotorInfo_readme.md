@@ -126,7 +126,7 @@ typedef struct __ALIGNED_4 {
     uint32_t enc_type;                   // 1:MT6701 2:MT6835 0:ABZ增量 3:霍尔
     uint32_t enc_lines;                  // SPI绝对值为分辨率 增量式为CPR
     int32_t enc_direction;               // 1:正向 -1:反向
-    int32_t enc_offset;                  // 编码器初始位置偏移 (counts)
+    float enc_offset;                    // 编码器初始位置偏移 (deg)
     float elec_angle_bias;               // 电角度偏移 (rad) 校准后保存 最关键
     // ---- 功率级硬件（同板不同电机/不同功率器件）----
     uint32_t pwm_freq_hz;                // PWM载波频率 (Hz)
