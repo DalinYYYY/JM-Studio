@@ -23,6 +23,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QBrush, QFont
 from collections import deque
 
+from jmproto.codec import is_float_type
 from ui.theme import theme
 
 
@@ -66,13 +67,17 @@ class ParamPanel(QGroupBox):
     save_all = pyqtSignal()
 
     def __init__(self, registry, parent=None, title="电机参数",
-                 source="motor_param", show_save=False, save_text="保存到Flash"):
+                 source="motor_param", show_save=False, save_text="保存到Flash",
+                 groups=None):
         super().__init__("", parent)
         self._panel_name = title
         self._reg = registry
         self._source = source
         self._show_save = bool(show_save)
         self._save_text = save_text
+        # 仅展示指定分组(按 motor_info.csv / param_index.csv 的 group 名);
+        # None 表示不过滤(向后兼容)。
+        self._groups = tuple(groups) if groups else None
         self._current_items = {} # param_id -> QTableWidgetItem
         self._edit_items = {}    # param_id -> QTableWidgetItem
         self._write_buttons = {} # param_id -> QPushButton
@@ -371,6 +376,46 @@ class ParamPanel(QGroupBox):
         if text and text != "--":
             self.write_param.emit(int(param_id), text)
 
+    def _values_equal(self, param_id: int, a: str, b: str) -> bool:
+        """归一化比较两个参数值文本是否相等, 用于判定写按钮高亮。
+
+        - 任一为 "--"(未设置/未读取) 视为相等, 不触发 dirty
+        - float 类型用 6 位有效数字归一化比较, 与显示格式一致 (避免 0.10 vs 0.1 误判)
+        - int 类型按整数值比较 (避免 1000 vs 1000.0 误判)
+        - char[N] 等字符串类型按字符串比较
+        """
+        if a == "--" or b == "--":
+            return True
+        spec = self._param_specs.get(int(param_id))
+        if spec is None:
+            return a == b
+        dtype = (spec.dtype or '').strip().lower()
+        if dtype.startswith('char['):
+            return a == b
+        try:
+            fa, fb = float(a), float(b)
+            if is_float_type(dtype):
+                return f'{fa:.6g}' == f'{fb:.6g}'
+            return int(fa) == int(fb)
+        except (ValueError, TypeError):
+            return a == b
+
+    def _compute_dirty(self, param_id: int) -> bool:
+        """统一计算写按钮是否应高亮: 修改值列 vs 当前已同步值(读回值)。"""
+        pid = int(param_id)
+        state = self._row_state.get(pid)
+        edit_item = self._edit_items.get(pid)
+        if state is None or edit_item is None or not state.get('writable'):
+            return False
+        edit_text = edit_item.text().strip()
+        if edit_text == "--":
+            return False
+        # 当前值列也是 "--"(未读取过): 无比较基准, 不高亮
+        current_item = self._current_items.get(pid)
+        if current_item is not None and current_item.text().strip() == "--":
+            return False
+        return not self._values_equal(pid, edit_text, state['synced'])
+
     def _on_write_group_clicked(self, param_ids):
         writes = []
         for pid in param_ids:
@@ -379,7 +424,8 @@ class ParamPanel(QGroupBox):
             if not state or not state.get('writable') or item is None:
                 continue
             text = item.text().strip()
-            if text and text != "--":
+            # 仅收集 dirty 行(修改值 != 实际读回值); "--"和未读取的行不发送
+            if text and text != "--" and state.get('dirty'):
                 writes.append((int(pid), text))
         if writes:
             self.write_params.emit(writes)
@@ -404,8 +450,7 @@ class ParamPanel(QGroupBox):
         item = self._edit_items.get(pid)
         sent_text = item.text().strip() if item is not None else ""
         self._pending_writes.append((pid, sent_text))
-        state = self._row_state.get(pid)
-        dirty = bool(state and item is not None and item.text().strip() != state['synced'])
+        dirty = self._compute_dirty(pid)
         self._set_write_button_state(pid, dirty, True)
 
     def confirm_pending_write(self):
@@ -415,11 +460,14 @@ class ParamPanel(QGroupBox):
         pid, sent_text = self._pending_writes.popleft()
         state = self._row_state.get(int(pid))
         current_item = self._current_items.get(int(pid))
-        edit_item = self._edit_items.get(int(pid))
-        if state is not None and current_item is not None and edit_item is not None:
+        if state is not None and current_item is not None:
             state['synced'] = sent_text
-            current_item.setText(sent_text)
-            dirty = edit_item.text().strip() != sent_text
+            self._syncing_table = True
+            try:
+                current_item.setText(sent_text)
+            finally:
+                self._syncing_table = False
+            dirty = self._compute_dirty(int(pid))
             self._set_write_button_state(int(pid), dirty, False)
         return pid
 
@@ -428,11 +476,8 @@ class ParamPanel(QGroupBox):
         if not self._pending_writes:
             return None
         pid, _sent_text = self._pending_writes.popleft()
-        state = self._row_state.get(int(pid))
-        item = self._edit_items.get(int(pid))
-        if state is not None and item is not None:
-            dirty = item.text().strip() != state['synced']
-            self._set_write_button_state(int(pid), dirty, False)
+        dirty = self._compute_dirty(int(pid))
+        self._set_write_button_state(int(pid), dirty, False)
         return pid
 
     def _on_item_changed(self, item: QTableWidgetItem):
@@ -446,12 +491,14 @@ class ParamPanel(QGroupBox):
         state = self._row_state.get(int(pid))
         if state is None or not state['writable']:
             return
-        text = item.text().strip()
-        dirty = (text != state['synced'])
+        dirty = self._compute_dirty(int(pid))
         self._set_write_button_state(int(pid), dirty, state.get('pending', False) and dirty)
 
     def set_value(self, param_id: int, text: str):
-        """收到读应答后更新当前值列"""
+        """收到读应答后更新当前值列。
+
+        修改值列保持 "--" 不被覆盖, 只有用户改过且与读回值不一致时才高亮写按钮。
+        """
         pid = int(param_id)
         current_item = self._current_items.get(pid)
         edit_item = self._edit_items.get(pid)
@@ -463,28 +510,19 @@ class ParamPanel(QGroupBox):
                 self._syncing_table = False
         state = self._row_state.get(pid)
         if state is not None:
-            edit_dirty = bool(edit_item and edit_item.text().strip() != state['synced'])
             state['synced'] = text
-            if edit_item is not None and not edit_dirty:
-                self._syncing_table = True
-                try:
-                    edit_item.setText(text)
-                finally:
-                    self._syncing_table = False
-            dirty = bool(edit_item and edit_item.text().strip() != text)
+            # 修改值列若仍为 "--"(用户未改过): 不跟随同步为读回值, 保持 "--"
+            # 仅当用户已输入具体值时, 才用归一化比较判定 dirty
+            dirty = self._compute_dirty(pid)
             self._set_write_button_state(pid, dirty, False)
 
     # ==================== 配置持久化 ====================
     def get_opts(self) -> dict:
-        """收集可持久化的 UI 配置: 修改值列文本(按 param_id) + 表格列宽."""
-        opts = {"edit_values": {}, "column_widths": {}}
-        for pid, item in self._edit_items.items():
-            try:
-                text = item.text().strip()
-                if text:
-                    opts["edit_values"][str(int(pid))] = text
-            except Exception:
-                pass
+        """收集可持久化的 UI 配置: 仅表格列宽。
+
+        修改值列不持久化, 上电统一为 "--", 只有用户主动改且与实际读回值不一致时才高亮写按钮。
+        """
+        opts = {"column_widths": {}}
         try:
             for col in range(self._table.columnCount()):
                 opts["column_widths"][str(int(col))] = int(self._table.columnWidth(col))
@@ -493,10 +531,9 @@ class ParamPanel(QGroupBox):
         return opts
 
     def set_opts(self, opts: dict):
-        """启动时套用配置 (容错)."""
+        """启动时套用配置 (容错)。仅恢复列宽; 修改值列保持 "--"。"""
         if not isinstance(opts, dict):
             return
-        # 恢复列宽
         cw = opts.get("column_widths")
         if isinstance(cw, dict):
             for k, w in cw.items():
@@ -506,26 +543,16 @@ class ParamPanel(QGroupBox):
                         self._table.setColumnWidth(col, int(w))
                 except Exception:
                     pass
-        # 恢复修改值列文本 (不触发 dirty 标记的副作用)
-        ev = opts.get("edit_values")
-        if isinstance(ev, dict):
-            self._syncing_table = True
-            try:
-                for k, text in ev.items():
-                    try:
-                        pid = int(k)
-                    except Exception:
-                        continue
-                    item = self._edit_items.get(pid)
-                    if item is not None:
-                        item.setText(str(text))
-            finally:
-                self._syncing_table = False
 
     def _params_by_group(self):
         if self._source == "motor_config":
-            return self._reg.motor_config_by_group()
-        return self._reg.params_by_group()
+            all_groups = self._reg.motor_config_by_group()
+        else:
+            all_groups = self._reg.params_by_group()
+        if self._groups:
+            return {g: params for g, params in all_groups.items()
+                    if g in self._groups}
+        return all_groups
 
     def get_param(self, param_id: int):
         return self._param_specs.get(int(param_id))
