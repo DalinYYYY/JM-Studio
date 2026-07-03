@@ -76,6 +76,28 @@ class _Block:
         self.hi = hi      # 是否强调描边
 
 
+class _Edge:
+    """框图中的一条连线。
+
+    p1_override / p2_override: 可选的归一化绝对坐标 (x, y), 覆盖默认锚点(块边中点)。
+        为 None 时回退到 _port(from_block, from_side) / _port(to_block, to_side)。
+        拖动节点时, 已设置的 override 会跟随节点 delta 平移(见 _on_box_moved),
+        实现"跟随节点"行为。
+    """
+    __slots__ = ("from_key", "from_side", "to_key", "to_side", "kind",
+                 "p1_override", "p2_override")
+
+    def __init__(self, from_key, from_side, to_key, to_side, kind,
+                 p1_override=None, p2_override=None):
+        self.from_key = from_key
+        self.from_side = from_side
+        self.to_key = to_key
+        self.to_side = to_side
+        self.kind = kind              # 'fwd' 正向 / 'fb' 反馈
+        self.p1_override = p1_override  # (x, y) 归一化, 或 None
+        self.p2_override = p2_override
+
+
 class _Annot:
     """框图上的一个数值标注。
 
@@ -118,21 +140,22 @@ class _FocDiagram(LayoutEditMixin, QWidget):
             _Block("idq",     "idq 反馈",         0.315, 0.715, 0.120, 0.200),
             _Block("enc",     "编码器\nθ / ω",    0.570, 0.425, 0.135, 0.200, hi=True),
         ]
-        # 连线: (from, fromSide, to, toSide, kind)  kind: 'fwd' 正向 / 'fb' 反馈
+        # 连线: _Edge(from, fromSide, to, toSide, kind)  kind: 'fwd' 正向 / 'fb' 反馈
+        # p1_override/p2_override 默认 None (用块边锚点); 编辑后写入归一化绝对坐标。
         self._edges = [
-            ("ref", "R", "pi", "L", "fwd"),
-            ("pi", "R", "ipark", "L", "fwd"),
-            ("ipark", "R", "svpwm", "L", "fwd"),
-            ("svpwm", "R", "inv", "L", "fwd"),
-            ("inv", "R", "motor", "L", "fwd"),
+            _Edge("ref", "R", "pi", "L", "fwd"),
+            _Edge("pi", "R", "ipark", "L", "fwd"),
+            _Edge("ipark", "R", "svpwm", "L", "fwd"),
+            _Edge("svpwm", "R", "inv", "L", "fwd"),
+            _Edge("inv", "R", "motor", "L", "fwd"),
             # 反馈主链: 电机三相 ↓ Clarke → Park → idq → 闭环回 PI
-            ("motor", "B", "clarke", "T", "fb"),
-            ("clarke", "L", "park", "R", "fb"),
-            ("park", "L", "idq", "R", "fb"),
-            ("idq", "L", "pi", "B", "fb"),
+            _Edge("motor", "B", "clarke", "T", "fb"),
+            _Edge("clarke", "L", "park", "R", "fb"),
+            _Edge("park", "L", "idq", "R", "fb"),
+            _Edge("idq", "L", "pi", "B", "fb"),
             # 电机 → 编码器(机械耦合), 编码器 θ ↓ Park(正上方直接向下喂)
-            ("motor", "B", "enc", "T", "fb"),
-            ("enc", "B", "park", "T", "fb"),
+            _Edge("motor", "B", "enc", "T", "fb"),
+            _Edge("enc", "B", "park", "T", "fb"),
         ]
         # 数值标注(_Annot): pos=None 时自动锚定到块下方; iabc 三相多行。
         self._annots = [
@@ -203,12 +226,22 @@ class _FocDiagram(LayoutEditMixin, QWidget):
                 return
 
     def export_dict(self) -> dict:
-        """导出 FOC 布局: blocks(x,y,w,h) + annots(x,y)。"""
+        """导出 FOC 布局: blocks(x,y,w,h) + annots(x,y) + edges(p1/p2 override)。"""
+        edges_out = {}
+        for i, e in enumerate(self._edges):
+            d = {}
+            if e.p1_override is not None:
+                d["p1"] = [round(e.p1_override[0], 3), round(e.p1_override[1], 3)]
+            if e.p2_override is not None:
+                d["p2"] = [round(e.p2_override[0], 3), round(e.p2_override[1], 3)]
+            if d:
+                edges_out[str(i)] = d
         return {
             "blocks": {b.key: [round(b.x, 3), round(b.y, 3),
                                round(b.w, 3), round(b.h, 3)] for b in self._blocks},
             "annots": {a.key: [round(p[0], 3), round(p[1], 3)]
                        for a in self._annots for p in [self._annot_pos(a)]},
+            "edges": edges_out,
         }
 
     def apply_dict(self, d: dict):
@@ -225,6 +258,17 @@ class _FocDiagram(LayoutEditMixin, QWidget):
             v = annots.get(a.key)
             if isinstance(v, (list, tuple)) and len(v) == 2:
                 a.pos = (float(v[0]), float(v[1]))
+        edges = d.get("edges", {})
+        for i, edge in enumerate(self._edges):
+            v = edges.get(str(i))
+            if not isinstance(v, dict):
+                continue
+            p1 = v.get("p1")
+            if isinstance(p1, (list, tuple)) and len(p1) == 2:
+                edge.p1_override = (float(p1[0]), float(p1[1]))
+            p2 = v.get("p2")
+            if isinstance(p2, (list, tuple)) and len(p2) == 2:
+                edge.p2_override = (float(p2[0]), float(p2[1]))
         self.update()
 
     # ---- 锚点 ----
@@ -303,17 +347,65 @@ class _FocDiagram(LayoutEditMixin, QWidget):
         fb_pen = QPen(_T.EDGE_FB, 1.6, Qt.PenStyle.DashLine)
         fb_pen.setDashPattern([5, 4])
         fb_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        for from_key, fs, to_key, ts, kind in self._edges:
-            r1 = rects.get(from_key)
-            r2 = rects.get(to_key)
+        for edge in self._edges:
+            r1 = rects.get(edge.from_key)
+            r2 = rects.get(edge.to_key)
             if r1 is None or r2 is None:
                 continue
-            a = self._port(r1, fs)
-            b = self._port(r2, ts)
-            pts = self._ortho(a, fs, b, ts)
-            is_fb = kind == "fb"
+            a = self._edge_point(edge, "p1", r1)
+            b = self._edge_point(edge, "p2", r2)
+            pts = self._ortho(a, edge.from_side, b, edge.to_side)
+            is_fb = edge.kind == "fb"
             self._stroke(p, pts, fb_pen if is_fb else fwd_pen)
             self._arrow(p, pts[-2], pts[-1], _T.EDGE_FB if is_fb else _T.EDGE)
+
+    def _edge_point(self, edge, which, r):
+        """计算端点像素坐标: 优先 override, 否则用块边锚点。"""
+        override = edge.p1_override if which == "p1" else edge.p2_override
+        if override is not None:
+            ox, oy, w, h = self._geom()
+            return QPointF(ox + override[0] * w, oy + override[1] * h)
+        side = edge.from_side if which == "p1" else edge.to_side
+        return self._port(r, side)
+
+    def _iter_edges(self):
+        """返回 [(idx, p1_px, p2_px)] 供编辑命中测试用(像素坐标)。"""
+        out = []
+        ox, oy, w, h = self._geom()
+        rects = {b.key: QRectF(ox + b.x * w, oy + b.y * h, b.w * w, b.h * h)
+                 for b in self._blocks}
+        for i, edge in enumerate(self._edges):
+            r1 = rects.get(edge.from_key)
+            r2 = rects.get(edge.to_key)
+            if r1 is None or r2 is None:
+                continue
+            p1 = self._edge_point(edge, "p1", r1)
+            p2 = self._edge_point(edge, "p2", r2)
+            out.append((i, p1, p2))
+        return out
+
+    def _set_edge_endpoint(self, idx, end, nx, ny):
+        """写回端点 override 坐标(归一化)。end: 'p1' / 'p2'。"""
+        if 0 <= idx < len(self._edges):
+            edge = self._edges[idx]
+            if end == "p1":
+                edge.p1_override = (nx, ny)
+            else:
+                edge.p2_override = (nx, ny)
+
+    def _on_box_moved(self, key, dx, dy):
+        """节点拖动后, 所有以该节点为端点的 edge 的 override 端点跟随平移。
+
+        未 override 的端点不受影响(它们本就由块边锚点决定, 自动跟随)。
+        """
+        from ui.panels._edit_mixin import _snap
+        for edge in self._edges:
+            if edge.from_key == key and edge.p1_override is not None:
+                edge.p1_override = (_snap(edge.p1_override[0] + dx),
+                                    _snap(edge.p1_override[1] + dy))
+            if edge.to_key == key and edge.p2_override is not None:
+                edge.p2_override = (_snap(edge.p2_override[0] + dx),
+                                    _snap(edge.p2_override[1] + dy))
 
     @staticmethod
     def _ortho(a, fs, b, ts):

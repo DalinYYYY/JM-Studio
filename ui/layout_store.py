@@ -10,6 +10,8 @@
   "top_fsm":  {"nodes":  {key:[x,y,w,h]}, "labels": {"from>to":[x,y]}},
   "run_mode": {"nodes":  {key:[x,y,w,h]}, "labels": {"from>to":[x,y]}}
 }
+foc.edges 仅记录用户手动调整过端点的连线(key 为边索引字符串),
+p1/p2 可选, 缺失表示该端点用默认块边锚点; 缺整个 edges 节则所有连线用默认锚点。
 缺某节则该图用内置默认; JSON 损坏忽略并返回 {}, 不崩溃。
 """
 

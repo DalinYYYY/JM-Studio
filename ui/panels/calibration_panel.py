@@ -82,6 +82,49 @@ _CALIB_LEVELS = [
 ]
 
 
+# ==================== 标定级别 -> 标定结果参数映射 ====================
+# 需求1: 标定完成时只请求本次标定对应的参数(而非全部 MotorCalibParam)。
+# 空 list 表示该子项产出在固件内部 RAM/表格, motor_info.csv 无对应字段。
+# is_calibrated(16) 仅 L7 全自动完成后包含; 单子项标定不自动改写总标志位。
+# 参考: motor_info.csv Index 16~42 的 MotorCalibParam 段。
+_CALIB_RESULT_MAP = {
+    # L1 驱动硬件底层 (0x90)
+    (0x90, 1): [],                  # ADC偏置 -> 固件内部
+    (0x90, 2): [],                  # ADC增益 -> 固件内部
+    (0x90, 3): [41, 42],            # 电流传感器 -> shunt_resistance, current_amp_gain
+    (0x90, 4): [],                  # 温度传感器 -> motor_info 无字段
+    (0x90, 5): [],                  # 母线电压 -> motor_info 无字段
+    (0x90, 6): [40],                # 死区特性 -> dead_time_ns
+    # L2 电机电气身份 (0x91)
+    (0x91, 1): [19],                # 相序 -> direction
+    (0x91, 2): [17],                # 极对数 -> pole_pairs
+    (0x91, 3): [20],                # R 相电阻 -> phase_resistance
+    (0x91, 4): [21],                # Ld -> phase_inductance_d
+    (0x91, 5): [22],                # Lq -> phase_inductance_q
+    (0x91, 6): [23],                # flux -> flux_linkage
+    # L3 编码器校准 (0x92)
+    (0x92, 1): [38, 37],            # 零位 -> elec_angle_bias, enc_offset
+    (0x92, 2): [36],                # 方向 -> enc_direction
+    (0x92, 3): [],                  # 线性度 -> 固件内部表格
+    (0x92, 4): [],                  # 正余弦/旋变 -> 固件内部
+    (0x92, 5): [],                  # 多圈零点 -> motor_info 无字段
+    # L4 转矩基础 (0x93)
+    (0x93, 1): [24],                # Kt -> torque_constant
+    # L5 非线性补偿 (0x94)
+    (0x94, 1): [],                  # 齿槽 -> 固件内部表格
+    (0x94, 2): [26, 27],            # 摩擦 -> friction_coulomb, friction_viscous
+    (0x94, 3): [],                  # 死区补偿 -> 固件内部曲线
+    (0x94, 4): [],                  # 磁饱和 -> 固件内部曲线
+    # L6 负载系统级 (0x95)
+    (0x95, 1): [25],                # 惯量 -> rotor_inertia
+    (0x95, 2): [27],                # 阻尼 -> friction_viscous (与 L5>2 共享字段)
+    (0x95, 3): [28, 29],            # 回程间隙 -> gear_ratio, gear_efficiency
+    (0x95, 4): [33],                # PID 自整定 -> current_control_bandwidth
+    # L7 自动化集成 (0x96): 全部产出参数 + is_calibrated 总标志位
+    (0x96, 1): [16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 36, 37, 38, 40],
+}
+
+
 class CalibrationPanel(QGroupBox):
     """电机标定面板 (顶级 Tab)。
 
@@ -148,9 +191,10 @@ class CalibrationPanel(QGroupBox):
         """紧凑状态卡: 左侧主信息(2行) + 右侧已标定独占列(徽章+标记+清除), 总高 ~70px."""
         self._status_card = QFrame()
         self._status_card.setFrameShape(QFrame.Shape.StyledPanel)
+        # 需求4: 容器背景统一为 panel_bg (与外层 QGroupBox 一致), 仅保留 border 分隔
         self._status_card.setStyleSheet(f"""
             QFrame {{
-                background: {theme.hex('card_bottom')};
+                background: {theme.hex('panel_bg')};
                 border: 1px solid {theme.hex('border')};
                 border-radius: 4px;
             }}
@@ -201,7 +245,7 @@ class CalibrationPanel(QGroupBox):
         self._lbl_active_task.setTextFormat(Qt.TextFormat.PlainText)
         self._lbl_active_task.setStyleSheet(
             f"color: {theme.hex('text')}; font-size: 11px; border:none; "
-            f"background: {theme.hex('card_bottom')}; "
+            f"background: {theme.hex('panel_bg')}; "
             f"border-left: 2px solid {theme.hex('accent')}; "
             f"padding: 2px 8px; border-radius: 2px;")
         left_layout.addWidget(self._lbl_active_task)
@@ -367,45 +411,23 @@ class CalibrationPanel(QGroupBox):
         self._btn_query.clicked.connect(self._on_query_clicked)
         col_layout.addWidget(self._btn_query)
 
-        # 自动查询复选框 + 查询周期(ms) QSpinBox
-        self._chk_auto_poll = QCheckBox("自动")
-        self._chk_auto_poll.setChecked(True)
-        self._chk_auto_poll.setStyleSheet(
-            f"QCheckBox {{ color: {theme.hex('muted')}; font-size: 12px; spacing: 3px; }}")
-        self._chk_auto_poll.toggled.connect(self._on_auto_poll_toggled)
-        col_layout.addWidget(self._chk_auto_poll)
-
-        # A4: 查询周期(ms) — 仅在「自动」勾选时生效
-        period_row = QHBoxLayout()
-        period_row.setContentsMargins(2, 0, 0, 0)
-        period_row.setSpacing(3)
-        self._spin_poll_period = QSpinBox()
-        self._spin_poll_period.setRange(100, 10000)
-        self._spin_poll_period.setSingleStep(100)
-        self._spin_poll_period.setSuffix(" ms")
-        self._spin_poll_period.setValue(self._POLL_PERIOD_MS)
-        self._spin_poll_period.setFixedHeight(22)
-        self._spin_poll_period.setToolTip("自动查询周期 (毫秒), 仅在「自动」勾选时生效")
-        self._spin_poll_period.setStyleSheet(
-            f"QSpinBox {{ background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
-            f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
-            f"padding: 0 2px; font-size: 11px; }}"
-            f"QSpinBox::up-button, QSpinBox::down-button {{ width: 14px; }}")
-        self._spin_poll_period.valueChanged.connect(self._on_poll_period_changed)
-        period_row.addWidget(self._spin_poll_period)
-        col_layout.addLayout(period_row)
+        # 需求1: 移除「自动」复选框与查询周期设置;
+        # 改为点击「开始」后固定 500ms 轮询, 直到完成(ACK)或手动中止
 
         outer_layout.addWidget(col)
 
     def _tab_style(self) -> str:
+        # 需求4: tab 头背景统一为 panel_bg (与外层 QGroupBox 一致),
+        # 选中态用 accent 文字 + 顶部 accent 强调条区分, 不再换底色
         return f"""
             QTabWidget::pane {{
                 border: 1px solid {theme.hex('border')};
                 border-radius: 4px;
                 top: -1px;
+                background: {theme.hex('panel_bg')};
             }}
             QTabBar::tab {{
-                background: {theme.hex('input_bg')};
+                background: {theme.hex('panel_bg')};
                 color: {theme.hex('muted')};
                 border: 1px solid {theme.hex('border')};
                 border-bottom: none;
@@ -416,13 +438,15 @@ class CalibrationPanel(QGroupBox):
                 font-size: 12px;
             }}
             QTabBar::tab:selected {{
-                background: {theme.hex('card_bottom')};
+                background: {theme.hex('panel_bg')};
                 color: {theme.hex('accent')};
-                border-color: {theme.hex('border')};
+                border-color: {theme.hex('accent')};
+                border-top: 2px solid {theme.hex('accent')};
                 font-weight: bold;
             }}
             QTabBar::tab:hover:!selected {{
                 color: {theme.hex('text')};
+                border-color: {theme.hex('accent')};
             }}
         """
 
@@ -436,14 +460,15 @@ class CalibrationPanel(QGroupBox):
         self._results_split = QSplitter(Qt.Orientation.Vertical)
         self._results_split.setChildrenCollapsible(False)
         self._results_split.setHandleWidth(6)
-        self._results_split.setStyleSheet("""
-            QSplitter::handle:vertical {
-                background: #3A3A3A;
+        # 需求4: splitter 手柄用主题键(border/accent), 不再硬编码, 随主题切换
+        self._results_split.setStyleSheet(f"""
+            QSplitter::handle:vertical {{
+                background: {theme.hex('border')};
                 margin: 1px 0;
-            }
-            QSplitter::handle:vertical:hover {
-                background: #5A8DFF;
-            }
+            }}
+            QSplitter::handle:vertical:hover {{
+                background: {theme.hex('accent')};
+            }}
         """)
 
         # 标定结果容器(占位, attach_results_panel 注入实际 ParamPanel)
@@ -476,10 +501,17 @@ class CalibrationPanel(QGroupBox):
         """Task 3: 注入内嵌 ParamPanel 替换占位 (Main_window 在初始化后调用).
 
         A3: 同时把「历史:显/隐」开关按钮注入到 ParamPanel 保存按钮所在行最右。
+        需求6: 内嵌 ParamPanel 去掉自身边框/margin, 透明融入外层"标定结果"QGroupBox,
+              消除"框中框"割裂感。
         """
         if self._config_panel is not None:
             return
         self._config_panel = panel
+        # 需求6: 内嵌 ParamPanel(QGroupBox title="") 去掉 border/margin-top/padding-top,
+        # 透明融入外层 _results_container, 消除"框中框"
+        panel.setStyleSheet(
+            f"QGroupBox {{ border: none; margin-top: 0px; padding-top: 0px; "
+            f"background: {theme.hex('panel_bg')}; }}")
         # 清除占位
         lay = self._results_container.layout()
         while lay.count():
@@ -524,8 +556,9 @@ class CalibrationPanel(QGroupBox):
 
         self._history_view = QTextEdit()
         self._history_view.setReadOnly(True)
+        # 需求6: 输出框背景统一为 panel_bg (与外层 QGroupBox 一致), 仅用 border 分隔
         self._history_view.setStyleSheet(
-            f"background: {theme.hex('log_bg')}; color: {theme.hex('log_text')}; "
+            f"background: {theme.hex('panel_bg')}; color: {theme.hex('text')}; "
             f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 12px; "
             f"border: 1px solid {theme.hex('border')};")
         self._history_view.setSizePolicy(QSizePolicy.Policy.Expanding,
@@ -608,6 +641,9 @@ class CalibrationPanel(QGroupBox):
         self._add_history(
             f"[TX] 启动 {cmd_name(cmd)} submode={sub_id} ({level_name}>{sub_name})")
         self.send_command.emit(int(cmd), {"submode": int(sub_id)})
+        # 需求1: 开始后固定 500ms 轮询标定进度, 直到收到完成(ACK)或手动中止
+        if self._link_active:
+            self._poll_timer.start()
 
     def _set_active_task(self, cmd: int, sub_id: int,
                          level_name: str, sub_name: str, sub_desc: str):
@@ -655,7 +691,7 @@ class CalibrationPanel(QGroupBox):
         # 进入 CALIB 态: 启动周期查询
         if in_calib and not prev_in_calib:
             self._calib_running = True
-            if self._chk_auto_poll.isChecked() and self._link_active:
+            if self._link_active:
                 self._poll_timer.start()
             self._add_history(f"[进入标定态] top_fsm={top_fsm_name(top_fsm)}")
         # 离开 CALIB 态: 停止查询
@@ -674,6 +710,19 @@ class CalibrationPanel(QGroupBox):
             self._poll_timer.stop()
             self._set_last_op("查询: 标定完成")
             self._add_history(f"[ACK] {cmd_name(cmd)}(0x{cmd:02X}) 标定完成")
+            # 需求1+2: 标定完成 -> 只请求本次标定对应的结果参数(非全部),
+            # 收到的值加粗彩色显示(value_hot), 0xEA 保存 ACK 后 clear_fresh 恢复
+            if self._config_panel is not None and self._link_active:
+                param_ids = self._result_param_ids_for_current_task()
+                if param_ids:
+                    names = self._param_names(param_ids)
+                    self._add_history(
+                        f"[TX] 主动读回本次标定结果 ({len(param_ids)} 项: {names})")
+                    self._config_panel.mark_fresh(param_ids)  # 只标记本次产出的参数
+                    self._config_panel.read_params.emit(list(param_ids))
+                else:
+                    self._add_history(
+                        "[TX] 本次标定子项无 motor_info 字段产出 (固件内部表格), 跳过读回")
         elif cmd == JmCmd.CALIB_ABORT:
             self._calib_running = False
             self._poll_timer.stop()
@@ -704,7 +753,7 @@ class CalibrationPanel(QGroupBox):
         if cmd == JmCmd.CALIB_QUERY:
             if err == JmErr.CALIB_BUSY:
                 self._calib_running = True
-                if self._chk_auto_poll.isChecked() and self._link_active:
+                if self._link_active:
                     self._poll_timer.start()
                 self._set_last_op("查询: 标定进行中…")
                 self._add_history(
@@ -729,6 +778,27 @@ class CalibrationPanel(QGroupBox):
     def _is_calib_cmd(cmd: int) -> bool:
         return int(JmCmd.CALIB_LEVEL1) <= cmd <= int(JmCmd.CALIB_ABORT)
 
+    def _result_param_ids_for_current_task(self):
+        """需求1: 查 _CALIB_RESULT_MAP 返回当前选中任务对应的标定结果 param_id 列表.
+
+        无选中任务或映射缺失时返回空 list(等价于不读回)。
+        """
+        if self._active_task_key is None:
+            return []
+        cmd, sub_id = self._active_task_key
+        return list(_CALIB_RESULT_MAP.get((int(cmd), int(sub_id)), []))
+
+    def _param_names(self, param_ids):
+        """需求1: 把 param_id 列表转成 code_name 简短字符串(用于历史日志)."""
+        if self._config_panel is None:
+            return ""
+        specs = self._config_panel._param_specs
+        names = []
+        for pid in param_ids:
+            spec = specs.get(int(pid))
+            names.append(getattr(spec, 'code_name', f'#{pid}') if spec else f'#{pid}')
+        return ", ".join(names)
+
     # ==================== 按钮回调 ====================
     def _on_query_clicked(self):
         if not self._link_active:
@@ -746,18 +816,9 @@ class CalibrationPanel(QGroupBox):
         self._add_history("[TX] 中止标定 (0x98)")
         self.send_command.emit(int(JmCmd.CALIB_ABORT), {})
 
-    def _on_auto_poll_toggled(self, on: bool):
-        if on and self._calib_running and self._link_active:
-            self._poll_timer.start()
-        else:
-            self._poll_timer.stop()
-
-    def _on_poll_period_changed(self, ms: int):
-        """A4: 自动查询周期可调 (100~10000 ms)."""
-        self._poll_timer.setInterval(max(100, int(ms)))
-
     def _on_poll_tick(self):
-        if self._link_active and self._calib_running:
+        # 需求1: 定时器在跑(开始后启动, 完成/中止后停止)且连接就发查询进度
+        if self._link_active:
             self.send_command.emit(int(JmCmd.CALIB_QUERY), {})
 
     # ==================== 历史记录 ====================
@@ -889,17 +950,28 @@ class CalibrationPanel(QGroupBox):
 
     # ==================== 主题 ====================
     def apply_theme(self):
+        # 需求4: 容器背景统一为 panel_bg
         self._status_card.setStyleSheet(f"""
             QFrame {{
-                background: {theme.hex('card_bottom')};
+                background: {theme.hex('panel_bg')};
                 border: 1px solid {theme.hex('border')};
                 border-radius: 4px;
+            }}
+        """)
+        # 需求4: splitter 手柄随主题刷新(此前缺失)
+        self._results_split.setStyleSheet(f"""
+            QSplitter::handle:vertical {{
+                background: {theme.hex('border')};
+                margin: 1px 0;
+            }}
+            QSplitter::handle:vertical:hover {{
+                background: {theme.hex('accent')};
             }}
         """)
         self._task_tabs.setStyleSheet(self._tab_style())
         self._lbl_active_task.setStyleSheet(
             f"color: {theme.hex('text')}; font-size: 11px; border:none; "
-            f"background: {theme.hex('card_bottom')}; "
+            f"background: {theme.hex('panel_bg')}; "
             f"border-left: 2px solid {theme.hex('accent')}; "
             f"padding: 2px 8px; border-radius: 2px;")
         # 操作列按钮(开始/中止/查询)
@@ -921,13 +993,6 @@ class CalibrationPanel(QGroupBox):
             f"padding: 1px 8px; font-size: 12px; }}"
             f"QPushButton:hover {{ border-color: {theme.hex('accent')}; "
             f"color: {theme.hex('accent')}; }}")
-        self._chk_auto_poll.setStyleSheet(
-            f"QCheckBox {{ color: {theme.hex('muted')}; font-size: 12px; spacing: 3px; }}")
-        self._spin_poll_period.setStyleSheet(
-            f"QSpinBox {{ background: {theme.hex('input_bg')}; color: {theme.hex('text')}; "
-            f"border: 1px solid {theme.hex('border')}; border-radius: 3px; "
-            f"padding: 0 2px; font-size: 11px; }}"
-            f"QSpinBox::up-button, QSpinBox::down-button {{ width: 14px; }}")
         # 历史开关(注入到保存按钮行的)主题刷新
         if hasattr(self, "_btn_history_toggle"):
             self._btn_history_toggle.setStyleSheet(
@@ -955,11 +1020,9 @@ class CalibrationPanel(QGroupBox):
 
     # ==================== 配置持久化 ====================
     def get_opts(self) -> dict:
-        """收集可持久化的 UI 配置: 当前 Tab + 当前选中任务 + 自动查询开关 + 查询周期 + 历史显隐 + 内嵌面板列宽。"""
+        """收集可持久化的 UI 配置: 当前 Tab + 当前选中任务 + 历史显隐 + 内嵌面板列宽。"""
         opts = {}
         try:
-            opts["auto_poll"] = bool(self._chk_auto_poll.isChecked())
-            opts["poll_period_ms"] = int(self._spin_poll_period.value())
             opts["task_tab_index"] = int(self._task_tabs.currentIndex())
             opts["history_visible"] = bool(self._history_visible)
             if self._active_task_key is not None:
@@ -977,16 +1040,6 @@ class CalibrationPanel(QGroupBox):
         """启动时套用配置 (容错)."""
         if not isinstance(opts, dict):
             return
-        if "auto_poll" in opts:
-            try:
-                self._chk_auto_poll.setChecked(bool(opts["auto_poll"]))
-            except Exception:
-                pass
-        if "poll_period_ms" in opts:
-            try:
-                self._spin_poll_period.setValue(int(opts["poll_period_ms"]))
-            except Exception:
-                pass
         if "task_tab_index" in opts:
             try:
                 idx = int(opts["task_tab_index"])

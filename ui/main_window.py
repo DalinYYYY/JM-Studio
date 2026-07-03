@@ -146,7 +146,8 @@ class MainWindow(QMainWindow):
         self._calib_results_panel = ParamPanel(
             self._registry, title="标定结果", source="motor_config",
             groups=("MotorCalibParam",), show_save=True,
-            save_text="保存标定结果到Flash/EEPROM", show_legend=False)
+            save_text="保存标定结果到Flash/EEPROM", show_legend=False,
+            show_bulk_rw=True)
         self._plot_panel = PlotPanel()
         self._state_panel = StateMachinePanel()
         self._calib_panel = CalibrationPanel()
@@ -255,29 +256,33 @@ class MainWindow(QMainWindow):
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setFixedHeight(26)
         btn.setMinimumWidth(88)
-        btn.setStyleSheet("""
-            QPushButton {
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 0 8px;
-                background: #2A2A2A;
-                color: #DDD;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: #3A3A3A;
-                border-color: #777;
-            }
-            QPushButton:checked {
-                background: #03A9F4;
-                border-color: #29B6F6;
-                color: white;
-            }
-        """)
+        btn.setStyleSheet(self._log_toggle_btn_style())
         btn.clicked.connect(self._toggle_log_panel)
         self._btn_toggle_log = btn
         self._update_log_toggle_button()
         return btn
+
+    def _log_toggle_btn_style(self) -> str:
+        """需求4: 日志开关按钮样式(随主题切换)."""
+        return f"""
+            QPushButton {{
+                border: 1px solid {theme.hex('btn_border')};
+                border-radius: 4px;
+                padding: 0 8px;
+                background: {theme.hex('btn_bg')};
+                color: {theme.hex('btn_text')};
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {theme.hex('btn_hover')};
+                border-color: {theme.hex('muted')};
+            }}
+            QPushButton:checked {{
+                background: {theme.hex('accent')};
+                border-color: {theme.hex('accent')};
+                color: {theme.hex('card_bottom')};
+            }}
+        """
 
     def _apply_menu_button_style(self, btn: QPushButton):
         # 颜色交由全局 QSS(theme.qss()) 统一管理, 这里只设交互属性与尺寸
@@ -542,8 +547,7 @@ class MainWindow(QMainWindow):
         self._btn_layout_edit = QPushButton("布局编辑")
         self._btn_layout_edit.setCheckable(True)
         self._apply_menu_button_style(self._btn_layout_edit)
-        self._btn_layout_edit.setStyleSheet(self._btn_layout_edit.styleSheet() +
-            "\nQPushButton:checked{background:#C8963C;color:#1a1a1a;border-color:#E0B566;}")
+        self._btn_layout_edit.setStyleSheet(self._layout_edit_btn_style())
         self._btn_layout_edit.toggled.connect(self._on_layout_edit_gate)
         layout.addWidget(self._btn_layout_edit, 1, 0)
         # 主题切换(深/浅), 记住上次选择
@@ -560,14 +564,60 @@ class MainWindow(QMainWindow):
         self._btn_virtual_mode.setToolTip(
             "仅在连接虚拟引擎时可用。开启后显示孪生参数、虚拟电机 Fault 位表与故障屏蔽区。")
         self._apply_menu_button_style(self._btn_virtual_mode)
-        self._btn_virtual_mode.setStyleSheet(
-            self._btn_virtual_mode.styleSheet() +
-            "\nQPushButton:disabled{background:#2A2A2A;color:#777;border-color:#444;}"
-            "\nQPushButton:checked{background:#03A9F4;color:white;border-color:#29B6F6;}")
+        self._btn_virtual_mode.setStyleSheet(self._virtual_mode_btn_style())
         self._btn_virtual_mode.toggled.connect(self._on_virtual_mode_toggled)
         layout.addWidget(self._btn_virtual_mode, 2, 0, 1, 2)
         # 注: 标定操作历史开关已移到标定结果保存按钮同行最右 (CalibrationPanel 内部)
         return grp
+
+    def _layout_edit_btn_style(self) -> str:
+        """需求4: 布局编辑按钮样式(随主题切换, checked 态用 warn)."""
+        return f"""
+            QPushButton {{
+                border: 1px solid {theme.hex('btn_border')};
+                border-radius: 4px;
+                padding: 0 8px;
+                background: {theme.hex('btn_bg')};
+                color: {theme.hex('btn_text')};
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {theme.hex('btn_hover')};
+                border-color: {theme.hex('muted')};
+            }}
+            QPushButton:checked {{
+                background: {theme.hex('warn')};
+                color: {theme.hex('card_bottom')};
+                border-color: {theme.hex('warn')};
+            }}
+        """
+
+    def _virtual_mode_btn_style(self) -> str:
+        """需求4: 虚拟电机开关按钮样式(随主题切换, checked 态用 accent)."""
+        return f"""
+            QPushButton {{
+                border: 1px solid {theme.hex('btn_border')};
+                border-radius: 4px;
+                padding: 0 8px;
+                background: {theme.hex('btn_bg')};
+                color: {theme.hex('btn_text')};
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {theme.hex('btn_hover')};
+                border-color: {theme.hex('muted')};
+            }}
+            QPushButton:disabled {{
+                background: {theme.hex('card_bottom')};
+                color: {theme.hex('muted')};
+                border-color: {theme.hex('border')};
+            }}
+            QPushButton:checked {{
+                background: {theme.hex('accent')};
+                color: {theme.hex('card_bottom')};
+                border-color: {theme.hex('accent')};
+            }}
+        """
 
     def _on_calib_history_toggled(self, on: bool):
         """标定操作历史显隐开关 (已移至标定结果保存按钮同行, 此处保留兼容)."""
@@ -582,6 +632,13 @@ class MainWindow(QMainWindow):
         if app is not None:
             app.setStyleSheet(theme.qss())
         self._btn_theme.setText("主题: 深色" if theme.is_dark else "主题: 浅色")
+        # 需求4: 刷新浅色主题下颜色不对的按钮(此前硬编码不随主题切换)
+        if hasattr(self, "_btn_toggle_log") and self._btn_toggle_log is not None:
+            self._btn_toggle_log.setStyleSheet(self._log_toggle_btn_style())
+        if hasattr(self, "_btn_layout_edit") and self._btn_layout_edit is not None:
+            self._btn_layout_edit.setStyleSheet(self._layout_edit_btn_style())
+        if hasattr(self, "_btn_virtual_mode") and self._btn_virtual_mode is not None:
+            self._btn_virtual_mode.setStyleSheet(self._virtual_mode_btn_style())
         for panel in (self._feedback_panel, self._state_panel, self._plot_panel,
                       self._log_panel, self._param_panel, self._config_panel,
                       self._calib_panel, self._twin_param_panel, self._fault_info_panel):
@@ -1005,6 +1062,12 @@ class MainWindow(QMainWindow):
             panel = self._pending_param_writes.popleft() if self._pending_param_writes else self._param_panel
             panel.confirm_pending_write()
             self._pump_param_write_queue()
+        # 需求2: 保存到 Flash/EEPROM (0xEA) ACK -> 标定结果/电机配置面板恢复正常颜色
+        if cmd == JmCmd.MOTOR_INFO_SAVE:
+            for pnl in (self._calib_results_panel, self._config_panel):
+                fn = getattr(pnl, "clear_fresh", None)
+                if callable(fn):
+                    fn()
 
     def _on_nack(self, cmd: int, err: int):
         # NACK 中文描述: err_name_cn 返回 "枚举名(中文)"; 错误信息加载到故障面板

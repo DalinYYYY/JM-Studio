@@ -68,7 +68,7 @@ class ParamPanel(QGroupBox):
 
     def __init__(self, registry, parent=None, title="电机参数",
                  source="motor_param", show_save=False, save_text="保存到Flash",
-                 groups=None, show_legend=True):
+                 groups=None, show_legend=True, show_bulk_rw=False):
         super().__init__("", parent)
         self._panel_name = title
         self._reg = registry
@@ -77,6 +77,8 @@ class ParamPanel(QGroupBox):
         self._save_text = save_text
         # 是否显示图例(固有/可配置 色块说明); 内嵌场景(如标定结果)可关闭
         self._show_legend = bool(show_legend)
+        # 需求3: 是否在底部显示全读/全写按钮(标定结果面板用)
+        self._show_bulk_rw = bool(show_bulk_rw)
         # 仅展示指定分组(按 motor_info.csv / param_index.csv 的 group 名);
         # None 表示不过滤(向后兼容)。
         self._groups = tuple(groups) if groups else None
@@ -91,45 +93,9 @@ class ParamPanel(QGroupBox):
         self._row_of_pid = {}                # param_id -> 行号(用于主题刷新只读行)
         self._btn_layout = None              # 保存按钮所在 QHBoxLayout (供 add_footer_widget 注入)
         self._btn_row = None
-        self._btn_base_style = """
-            QPushButton {
-                padding: 0 8px;
-                border: 1px solid #555;
-                border-radius: 4px;
-                background: #2A2A2A;
-                color: #DDD;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background: #3A3A3A;
-                border-color: #777;
-            }
-            QPushButton:disabled {
-                color: #777;
-                border-color: #444;
-                background: #222;
-            }
-        """
-        self._btn_dirty_style = """
-            QPushButton {
-                padding: 0 8px;
-                border: 1px solid #FFB74D;
-                border-radius: 4px;
-                background: #EF6C00;
-                color: white;
-                font-weight: bold;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background: #FF8F00;
-                border-color: #FFCC80;
-            }
-            QPushButton:disabled {
-                color: #DDD;
-                border-color: #C57C00;
-                background: #B35D00;
-            }
-        """
+        self._footer_after_save = None       # 需求3: 保存按钮后的注入槽 (放历史开关)
+        self._fresh_ids = set()              # 需求2: 标定完成新读到的参数集合(加粗彩色显示)
+        # 需求4: 按钮样式改用主题键(随主题切换), 不再硬编码 #2A2A2A/#EF6C00 等
         self._build()
 
     def panel_name(self) -> str:
@@ -140,12 +106,12 @@ class ParamPanel(QGroupBox):
         return self._source
 
     def add_footer_widget(self, widget):
-        """在保存按钮所在行的最右侧(stretch 之后)追加一个 widget.
+        """在保存按钮之后、stretch 之前注入一个 widget (紧跟保存按钮).
 
-        用于内嵌场景(标定结果面板)把外部开关(如历史显隐)放到保存按钮同行最右。
+        用于内嵌场景(标定结果面板)把外部开关(如历史显隐)放到保存按钮同行后面。
         """
-        if self._btn_layout is not None:
-            self._btn_layout.addWidget(widget)
+        if self._footer_after_save is not None:
+            self._footer_after_save.addWidget(widget)
 
     def param_ids(self):
         """返回当前面板展示的所有 param_id (按表格顺序). 用于外部触发批量读取。"""
@@ -186,6 +152,20 @@ class ParamPanel(QGroupBox):
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # 需求6: 标定结果面板(show_bulk_rw)表格背景统一为 panel_bg, 关闭交替行,
+        # 表头只用 border-bottom 分隔(不再换底色), 与外层 QGroupBox 融为一体
+        if self._show_bulk_rw:
+            self._table.setAlternatingRowColors(False)
+            self._table.setStyleSheet(
+                f"QTableWidget {{ background: {theme.hex('panel_bg')}; "
+                f"alternate-background-color: {theme.hex('panel_bg')}; "
+                f"color: {theme.hex('text')}; gridline-color: {theme.hex('border')}; "
+                f"border: 1px solid {theme.hex('border')}; }}"
+                f"QHeaderView::section {{ background: {theme.hex('panel_bg')}; "
+                f"color: {theme.hex('title')}; border: none; "
+                f"border-bottom: 1px solid {theme.hex('border')}; padding: 4px; }}"
+                f"QTableCornerButton::section {{ background: {theme.hex('panel_bg')}; "
+                f"border: none; }}")
         self._table.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.SelectedClicked
@@ -213,6 +193,7 @@ class ParamPanel(QGroupBox):
         btn_row = QWidget()
         btn_layout = QHBoxLayout(btn_row)
         btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(6)
 
         self._btn_save = QPushButton(self._save_text)
         self._btn_save.clicked.connect(self.save_all)
@@ -220,7 +201,24 @@ class ParamPanel(QGroupBox):
         # 会作为独立小窗口在 Windows 上短暂弹出
         btn_layout.addWidget(self._btn_save)
         self._btn_save.setVisible(self._show_save)
+        # 需求3: 保存按钮后的注入位(放历史开关等), 在 stretch 之前
+        self._footer_after_save = QHBoxLayout()
+        self._footer_after_save.setContentsMargins(0, 0, 0, 0)
+        btn_layout.addLayout(self._footer_after_save)
         btn_layout.addStretch()
+        # 需求3: 全读/全写放最右(show_bulk_rw 控制)
+        if self._show_bulk_rw:
+            # 需求5: 底部全读/全写复用 _make_button(width=72=列宽),
+            # 与上方单行读/写按钮宽度一致且套同一 base 样式; spacing=0 让两按钮紧贴
+            # 对齐表格 COL_READ+COL_WRITE 两列(合计 144px)
+            self._btn_read_all = self._make_button(
+                "全读",
+                lambda _=False: self.read_params.emit(list(self._param_specs.keys())),
+                width=72)
+            btn_layout.addWidget(self._btn_read_all)
+            self._btn_write_all = self._make_button(
+                "全写", self._on_write_all_clicked, width=72)
+            btn_layout.addWidget(self._btn_write_all)
         self._btn_layout = btn_layout   # 保留引用, 供 add_footer_widget 注入
         self._btn_row = btn_row
         layout.addWidget(btn_row)
@@ -263,7 +261,7 @@ class ParamPanel(QGroupBox):
         btn.setMinimumWidth(width)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(callback)
-        btn.setStyleSheet(self._btn_base_style)
+        btn.setStyleSheet(self._btn_base_style())
         return btn
 
     def _make_button_cell(self, button: QPushButton) -> QWidget:
@@ -275,8 +273,53 @@ class ParamPanel(QGroupBox):
         return cell
 
     # ---------- 主题 ----------
+    def _btn_base_style(self) -> str:
+        """需求4: 读/写按钮基础样式(随主题切换, 不再硬编码)."""
+        return f"""
+            QPushButton {{
+                padding: 0 8px;
+                border: 1px solid {theme.hex('btn_border')};
+                border-radius: 4px;
+                background: {theme.hex('btn_bg')};
+                color: {theme.hex('btn_text')};
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background: {theme.hex('btn_hover')};
+                border-color: {theme.hex('muted')};
+            }}
+            QPushButton:disabled {{
+                color: {theme.hex('muted')};
+                border-color: {theme.hex('border')};
+                background: {theme.hex('card_bottom')};
+            }}
+        """
+
+    def _btn_dirty_style(self) -> str:
+        """需求4: 已修改待写入按钮高亮样式(随主题切换)."""
+        return f"""
+            QPushButton {{
+                padding: 0 8px;
+                border: 1px solid {theme.hex('value_hot')};
+                border-radius: 4px;
+                background: {theme.hex('warn')};
+                color: {theme.hex('card_bottom')};
+                font-weight: bold;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background: {theme.hex('value_hot')};
+                border-color: {theme.hex('accent')};
+            }}
+            QPushButton:disabled {{
+                color: {theme.hex('muted')};
+                border-color: {theme.hex('warn')};
+                background: {theme.hex('card_bottom')};
+            }}
+        """
+
     def apply_theme(self):
-        """主题切换: 刷新图例色块/只读行样式。"""
+        """主题切换: 刷新图例色块/只读行样式 + 全部读/写按钮样式."""
         # 重建图例色块颜色(色块在 _build 时按 [固有, 可配置] 顺序创建)
         ro = theme.c("card_bottom")
         rw = theme.c("table_bg")
@@ -290,6 +333,18 @@ class ParamPanel(QGroupBox):
             if row is None:
                 continue
             self._style_row(row, spec.writable)
+        # 需求4: 刷新全部读/写按钮样式(按 dirty 状态分别套 base/dirty 样式)
+        base_css = self._btn_base_style()
+        dirty_css = self._btn_dirty_style()
+        for pid, btn in self._write_buttons.items():
+            state = self._row_state.get(pid)
+            is_dirty = bool(state and state.get('dirty'))
+            btn.setStyleSheet(dirty_css if is_dirty else base_css)
+        # 需求5: 底部全读/全写按钮也套 base 样式(若存在)
+        for attr in ("_btn_read_all", "_btn_write_all"):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.setStyleSheet(base_css)
 
     def _populate(self):
         self._syncing_table = True
@@ -305,7 +360,12 @@ class ParamPanel(QGroupBox):
 
         groups = self._params_by_group()
         for group, params in groups.items():
-            self._append_group_row(group, params)
+            # 需求3: show_bulk_rw=True 时(标定结果面板)不创建分组显示行,
+            # 全读/全写按钮改放底部; _group_param_ids 仍记录分组映射以兼容外部查询。
+            if not self._show_bulk_rw:
+                self._append_group_row(group, params)
+            else:
+                self._group_param_ids[group] = [int(p.param_id) for p in params]
             for p in params:
                 self._append_param_row(p)
 
@@ -382,8 +442,13 @@ class ParamPanel(QGroupBox):
                 item.setData(Qt.ItemDataRole.UserRole, p.param_id)
 
     def _style_row(self, row: int, writable: bool):
-        """按可写性涂行底色: 只读=card_bottom(暗), 可改=table_bg(亮)。"""
-        bg = theme.c("table_bg") if writable else theme.c("card_bottom")
+        """按可写性涂行底色: 只读=card_bottom(暗), 可改=table_bg(亮)。
+        需求6: show_bulk_rw(标定结果面板)时统一用 panel_bg, 仅用前景色区分只读/可改。
+        """
+        if self._show_bulk_rw:
+            bg = theme.c("panel_bg")
+        else:
+            bg = theme.c("table_bg") if writable else theme.c("card_bottom")
         fg = theme.c("text") if writable else theme.c("muted")
         for col in range(self._table.columnCount()):
             item = self._table.item(row, col)
@@ -455,6 +520,10 @@ class ParamPanel(QGroupBox):
         if writes:
             self.write_params.emit(writes)
 
+    def _on_write_all_clicked(self):
+        """需求3: 底部全写按钮 — 收集当前面板所有 dirty 行批量写。"""
+        self._on_write_group_clicked(list(self._param_specs.keys()))
+
     def _set_write_button_state(self, param_id: int, dirty: bool, pending: bool = False):
         btn = self._write_buttons.get(int(param_id))
         state = self._row_state.get(int(param_id))
@@ -463,10 +532,10 @@ class ParamPanel(QGroupBox):
         state['dirty'] = bool(dirty)
         state['pending'] = bool(pending)
         if dirty:
-            btn.setStyleSheet(self._btn_dirty_style)
+            btn.setStyleSheet(self._btn_dirty_style())
             btn.setToolTip("当前值已修改，等待写入")
         else:
-            btn.setStyleSheet(self._btn_base_style)
+            btn.setStyleSheet(self._btn_base_style())
             btn.setToolTip("写入已发送，等待返回" if pending else "")
 
     def note_write_sent(self, param_id: int):
@@ -523,6 +592,7 @@ class ParamPanel(QGroupBox):
         """收到读应答后更新当前值列。
 
         修改值列保持 "--" 不被覆盖, 只有用户改过且与读回值不一致时才高亮写按钮。
+        需求2: 若该参数在 fresh 集合中(标定完成新读到), 当前值列加粗彩色显示。
         """
         pid = int(param_id)
         current_item = self._current_items.get(pid)
@@ -531,6 +601,12 @@ class ParamPanel(QGroupBox):
             self._syncing_table = True
             try:
                 current_item.setText(text)
+                # 需求2: fresh 参数加粗彩色 (适配主题: value_hot 暖色高亮)
+                if pid in self._fresh_ids:
+                    font = current_item.font()
+                    font.setBold(True)
+                    current_item.setFont(font)
+                    current_item.setForeground(QBrush(theme.c("value_hot")))
             finally:
                 self._syncing_table = False
         state = self._row_state.get(pid)
@@ -540,6 +616,33 @@ class ParamPanel(QGroupBox):
             # 仅当用户已输入具体值时, 才用归一化比较判定 dirty
             dirty = self._compute_dirty(pid)
             self._set_write_button_state(pid, dirty, False)
+
+    def mark_fresh(self, param_ids=None):
+        """需求2: 标记参数为「新读到」(标定完成主动请求的结果)。
+
+        后续 set_value 会把这些参数的当前值列加粗彩色显示;
+        clear_fresh (保存到 Flash/EEPROM ACK 后调用) 恢复正常样式。
+        param_ids=None 表示标记当前面板全部参数。
+        """
+        if param_ids is None:
+            self._fresh_ids = set(int(p) for p in self._param_specs.keys())
+        else:
+            self._fresh_ids.update(int(p) for p in param_ids)
+
+    def clear_fresh(self):
+        """需求2: 保存到 Flash/EEPROM 后恢复正常样式(去加粗、去彩色)."""
+        for pid in self._fresh_ids:
+            current_item = self._current_items.get(pid)
+            if current_item is not None:
+                font = current_item.font()
+                font.setBold(False)
+                current_item.setFont(font)
+                # 恢复为该行可写性对应的默认前景色
+                spec = self._param_specs.get(pid)
+                writable = getattr(spec, 'writable', True) if spec else True
+                fg = theme.c("text") if writable else theme.c("muted")
+                current_item.setForeground(QBrush(fg))
+        self._fresh_ids.clear()
 
     # ==================== 配置持久化 ====================
     def get_opts(self) -> dict:

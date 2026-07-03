@@ -82,10 +82,13 @@ txt = panel._lbl_active_task.text()
 check("L2" in txt and "submode=3" in txt and "R 相电阻" in txt,
       f"当前选中任务文本应含 L2/submode=3/R 相电阻, 实际: {txt!r}")
 
-# 8. 标定操作嵌入状态卡: _btn_query / _btn_abort / _chk_auto_poll 存在
+# 8. 标定操作嵌入状态卡: _btn_query / _btn_abort 存在
+# 需求1: 移除 自动查询 复选框(_chk_auto_poll), 改为开始后固定 500ms 轮询
 check(hasattr(panel, "_btn_query") and hasattr(panel, "_btn_abort"),
       "状态卡应嵌入 查询/中止 按钮")
-check(hasattr(panel, "_chk_auto_poll"), "状态卡应嵌入 自动查询 开关")
+check(not hasattr(panel, "_chk_auto_poll"), "需求1: 不应再有 自动查询 开关(_chk_auto_poll)")
+check(hasattr(panel, "_poll_timer"), "需求1: 应有 _poll_timer(开始后固定 500ms 轮询)")
+check(not hasattr(panel, "_spin_poll_period"), "需求1: 不应再有 查询周期 SpinBox(_spin_poll_period)")
 
 # 9. get_opts 含 task_tab_index + active_task
 opts = panel.get_opts()
