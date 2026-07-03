@@ -140,6 +140,12 @@ class MainWindow(QMainWindow):
         self._config_panel = ParamPanel(
             self._registry, title="电机配置", source="motor_config",
             show_save=True, save_text="保存配置到Flash/EEPROM")
+        # 标定结果面板: 复用 motor_config 通道(0xE6 读 / 0xE7 写 / 0xEA 固化),
+        # 仅展示 MotorCalibParam 段(Index 16~42), 注入到标定 Tab 内嵌展示。
+        self._calib_results_panel = ParamPanel(
+            self._registry, title="标定结果", source="motor_config",
+            groups=("MotorCalibParam",), show_save=True,
+            save_text="保存标定结果到Flash/EEPROM")
         self._plot_panel = PlotPanel()
         self._state_panel = StateMachinePanel()
         self._calib_panel = CalibrationPanel()
@@ -631,6 +637,21 @@ class MainWindow(QMainWindow):
         self._motion_panel.send_command.connect(self._on_motion_command)
         # 标定面板: 复用运动指令发送通道 (cmd=0x90~0x98, values={"submode":N} 或 {})
         self._calib_panel.send_command.connect(self._on_motion_command)
+        # 标定结果面板: 注入标定 Tab 内嵌, 复用 motor_config 通道(0xE6/0xE7/0xEA)
+        self._calib_panel.attach_results_panel(self._calib_results_panel)
+        self._calib_results_panel.read_param.connect(
+            lambda param_id, panel=self._calib_results_panel:
+                self._on_param_read(panel, param_id))
+        self._calib_results_panel.write_param.connect(
+            lambda param_id, text, panel=self._calib_results_panel:
+                self._on_param_write(panel, param_id, text))
+        self._calib_results_panel.read_params.connect(
+            lambda param_ids, panel=self._calib_results_panel:
+                self._on_param_read_many(panel, param_ids))
+        self._calib_results_panel.write_params.connect(
+            lambda writes, panel=self._calib_results_panel:
+                self._on_param_write_many(panel, writes))
+        self._calib_results_panel.save_all.connect(self._on_config_save)
         self._telemetry_panel.apply_telemetry.connect(self._on_apply_telemetry)
         self._param_panel.read_param.connect(
             lambda param_id, panel=self._param_panel: self._on_param_read(panel, param_id))
