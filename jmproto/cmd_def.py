@@ -79,7 +79,7 @@ class JmCmd(IntEnum):
 
     # 校准 0x90~0xAF: 类别命令+子命令模式
     # 0x90-0x96: payload[0]=子模式ID, 进入CALIB态并启动标定
-    # 0x97: 进度查询, ACK=完成, NACK(0x0A)=进行中, NACK(0x03)=未标定
+    # 0x97: 进度查询, 返回 8 字节详细状态 ACK (state/fail_reason/progress/level/submode/step/step_total/reserved)
     # 0x98: 中止标定, ACK
     CALIB_LEVEL1 = 0x90  # L1 驱动硬件底层
     CALIB_LEVEL2 = 0x91  # L2 电机电气身份
@@ -157,6 +157,99 @@ class JmErr(IntEnum):
     FLASH = 0x08
     FAULT_STATE = 0x09
     CALIB_BUSY = 0x0A
+
+
+class CalibState(IntEnum):
+    """标定子状态, 与固件 calib_types.h:calib_state_e 一致 (0x97 ACK 字段 0)"""
+    IDLE = 0      # 空闲(未开始或已完成)
+    RUNNING = 1   # 标定进行中
+    DONE = 2      # 标定完成(成功)
+    FAILED = 3    # 标定失败
+
+
+class CalibFailReason(IntEnum):
+    """标定失败原因码, 与固件 calib_types.h:calib_fail_reason_e 一致 (0x97 ACK 字段 1)"""
+    NONE = 0             # 无失败
+    TIMEOUT = 1          # 超时(电机卡转/无响应)
+    OUT_OF_RANGE = 2     # 结果超物理范围(负值/零值/过大)
+    DEP_NOT_MET = 3      # 前置标定未完成
+    SAMPLE_ABNORMAL = 4  # 采样异常(NaN/方差过大)
+    MOTOR_STUCK = 5      # 电机未转动
+    OVER_CURRENT = 6     # 过流
+    OVER_SPEED = 7       # 超速
+    FLASH_WRITE = 8      # 持久化失败
+    ABORTED = 9          # 被中止
+
+
+# 标定状态中文名 (供 UI 显示)
+CALIB_STATE_CN = {
+    CalibState.IDLE: "空闲",
+    CalibState.RUNNING: "进行中",
+    CalibState.DONE: "完成",
+    CalibState.FAILED: "失败",
+}
+
+
+# 失败原因中文名 (供 UI 显示)
+CALIB_FAIL_REASON_CN = {
+    CalibFailReason.NONE: "无",
+    CalibFailReason.TIMEOUT: "超时",
+    CalibFailReason.OUT_OF_RANGE: "结果越界",
+    CalibFailReason.DEP_NOT_MET: "前置未完成",
+    CalibFailReason.SAMPLE_ABNORMAL: "采样异常",
+    CalibFailReason.MOTOR_STUCK: "电机未转",
+    CalibFailReason.OVER_CURRENT: "过流",
+    CalibFailReason.OVER_SPEED: "超速",
+    CalibFailReason.FLASH_WRITE: "Flash写入失败",
+    CalibFailReason.ABORTED: "被中止",
+}
+
+
+# 标定级别中文名 (1-7)
+CALIB_LEVEL_CN = {
+    1: "L1 驱动硬件",
+    2: "L2 电机电气",
+    3: "L3 编码器",
+    4: "L4 转矩基础",
+    5: "L5 非线性补偿",
+    6: "L6 负载系统",
+    7: "L7 自动化集成",
+}
+
+
+# 标定子模式中文名: CALIB_SUBMODE_CN[level][submode]
+CALIB_SUBMODE_CN = {
+    1: {1: "ADC偏置", 2: "ADC增益", 3: "电流传感器", 4: "温度传感器", 5: "母线电压", 6: "死区特性"},
+    2: {1: "相序识别", 2: "极对数", 3: "R相电阻", 4: "Ld电感", 5: "Lq电感", 6: "磁链"},
+    3: {1: "零位", 2: "方向校验", 3: "线性度", 4: "正余弦/旋变", 5: "多圈零点"},
+    4: {1: "力矩常数Kt"},
+    5: {1: "齿槽补偿", 2: "摩擦补偿", 3: "死区补偿", 4: "磁饱和"},
+    6: {1: "负载惯量", 2: "负载阻尼", 3: "回程间隙", 4: "PID自整定"},
+    7: {1: "一键全自动"},
+}
+
+
+def calib_state_name(state: int) -> str:
+    """返回标定状态中文名, 未知则返回 (数值)"""
+    try:
+        return CALIB_STATE_CN[CalibState(state)]
+    except (ValueError, KeyError):
+        return f"({state})"
+
+
+def calib_fail_reason_name(reason: int) -> str:
+    """返回失败原因中文名, 未知则返回 (数值)"""
+    try:
+        return CALIB_FAIL_REASON_CN[CalibFailReason(reason)]
+    except (ValueError, KeyError):
+        return f"({reason})"
+
+
+def calib_level_submode_name(level: int, submode: int) -> str:
+    """返回 "级别/子模式" 中文描述, 未知则降级为 L{level}.{submode}"""
+    lvl_cn = CALIB_LEVEL_CN.get(int(level), f"L{level}")
+    sub_cn = CALIB_SUBMODE_CN.get(int(level), {}).get(int(submode), f".{submode}")
+    return f"{lvl_cn} / {sub_cn}"
 
 
 class JmTlmBit:

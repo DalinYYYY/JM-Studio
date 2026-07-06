@@ -30,7 +30,11 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget, QSizePolicy,
 )
 
-from jmproto import JmCmd, JmErr, TopFsm, cmd_name, err_name_cn, top_fsm_name
+from jmproto import (
+    JmCmd, JmErr, TopFsm, CalibState,
+    cmd_name, err_name_cn, top_fsm_name,
+    calib_state_name, calib_fail_reason_name, calib_level_submode_name,
+)
 from ui.theme import theme
 
 
@@ -698,28 +702,13 @@ class CalibrationPanel(QGroupBox):
         self._refresh_status()
 
     def on_ack(self, cmd: int):
-        """标定相关命令 ACK (主窗口在 _on_ack 中调用, 内部按 cmd 过滤)."""
+        """标定相关命令 ACK (主窗口在 _on_ack 中调用, 内部按 cmd 过滤).
+
+        注意: 0x97 CALIB_QUERY 不再走 ACK 通道, 改由 on_calib_status 处理详细状态。
+        """
         if not self._is_calib_cmd(cmd):
             return
-        if cmd == JmCmd.CALIB_QUERY:
-            self._calib_running = False
-            self._poll_timer.stop()
-            self._set_last_op("查询: 标定完成")
-            self._add_history(f"[ACK] {cmd_name(cmd)}(0x{cmd:02X}) 标定完成")
-            # 需求1+2: 标定完成 -> 只请求本次标定对应的结果参数(非全部),
-            # 收到的值加粗彩色显示(value_hot), 0xEA 保存 ACK 后 clear_fresh 恢复
-            if self._config_panel is not None and self._link_active:
-                param_ids = self._result_param_ids_for_current_task()
-                if param_ids:
-                    names = self._param_names(param_ids)
-                    self._add_history(
-                        f"[TX] 主动读回本次标定结果 ({len(param_ids)} 项: {names})")
-                    self._config_panel.mark_fresh(param_ids)  # 只标记本次产出的参数
-                    self._config_panel.read_params.emit(list(param_ids))
-                else:
-                    self._add_history(
-                        "[TX] 本次标定子项无 motor_info 字段产出 (固件内部表格), 跳过读回")
-        elif cmd == JmCmd.CALIB_ABORT:
+        if cmd == JmCmd.CALIB_ABORT:
             self._calib_running = False
             self._poll_timer.stop()
             self._set_last_op("已中止标定")
@@ -741,33 +730,88 @@ class CalibrationPanel(QGroupBox):
                 self._add_history(f"[ACK] {cmd_name(cmd)}(0x{cmd:02X}) 启动")
         self._refresh_status()
 
+    def on_calib_status(self, status: dict):
+        """0x97 CALIB_QUERY 详细状态应答槽 (主窗口连到 calib_status_received 信号).
+
+        status 由 jmproto.parse_calib_status 返回, 含:
+          state/fail_reason/progress/level/submode/step/step_total (原始数值)
+          state_cn/fail_reason_cn/target_cn (中文描述)
+
+        - DONE:    标定完成 -> 读回本次结果参数, 停止轮询
+        - RUNNING: 显示进度/当前子项 -> 保持轮询
+        - FAILED:  显示失败原因 -> 停止轮询
+        - IDLE:    未在标定 -> 停止轮询
+        """
+        state = int(status.get('state', 0))
+        fail_reason = int(status.get('fail_reason', 0))
+        progress = int(status.get('progress', 0))
+        level = int(status.get('level', 0))
+        submode = int(status.get('submode', 0))
+        step = int(status.get('step', 0))
+        step_total = int(status.get('step_total', 0))
+        state_cn = status.get('state_cn', '')
+        fail_cn = status.get('fail_reason_cn', '')
+        target_cn = status.get('target_cn', '')
+
+        if state == int(CalibState.DONE):
+            self._calib_running = False
+            self._poll_timer.stop()
+            self._set_last_op(f"标定完成 ({target_cn})")
+            self._add_history(
+                f"[ACK] 0x97 标定完成 level={level} submode={submode} ({target_cn})")
+            # 标定完成 -> 主动读回本次产出的结果参数(加粗彩色显示)
+            if self._config_panel is not None and self._link_active:
+                param_ids = self._result_param_ids_for_current_task()
+                if param_ids:
+                    names = self._param_names(param_ids)
+                    self._add_history(
+                        f"[TX] 主动读回本次标定结果 ({len(param_ids)} 项: {names})")
+                    self._config_panel.mark_fresh(param_ids)
+                    self._config_panel.read_params.emit(list(param_ids))
+                else:
+                    self._add_history(
+                        "[TX] 本次标定子项无 motor_info 字段产出 (固件内部表格), 跳过读回")
+        elif state == int(CalibState.RUNNING):
+            self._calib_running = True
+            if self._link_active and not self._poll_timer.isActive():
+                self._poll_timer.start()
+            # L7 全自动时显示 "step/step_total", 单步标定时不显示 step(step_total=0)
+            if step_total > 0:
+                step_info = f" step={step}/{step_total}"
+            else:
+                step_info = ""
+            self._set_last_op(
+                f"{state_cn} {target_cn} 进度={progress}%{step_info}")
+            self._add_history(
+                f"[进度] 0x97 {state_cn} {target_cn} 进度={progress}% "
+                f"fail_reason={fail_cn}{step_info}")
+        elif state == int(CalibState.FAILED):
+            self._calib_running = False
+            self._poll_timer.stop()
+            self._set_last_op(f"标定失败: {fail_cn} ({target_cn})")
+            self._add_history(
+                f"[失败] 0x97 {state_cn} {target_cn} fail_reason={fail_cn}(0x{fail_reason:02X}) "
+                f"step={step}/{step_total if step_total else '-'}")
+        else:  # IDLE
+            self._calib_running = False
+            self._poll_timer.stop()
+            self._set_last_op("空闲 (未标定)")
+            self._add_history(
+                f"[ACK] 0x97 {state_cn} 未在标定 level={level} submode={submode}")
+        self._refresh_status()
+
     def on_nack(self, cmd: int, err: int):
-        """标定相关命令 NACK (主窗口在 _on_nack 中调用, 内部按 cmd 过滤)."""
+        """标定相关命令 NACK (主窗口在 _on_nack 中调用, 内部按 cmd 过滤).
+
+        注意: 0x97 CALIB_QUERY 不再走 NACK 通道(固件改为始终返回详细状态 ACK),
+              故本函数只处理启动类(0x90~0x96)与中止(0x98)的 NACK。
+        """
         if not self._is_calib_cmd(cmd):
             return
         cn = err_name_cn(err)
-        if cmd == JmCmd.CALIB_QUERY:
-            if err == JmErr.CALIB_BUSY:
-                self._calib_running = True
-                if self._link_active:
-                    self._poll_timer.start()
-                self._set_last_op("查询: 标定进行中…")
-                self._add_history(
-                    f"[NACK] {cmd_name(cmd)}(0x{cmd:02X}) 标定进行中 (CALIB_BUSY)")
-            elif err == JmErr.STATE_DENY:
-                self._calib_running = False
-                self._poll_timer.stop()
-                self._set_last_op("查询: 未标定 (state_deny)")
-                self._add_history(
-                    f"[NACK] {cmd_name(cmd)}(0x{cmd:02X}) 未标定 (STATE_DENY)")
-            else:
-                self._set_last_op(f"查询: 错误 {cn}")
-                self._add_history(
-                    f"[NACK] {cmd_name(cmd)}(0x{cmd:02X}) err={cn}(0x{err:02X})")
-        else:
-            self._set_last_op(f"失败: {cn}")
-            self._add_history(
-                f"[NACK] {cmd_name(cmd)}(0x{cmd:02X}) err={cn}(0x{err:02X})")
+        self._set_last_op(f"失败: {cn}")
+        self._add_history(
+            f"[NACK] {cmd_name(cmd)}(0x{cmd:02X}) err={cn}(0x{err:02X})")
         self._refresh_status()
 
     @staticmethod

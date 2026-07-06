@@ -3,7 +3,11 @@
 """
 
 from . import codec
-from .cmd_def import JmCmd, JmTlmBit
+from .cmd_def import (
+    JmCmd, JmTlmBit,
+    CalibState, CalibFailReason,
+    calib_state_name, calib_fail_reason_name, calib_level_submode_name,
+)
 
 
 class FeedbackData:
@@ -174,3 +178,43 @@ def parse_telemetry(payload: bytes):
 
     fb.filled_fields = tuple(filled)
     return fb, tuple(filled)
+
+
+def parse_calib_status(payload: bytes) -> dict:
+    """解析 CALIB_QUERY(0x97) 应答(8字节):
+    state(u8) / fail_reason(u8) / progress(u8) / level(u8) /
+    submode(u8) / step(u8) / step_total(u8) / reserved(u8)
+
+    返回 dict, 含原始数值字段 + 中文描述字段:
+      state, fail_reason, progress, level, submode, step, step_total, reserved
+      state_cn, fail_reason_cn, target_cn
+    不足 8 字节时缺失字段以 0 填充(兼容下位机早期版本)。
+    """
+    p = bytes(payload)
+    if len(p) < 8:
+        p = p + bytes(8 - len(p))
+
+    state = p[0]
+    fail_reason = p[1]
+    progress = p[2]
+    level = p[3]
+    submode = p[4]
+    step = p[5]
+    step_total = p[6]
+    reserved = p[7]
+
+    target_cn = calib_level_submode_name(level, submode)
+
+    return {
+        'state': state,
+        'fail_reason': fail_reason,
+        'progress': progress,
+        'level': level,
+        'submode': submode,
+        'step': step,
+        'step_total': step_total,
+        'reserved': reserved,
+        'state_cn': calib_state_name(state),
+        'fail_reason_cn': calib_fail_reason_name(fail_reason),
+        'target_cn': target_cn,
+    }

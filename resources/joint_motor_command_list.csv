@@ -63,7 +63,7 @@
 62,L5非线性补偿校准,0x94,Host->Motor,校准,{submode:u8},ACK,1,u8,1~4,0x9400|ID,sub[0],CONTROL_MODE_CALIB_LEVEL5 submode:1=齿槽 2=摩擦 3=死区补偿 4=磁饱和
 63,L6负载系统级校准,0x95,Host->Motor,校准,{submode:u8},ACK,1,u8,1~4,0x9500|ID,sub[0],CONTROL_MODE_CALIB_LEVEL6 submode:1=惯量 2=阻尼 3=回程间隙 4=PID自整定
 64,L7自动化集成校准,0x96,Host->Motor,校准,{submode:u8},ACK,1,u8,1,0x9600|ID,sub[0],CONTROL_MODE_CALIB_LEVEL7 submode:1=一键全自动
-65,标定进度查询,0x97,Host->Motor,校准,无,ACK/NACK,0,-,-,0x9700|ID,无,CONTROL_MODE_CALIB_QUERY ACK=完成 NACK(0x0A)=进行中 NACK(0x03)=未标定
+65,标定进度查询,0x97,Host->Motor,校准,无,ACK{state:u8,fail_reason:u8,progress:u8,level:u8,submode:u8,step:u8,step_total:u8,reserved:u8},8,u8×8,state:0=空闲 1=进行中 2=完成 3=失败;fail_reason:0=无 1=超时 2=越界 3=前置未完成 4=采样异常 5=电机未转 6=过流 7=超速 8=Flash写失败 9=被中止;progress:0~100;level:1~7;submode:1~6;step:L7序列当前步;step_total:L7序列总步数(单步标定=0),0x9700|ID,无,CONTROL_MODE_CALIB_QUERY 返回 8 字节详细状态 ACK (无论 state 为何都回 ACK)
 66,标定中止,0x98,Host->Motor,校准,无,ACK,0,-,-,0x9800|ID,无,CONTROL_MODE_CALIB_ABORT
 67,清除故障,0xB0,Host->Motor,系统诊断,无,ACK{state:u8},0,-,-,0xB000|ID,无,CONTROL_MODE_CLEAR_FAULT FAULT->IDLE
 68,诊断模式,0xB1,Host->Motor,系统诊断,无,ACK{diag:bytes},0,-,-,0xB100|ID,无,CONTROL_MODE_DIAGNOSTIC

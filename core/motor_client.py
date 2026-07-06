@@ -27,6 +27,7 @@ class JmClient(QObject):
     param_read_result = pyqtSignal(int, int, object)   # param_id, type, value_bytes
     motor_info_read_result = pyqtSignal(int, int, object)   # param_id, type, value_bytes(固定4B)
     motor_info_read_bulk_result = pyqtSignal(int, list)     # start_id, [(param_id, value_bytes)...]
+    calib_status_received = pyqtSignal(dict)           # 0x97 详细标定状态(parse_calib_status 结果)
     raw_frame = pyqtSignal(int, bytes)                 # cmd, payload(RX 入口, 日志面板格式化)
     tx_frame = pyqtSignal(int, bytes)                  # cmd, payload(TX 入口, 日志面板格式化)
 
@@ -211,6 +212,12 @@ class JmClient(QObject):
         if cmd == JmCmd.NACK:
             if len(payload) >= 2:
                 self.nack_received.emit(payload[0], payload[1])
+            return
+
+        # CALIB_QUERY(0x97) 详细状态应答: 8 字节 ACK, 不走通用 ACK 分支
+        # (无论 state 为何都返回 ACK, 故需在 cmd<=SINGLE_STEP 通用 ACK 分支前特判)
+        if cmd == JmCmd.CALIB_QUERY:
+            self.calib_status_received.emit(jp.parse_calib_status(payload))
             return
 
         # ACK 类应答 (0x00~0xB8, payload[0]==status)

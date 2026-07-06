@@ -5,23 +5,23 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 2560,
-      "height": 1369,
-      "x": 0,
-      "y": -8
+      "width": 1589,
+      "height": 958,
+      "x": 629,
+      "y": 301
     },
     "right_splitter": [
-      1313,
+      902,
       0
     ],
     "log_splitter_sizes": [
       341,
       127
     ],
-    "layout_edit": false,
+    "layout_edit": true,
     "telemetry": {
       "mask": 1023,
-      "period_ms": 2
+      "period_ms": 100
     },
     "feedback_poll": {
       "enabled": false,
@@ -68,7 +68,7 @@
       "current_cmd": 16,
       "fields": {
         "ud": 0.0,
-        "uq": 0.02
+        "uq": 0.05
       }
     },
     "motor_param": {
@@ -78,7 +78,7 @@
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 1336,
+        "5": 365,
         "6": 72,
         "7": 72
       }
@@ -90,17 +90,17 @@
         "2": 120,
         "3": 200,
         "4": 120,
-        "5": 1330,
+        "5": 359,
         "6": 72,
         "7": 72
       }
     },
     "calib": {
-      "task_tab_index": 2,
+      "task_tab_index": 1,
       "history_visible": false,
       "active_task": [
-        146,
-        1
+        145,
+        2
       ],
       "config_panel": {
         "column_widths": {
@@ -109,7 +109,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 1386,
+          "5": 403,
           "6": 72,
           "7": 72
         }

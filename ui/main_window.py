@@ -686,6 +686,7 @@ class MainWindow(QMainWindow):
         c.state_updated.connect(self._queue_state)
         c.ack_received.connect(self._on_ack)
         c.nack_received.connect(self._on_nack)
+        c.calib_status_received.connect(self._on_calib_status)
         c.dev_info_received.connect(self._on_dev_info)
         c.dev_name_received.connect(self._on_dev_name)
         c.param_read_result.connect(self._on_param_result)
@@ -1087,6 +1088,22 @@ class MainWindow(QMainWindow):
             panel = self._pending_param_writes.popleft() if self._pending_param_writes else self._param_panel
             panel.reject_pending_write()
             self._pump_param_write_queue()
+
+    def _on_calib_status(self, status: dict):
+        """0x97 CALIB_QUERY 详细状态应答 (JmClient.calib_status_received 信号).
+
+        status 含: state/fail_reason/progress/level/submode/step/step_total +
+        state_cn/fail_reason_cn/target_cn。转发给标定面板做进度/失败展示,
+        并在日志面板按一行简要记录(详细记录由标定面板自身历史维护)。
+        """
+        state = int(status.get('state', 0))
+        progress = int(status.get('progress', 0))
+        target_cn = status.get('target_cn', '')
+        state_cn = status.get('state_cn', '')
+        # 简要日志(标定面板历史有更详细记录)
+        self._log_panel.log(
+            f"[RX] CALIB_QUERY {state_cn} {target_cn} progress={progress}%")
+        self._calib_panel.on_calib_status(status)
 
     def _on_dev_info(self, hw: int, fw: int, uid: bytes):
         uid_hex = uid.hex(':').upper()
