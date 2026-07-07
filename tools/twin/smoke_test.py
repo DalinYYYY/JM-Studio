@@ -741,13 +741,14 @@ def main():
     mp = w._bridge.engine.mp
     orig_inertia = mp.motor_base.inertia
     orig_ratio = mp.gearbox_param.gear_ratio
-    # 工具栏动作存在
-    T.check('工具栏含 "导出参数…" 动作',
-            w._act_export is not None and w._act_export.text() == "导出参数…",
-            f'text={w._act_export.text() if w._act_export else None}')
-    T.check('工具栏含 "导入参数…" 动作',
-            w._act_import is not None and w._act_import.text() == "导入参数…",
-            f'text={w._act_import.text() if w._act_import else None}')
+    # 控制面板菜单配置组按钮存在 (原工具栏动作已迁移到左侧)
+    mc = w._control_panel.menu_config
+    T.check('菜单配置含 "导出参数" 按钮',
+            mc._btn_export is not None and mc._btn_export.text() == "导出参数",
+            f'text={mc._btn_export.text() if mc._btn_export else None}')
+    T.check('菜单配置含 "导入参数" 按钮',
+            mc._btn_import is not None and mc._btn_import.text() == "导入参数",
+            f'text={mc._btn_import.text() if mc._btn_import else None}')
     # 直接调 _on_export_params 的核心逻辑 (绕过 QFileDialog)
     from transport.virtual_engine.twin_config import mp_to_dict, mp_from_dict
     snap = mp_to_dict(mp, section='all')
@@ -781,13 +782,13 @@ def main():
 
     # 33. 场景预设 (Round 9)
     print('\n[33] 场景预设')
-    # 工具栏动作存在
-    T.check('工具栏含 "高惯量场景" 动作',
-            w._act_scn_high_inertia is not None and w._act_scn_high_inertia.text() == "高惯量场景")
-    T.check('工具栏含 "低惯量场景" 动作',
-            w._act_scn_low_inertia is not None and w._act_scn_low_inertia.text() == "低惯量场景")
-    T.check('工具栏含 "重载场景" 动作',
-            w._act_scn_heavy_load is not None and w._act_scn_heavy_load.text() == "重载场景")
+    # 控制面板菜单配置组场景按钮存在
+    T.check('菜单配置含 "高惯量" 场景按钮',
+            mc._btn_scn_high is not None and mc._btn_scn_high.text() == "高惯量")
+    T.check('菜单配置含 "低惯量" 场景按钮',
+            mc._btn_scn_low is not None and mc._btn_scn_low.text() == "低惯量")
+    T.check('菜单配置含 "重载" 场景按钮',
+            mc._btn_scn_heavy is not None and mc._btn_scn_heavy.text() == "重载")
     # 场景定义存在
     T.check('_SCENARIOS 含 3 个场景',
             len(w._SCENARIOS) == 3 and

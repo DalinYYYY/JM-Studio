@@ -2,12 +2,17 @@
 
 布局:
 ┌────────────────┬───────────────────────────────────────┐
-│ 引擎启停工具栏  │  Tab: 孪生参数 | 实时反馈 | 实时曲线   │
-├────────────────┤                                       │
-│ 系统控制       │                                       │
+│ 引擎连接       │  Tab: 电机可视化 | 孪生参数 | 实时反馈 │
+│ 系统控制       │       | 实时曲线 | 故障历史 | 事件日志│
 │ 运动控制       │                                       │
+│ 遥测推送       │                                       │
+│ 设备信息       │                                       │
 │ 运行状态       │                                       │
+│ 菜单配置       │                                       │
 └────────────────┴───────────────────────────────────────┘
+
+左侧布局对齐主上位机 (ui/main_window.py): QScrollArea 包裹多个独立 QGroupBox。
+原顶部工具栏功能已迁移到左侧"菜单配置"组。
 
 直接驱动 DigitalTwinEngine (经 TwinEngineBridge), 不经过协议层。
 复用 ui.panels.twin_param_panel 的四类参数面板(给定/控制/推导/保护)。
@@ -17,10 +22,9 @@ import json
 import os
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import (
-    QFileDialog, QHBoxLayout, QMainWindow, QMessageBox, QPushButton,
-    QSplitter, QTabWidget, QVBoxLayout, QWidget, QToolBar, QLabel,
+    QFileDialog, QHBoxLayout, QMainWindow, QMessageBox,
+    QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget, QLabel,
 )
 
 from ui.panels.twin_param_panel import TwinParamPanel
@@ -81,13 +85,25 @@ class TwinMainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(6)
+        splitter.setHandleWidth(8)
+        # Splitter handle 样式 (对齐主上位机)
+        splitter.setStyleSheet(
+            "QSplitter::handle { background: #3A3A3A; }"
+            "QSplitter::handle:hover { background: #5A8DFF; }"
+        )
 
-        # 左侧控制面板
+        # 左侧: QScrollArea 包裹控制面板 (对齐主上位机 main_window.py)
         self._control_panel = TwinControlPanel()
-        self._control_panel.setMinimumWidth(340)
-        self._control_panel.setMaximumWidth(420)
-        splitter.addWidget(self._control_panel)
+        self._control_panel.setMinimumWidth(240)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self._control_panel)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setMinimumWidth(260)
+        splitter.addWidget(scroll)
+        self._left_scroll = scroll
 
         # 右侧 Tab 区
         right = QWidget()
@@ -110,7 +126,7 @@ class TwinMainWindow(QMainWindow):
         self._tabs.addTab(self._log_panel, "事件日志")
         self._tabs.setCurrentWidget(self._motor_view_panel)
         # 虚拟电机模式默认关闭: 初始隐藏孪生参数与故障历史 Tab
-        # (由工具栏"虚拟电机模式"开关在引擎运行后控制显隐)
+        # (由左侧"菜单配置"组的虚拟电机模式开关在引擎运行后控制显隐)
         self._tabs.setTabVisible(self._tabs.indexOf(self._twin_param_panel), False)
         self._tabs.setTabVisible(self._tabs.indexOf(self._fault_history_panel), False)
         right_v.addWidget(self._tabs)
@@ -118,78 +134,10 @@ class TwinMainWindow(QMainWindow):
 
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([360, 840])
+        splitter.setSizes([300, 900])
         root.addWidget(splitter)
 
-        self._build_toolbar()
         self._build_statusbar()
-
-    def _build_toolbar(self):
-        tb = QToolBar("引擎控制")
-        tb.setMovable(False)
-        self.addToolBar(tb)
-
-        self._act_start = QAction("启动仿真", self)
-        self._act_start.triggered.connect(self._on_start)
-        tb.addAction(self._act_start)
-
-        self._act_stop = QAction("停止仿真", self)
-        self._act_stop.triggered.connect(self._on_stop)
-        tb.addAction(self._act_stop)
-
-        tb.addSeparator()
-
-        self._act_inject = QAction("注入故障…", self)
-        self._act_inject.triggered.connect(self._on_inject_fault)
-        tb.addAction(self._act_inject)
-
-        self._act_clear_inj = QAction("清除注入", self)
-        self._act_clear_inj.triggered.connect(self._on_clear_injected)
-        tb.addAction(self._act_clear_inj)
-
-        tb.addSeparator()
-
-        # 参数导入导出 (Round 9)
-        self._act_export = QAction("导出参数…", self)
-        self._act_export.triggered.connect(self._on_export_params)
-        tb.addAction(self._act_export)
-
-        self._act_import = QAction("导入参数…", self)
-        self._act_import.triggered.connect(self._on_import_params)
-        tb.addAction(self._act_import)
-
-        tb.addSeparator()
-
-        # 场景预设 (Round 9)
-        self._act_scn_high_inertia = QAction("高惯量场景", self)
-        self._act_scn_high_inertia.triggered.connect(lambda: self._on_apply_scenario("high_inertia"))
-        tb.addAction(self._act_scn_high_inertia)
-
-        self._act_scn_low_inertia = QAction("低惯量场景", self)
-        self._act_scn_low_inertia.triggered.connect(lambda: self._on_apply_scenario("low_inertia"))
-        tb.addAction(self._act_scn_low_inertia)
-
-        self._act_scn_heavy_load = QAction("重载场景", self)
-        self._act_scn_heavy_load.triggered.connect(lambda: self._on_apply_scenario("heavy_load"))
-        tb.addAction(self._act_scn_heavy_load)
-
-        tb.addSeparator()
-
-        # 虚拟电机模式开关: 仅在虚拟引擎运行时可用, 控制孪生参数/故障历史等虚拟电机专属视图的显隐
-        self._act_virtual_mode = QAction("虚拟电机模式", self)
-        self._act_virtual_mode.setCheckable(True)
-        self._act_virtual_mode.setChecked(False)
-        self._act_virtual_mode.setEnabled(False)   # 引擎未运行前禁用
-        self._act_virtual_mode.setToolTip(
-            "仅在连接虚拟引擎时可用。开启后显示孪生参数、虚拟电机故障注入与错误历史表。")
-        self._act_virtual_mode.toggled.connect(self._on_virtual_mode_toggled)
-        tb.addAction(self._act_virtual_mode)
-
-        tb.addSeparator()
-
-        act_theme = QAction("切换主题", self)
-        act_theme.triggered.connect(self._on_toggle_theme)
-        tb.addAction(act_theme)
 
     def _build_statusbar(self):
         sb = self.statusBar()
@@ -211,12 +159,22 @@ class TwinMainWindow(QMainWindow):
         # 故障历史面板: fault_occurred 信号 + 遥测 (检测故障清除)
         self._bridge.fault_occurred.connect(
             lambda f, d: self._fault_history_panel.on_fault_occurred(f, d))
-        # 故障注入按钮
+        # 故障注入按钮 (来自故障历史面板的快捷注入)
         self._fault_history_panel.inject_requested.connect(self._on_quick_inject)
         self._fault_history_panel.clear_requested.connect(self._on_clear_injected)
 
+        # 控制面板信号 (原顶部工具栏功能已迁移到左侧)
         self._control_panel.system_command.connect(self._on_system_command)
         self._control_panel.motion_command.connect(self._on_motion_command)
+        self._control_panel.start_requested.connect(self._on_start)
+        self._control_panel.stop_requested.connect(self._on_stop)
+        self._control_panel.virtual_mode_toggled.connect(self._on_virtual_mode_toggled)
+        self._control_panel.toggle_theme_requested.connect(self._on_toggle_theme)
+        self._control_panel.export_params_requested.connect(self._on_export_params)
+        self._control_panel.import_params_requested.connect(self._on_import_params)
+        self._control_panel.scenario_requested.connect(self._on_apply_scenario)
+        self._control_panel.inject_fault_requested.connect(self._on_inject_fault)
+        self._control_panel.clear_injected_requested.connect(self._on_clear_injected)
 
         theme.changed.connect(self._on_theme_changed)
 
@@ -243,33 +201,28 @@ class TwinMainWindow(QMainWindow):
         QMessageBox.warning(self, "故障触发", f"故障码: 0x{flags:04X}\n{desc}")
 
     def _on_running_changed(self, running: bool):
-        self._act_start.setEnabled(not running)
-        self._act_stop.setEnabled(running)
+        # 同步左侧引擎连接组的状态
+        self._control_panel.set_running(running)
         # 虚拟电机模式开关: 仅在虚拟引擎运行时可用
         if running:
-            self._act_virtual_mode.setEnabled(True)
             # 引擎就绪后, 若配置要求开启则自动勾选
-            if self._pending_virtual_mode and not self._act_virtual_mode.isChecked():
-                self._act_virtual_mode.setChecked(True)
+            if self._pending_virtual_mode and not self._control_panel.is_virtual_mode():
+                self._control_panel.set_virtual_mode(True)
             self._pending_virtual_mode = False
         else:
-            # 引擎停止: 禁用开关并强制取消勾选 (同步隐藏虚拟电机专属视图)
-            self._act_virtual_mode.setEnabled(False)
-            if self._act_virtual_mode.isChecked():
-                self._act_virtual_mode.setChecked(False)
+            # 引擎停止: 强制关闭虚拟电机模式 (set_running 已处理)
+            pass
         self._log_panel.log("SYS", f"仿真{'启动' if running else '停止'}")
 
     def _on_virtual_mode_toggled(self, on: bool):
         """虚拟电机模式开关: 控制孪生参数 / 故障历史 (虚拟电机故障注入与错误表) 显隐。
 
-        开关仅在虚拟引擎运行时可勾选 (由 _on_running_changed 联动 enable);
+        开关仅在虚拟引擎运行时可勾选 (由 EngineConnectionGroup.set_running 联动 enable);
         关闭时隐藏孪生参数 Tab 和故障历史 Tab。
         """
         # 守卫: 引擎未运行时拒绝开启 (开关应已 disabled, 此为程序化调用兜底)
         if on and not self._bridge.is_running():
-            self._act_virtual_mode.blockSignals(True)
-            self._act_virtual_mode.setChecked(False)
-            self._act_virtual_mode.blockSignals(False)
+            self._control_panel.set_virtual_mode(False)
             return
         idx_param = self._tabs.indexOf(self._twin_param_panel)
         idx_fault = self._tabs.indexOf(self._fault_history_panel)
@@ -522,7 +475,7 @@ class TwinMainWindow(QMainWindow):
         except Exception:
             pass
         # 虚拟电机模式开关状态
-        cfg["virtual_motor_mode"] = bool(self._act_virtual_mode.isChecked())
+        cfg["virtual_motor_mode"] = bool(self._control_panel.is_virtual_mode())
         # 引擎参数完整快照 (满足"所有参数持久化"硬约束)
         try:
             from transport.virtual_engine.twin_config import mp_to_dict
