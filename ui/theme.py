@@ -352,6 +352,19 @@ class _Theme(QObject):
         QCheckBox::indicator:checked {{
             background: {g('accent')}; border-color: {g('accent')}; image: url({check_icon});
         }}
+        QRadioButton {{ background: transparent; color: {g('text')}; }}
+        QRadioButton::indicator {{
+            width: 14px; height: 14px; border-radius: 7px;
+            border: 1px solid {g('input_border')}; background: {g('input_bg')};
+        }}
+        QRadioButton::indicator:hover {{ border-color: {g('accent')}; }}
+        QRadioButton::indicator:checked {{
+            border-color: {g('accent')};
+            background: qradialgradient(
+                cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+                stop:0 {g('accent')}, stop:0.45 {g('accent')},
+                stop:0.5 transparent, stop:1 transparent);
+        }}
         QPushButton {{
             background: {g('btn_bg')}; color: {g('btn_text')};
             border: 1px solid {g('btn_border')}; border-radius: 4px; padding: 3px 8px;

@@ -33,6 +33,7 @@ from ui.panels.plot_panel import PlotPanel
 from ui.panels.log_panel import LogPanel
 from ui.panels.state_machine_panel import StateMachinePanel
 from ui.panels.calibration_panel import CalibrationPanel
+from ui.panels.pid_panel import PidPanel
 from ui.panels.twin_param_panel import TwinParamPanel
 from ui.panels.fault_info_panel import FaultInfoPanel
 from ui.theme import theme
@@ -151,6 +152,14 @@ class MainWindow(QMainWindow):
         self._plot_panel = PlotPanel()
         self._state_panel = StateMachinePanel()
         self._calib_panel = CalibrationPanel()
+        # PID 整定面板: 复用标定面板三段式布局, 0x9A/0x9B 命令收发 + ControlParam 读写
+        self._pid_panel = PidPanel(self._registry)
+        # PID 参数面板: 复用 motor_config 通道(0xE6/0xE7/0xEA), 仅展示 ControlParam 段
+        self._pid_params_panel = ParamPanel(
+            self._registry, title="PID 参数 (Flash)", source="motor_config",
+            groups=("ControlParam",), show_save=True,
+            save_text="保存PID参数到Flash", show_legend=False,
+            show_bulk_rw=True)
         self._twin_param_panel = TwinParamPanel()
         self._fault_info_panel = FaultInfoPanel()
         self._log_panel = LogPanel()
@@ -172,6 +181,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._feedback_panel, "实时反馈")
         tabs.addTab(self._state_panel, "状态机")
         tabs.addTab(self._calib_panel, "电机标定")
+        tabs.addTab(self._pid_panel, "PID 整定")
         tabs.addTab(self._param_panel, "电机参数")
         tabs.addTab(self._config_panel, "电机配置")
         tabs.addTab(self._twin_param_panel, "孪生参数")
@@ -395,6 +405,7 @@ class MainWindow(QMainWindow):
             ("motor_param", self._param_panel),
             ("motor_config", self._config_panel),
             ("calib", self._calib_panel),
+            ("pid", self._pid_panel),
             ("twin_param", self._twin_param_panel),
             ("fault_info", self._fault_info_panel),
         ):
@@ -489,6 +500,7 @@ class MainWindow(QMainWindow):
             ("motor_param", self._param_panel),
             ("motor_config", self._config_panel),
             ("calib", self._calib_panel),
+            ("pid", self._pid_panel),
             ("twin_param", self._twin_param_panel),
             ("fault_info", self._fault_info_panel),
         ):
@@ -641,7 +653,8 @@ class MainWindow(QMainWindow):
             self._btn_virtual_mode.setStyleSheet(self._virtual_mode_btn_style())
         for panel in (self._feedback_panel, self._state_panel, self._plot_panel,
                       self._log_panel, self._param_panel, self._config_panel,
-                      self._calib_panel, self._twin_param_panel, self._fault_info_panel):
+                      self._calib_panel, self._pid_panel, self._twin_param_panel,
+                      self._fault_info_panel):
             fn = getattr(panel, "apply_theme", None)
             if callable(fn):
                 fn()
@@ -691,6 +704,7 @@ class MainWindow(QMainWindow):
         c.dev_name_received.connect(self._on_dev_name)
         c.param_read_result.connect(self._on_param_result)
         c.motor_info_read_result.connect(self._on_param_result)
+        c.pid_autotune_result_received.connect(self._on_pid_autotune_result)
 
         # 状态机面板: 周期请求 -> 拉取 READ_STATE
         self._state_panel.poll_state.connect(self._on_poll_state)
@@ -718,6 +732,26 @@ class MainWindow(QMainWindow):
             lambda writes, panel=self._calib_results_panel:
                 self._on_param_write_many(panel, writes))
         self._calib_results_panel.save_all.connect(self._on_config_save)
+        # PID 面板: 专用信号直连 client (0x9A/0x9B 已有 struct.pack, 不走 registry 通用打包)
+        self._pid_panel.pid_autotune_requested.connect(
+            lambda r, c_bw, v_bw, p_bw: self._on_pid_autotune(r, c_bw, v_bw, p_bw))
+        self._pid_panel.pid_source_set_requested.connect(
+            lambda r, s: self._on_pid_source_set(r, s))
+        # PID 参数面板: 注入 PID Tab 内嵌, 复用 motor_config 通道(0xE6/0xE7/0xEA)
+        self._pid_panel.attach_params_panel(self._pid_params_panel)
+        self._pid_params_panel.read_param.connect(
+            lambda param_id, panel=self._pid_params_panel:
+                self._on_param_read(panel, param_id))
+        self._pid_params_panel.write_param.connect(
+            lambda param_id, text, panel=self._pid_params_panel:
+                self._on_param_write(panel, param_id, text))
+        self._pid_params_panel.read_params.connect(
+            lambda param_ids, panel=self._pid_params_panel:
+                self._on_param_read_many(panel, param_ids))
+        self._pid_params_panel.write_params.connect(
+            lambda writes, panel=self._pid_params_panel:
+                self._on_param_write_many(panel, writes))
+        self._pid_params_panel.save_all.connect(self._on_config_save)
         self._telemetry_panel.apply_telemetry.connect(self._on_apply_telemetry)
         self._param_panel.read_param.connect(
             lambda param_id, panel=self._param_panel: self._on_param_read(panel, param_id))
@@ -801,6 +835,7 @@ class MainWindow(QMainWindow):
         self._feedback_panel.set_link_active(connected)
         self._state_panel.set_link_active(connected)
         self._calib_panel.set_link_active(connected)
+        self._pid_panel.set_link_active(connected)
         self._link_connected = connected
         if not connected:
             self._telemetry_panel.set_running(False)
@@ -856,20 +891,29 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"发送异常: {e}")
 
     def _on_main_tab_changed(self, index: int):
-        """A2: 切到标定 Tab 且已连接时, 自动读一次标定结果(MotorCalibParam 全段 + Index 16 已标定)."""
+        """切到标定/PID Tab 且已连接时, 自动读一次参数。"""
         try:
             w = self._tabs.widget(index)
         except Exception:
             return
-        if w is not self._calib_panel:
+        if w is self._calib_panel:
+            if not self._client.is_open():
+                return
+            # 已连接: 触发标定结果面板批量读取 (含 Index 16 is_calibrated)
+            try:
+                self._calib_results_panel.read_all()
+            except Exception:
+                pass
             return
-        if not self._client.is_open():
+        if w is self._pid_panel:
+            if not self._client.is_open():
+                return
+            # 已连接: 触发 PID 参数面板批量读取 (ControlParam 段)
+            try:
+                self._pid_params_panel.read_all()
+            except Exception:
+                pass
             return
-        # 已连接: 触发标定结果面板批量读取 (含 Index 16 is_calibrated)
-        try:
-            self._calib_results_panel.read_all()
-        except Exception:
-            pass
 
     def _on_apply_telemetry(self, enable: bool, mask: int, period_ms: int):
         if not self._ensure_open():
@@ -917,6 +961,16 @@ class MainWindow(QMainWindow):
         except Exception:
             QMessageBox.warning(self, "错误", f"参数值无效: {text}")
             return
+        # 范围检查: 越界时弹确认框, 用户确认后仍下发(交由下位机最终裁决)
+        warn = panel.check_value_range(param_id, text)
+        if warn:
+            btn = QMessageBox.question(
+                self, "参数超出范围", f"{warn}\n\n是否仍要写入?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if btn != QMessageBox.StandardButton.Yes:
+                return
         self._param_write_queue.append((panel, int(param_id), value))
         self._pump_param_write_queue()
 
@@ -932,6 +986,10 @@ class MainWindow(QMainWindow):
             except Exception:
                 self._log_panel.log_warn(f"{panel.panel_name()} 参数值无效: id={param_id} value={text}")
                 continue
+            # 越界项仍下发, 仅 log 提示(批量场景避免弹框打断)
+            warn = panel.check_value_range(param_id, text)
+            if warn:
+                self._log_panel.log_warn(f"{panel.panel_name()} {warn} (仍下发)")
             self._param_write_queue.append((panel, int(param_id), value))
             queued += 1
         if queued:
@@ -1021,6 +1079,7 @@ class MainWindow(QMainWindow):
             self._feedback_panel.update_state(*self._latest_state)
             self._state_panel.update_state(*self._latest_state)
             self._calib_panel.update_state(*self._latest_state)
+            self._pid_panel.update_state(*self._latest_state)
             self._control_panel.set_enabled_state(bool(self._latest_state[3]))
             self._latest_state = None
 
@@ -1058,6 +1117,8 @@ class MainWindow(QMainWindow):
         self._log_panel.log(f"[RX] ACK {cmd_name(cmd)}(0x{cmd:02X})")
         # 标定面板: 0x90~0x98 ACK 转发(内部按 cmd 过滤)
         self._calib_panel.on_ack(cmd)
+        # PID 面板: 0x9B 来源切换成功 ACK 转发(内部按 cmd 过滤)
+        self._pid_panel.on_ack(cmd)
         # 写完成: 0xE1(运行时参数) / 0xE7(电机配置) 共用同一待应答队列
         if cmd in (JmCmd.PARAM_WRITE, JmCmd.MOTOR_INFO_WRITE):
             panel = self._pending_param_writes.popleft() if self._pending_param_writes else self._param_panel
@@ -1079,6 +1140,8 @@ class MainWindow(QMainWindow):
         self._fault_info_panel.show_nack_error(cmd, err)
         # 标定面板: 0x90~0x98 NACK 转发(内部按 cmd 过滤)
         self._calib_panel.on_nack(cmd, err)
+        # PID 面板: 0x9B 来源切换失败 NACK 转发(内部按 cmd 过滤)
+        self._pid_panel.on_nack(cmd, err)
         # 读失败: 0xE0 / 0xE6 共用同一待应答队列
         if cmd in (JmCmd.PARAM_READ, JmCmd.MOTOR_INFO_READ) and self._pending_param_reads:
             self._pending_param_reads.popleft()
@@ -1104,6 +1167,39 @@ class MainWindow(QMainWindow):
         self._log_panel.log(
             f"[RX] CALIB_QUERY {state_cn} {target_cn} progress={progress}%")
         self._calib_panel.on_calib_status(status)
+
+    def _on_pid_autotune_result(self, result: dict):
+        """0x9A PID_AUTOTUNE 应答 (JmClient.pid_autotune_result_received 信号)。
+
+        result 含: ok/status/fail_reason/ring_select_done + status_cn/fail_reason_cn。
+        转发给 PID 面板做 source 徽章更新/历史记录, 主窗口仅记简要日志。
+        """
+        ok = result.get('ok', False)
+        fail_cn = result.get('fail_reason_cn', '')
+        ring_done = int(result.get('ring_select_done', 0))
+        if ok:
+            self._log_panel.log(f"[RX] PID_AUTOTUNE 成功 ring_select={ring_done}")
+        else:
+            self._log_panel.log_warn(f"[RX] PID_AUTOTUNE 失败: {fail_cn}")
+        self._pid_panel.on_autotune_result(result)
+
+    def _on_pid_autotune(self, ring_select: int, cur_bw: float, vel_bw: float, pos_bw: float):
+        """PID 面板请求理论估计 -> 调用 client.pid_autotune (0x9A)。"""
+        if not self._ensure_open():
+            return
+        try:
+            self._client.pid_autotune(ring_select, cur_bw, vel_bw, pos_bw)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"发送异常: {e}")
+
+    def _on_pid_source_set(self, ring_select: int, source: int):
+        """PID 面板请求来源切换 -> 调用 client.pid_source_set (0x9B)。"""
+        if not self._ensure_open():
+            return
+        try:
+            self._client.pid_source_set(ring_select, source)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"发送异常: {e}")
 
     def _on_dev_info(self, hw: int, fw: int, uid: bytes):
         uid_hex = uid.hex(':').upper()

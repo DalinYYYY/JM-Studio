@@ -64,9 +64,10 @@ class CommandSpec:
 class ParamSpec:
     """单个参数规格(来自参数索引表 CSV)"""
     __slots__ = ['param_id', 'code_name', 'cn_name', 'dtype', 'nbytes',
-                 'unit', 'group', 'rw', 'desc']
+                 'unit', 'group', 'rw', 'desc', 'vmin', 'vmax']
 
-    def __init__(self, param_id, code_name, cn_name, dtype, nbytes, unit, group, rw, desc=''):
+    def __init__(self, param_id, code_name, cn_name, dtype, nbytes, unit, group, rw, desc='',
+                 vmin=None, vmax=None):
         self.param_id = param_id
         self.code_name = code_name
         self.cn_name = cn_name
@@ -76,6 +77,8 @@ class ParamSpec:
         self.group = group
         self.rw = rw
         self.desc = desc
+        self.vmin = vmin    # 允许的最小值(数值), None 表示不限制
+        self.vmax = vmax    # 允许的最大值(数值), None 表示不限制
 
     @property
     def writable(self):
@@ -127,6 +130,17 @@ def _normalize_dtype(dtype: str) -> str:
         'single': 'f32',
     }
     return aliases.get(d, d)
+
+
+def _parse_num(text):
+    """把 CSV 的 Min/Max 单元格解析成 float; 空或非数字返回 None(表示不限制)"""
+    text = (text or '').strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 class ProtocolRegistry:
@@ -243,6 +257,8 @@ class ProtocolRegistry:
                         desc_parts.append(f"默认: {default}")
                     if remarks:
                         desc_parts.append(remarks)
+                    vmin = _parse_num(row.get('Min'))
+                    vmax = _parse_num(row.get('Max'))
                     self.motor_config_params[pid] = ParamSpec(
                         param_id=pid,
                         code_name=name,
@@ -253,6 +269,8 @@ class ProtocolRegistry:
                         group=(row.get('Category') or '其他').strip(),
                         rw=(row.get('Access') or 'RW').strip(),
                         desc='; '.join(desc_parts),
+                        vmin=vmin,
+                        vmax=vmax,
                     )
         except FileNotFoundError:
             self.warnings.append(f"电机配置表 CSV 未找到, 电机配置面板将为空: {_MOTOR_INFO_CSV}")
@@ -317,6 +335,7 @@ class ProtocolRegistry:
 
     @staticmethod
     def _pack_spec_value(spec: ParamSpec, text: str) -> bytes:
+        """按类型打包(仅格式转换, 不做范围检查)。范围检查见 check_spec_range。"""
         dtype = spec.dtype
         if dtype.startswith('char['):
             return codec.pack_value(dtype, text)
@@ -328,6 +347,36 @@ class ProtocolRegistry:
         except ValueError:
             value = int(float(text))
         return codec.pack_value(dtype, value)
+
+    @staticmethod
+    def check_spec_range(spec: ParamSpec, text: str):
+        """检查文本值是否在 spec.vmin/vmax 范围内。
+
+        返回 None 表示合法(或无范围约束); 返回 str 表示越界原因。
+        注意: 仅做范围判断, 不做格式转换, 格式错误由 pack 阶段抛出。
+        """
+        if spec.vmin is None and spec.vmax is None:
+            return None
+        dtype = spec.dtype
+        if dtype.startswith('char['):
+            return None
+        try:
+            if codec.is_float_type(dtype):
+                value = float(text)
+            else:
+                try:
+                    value = int(text, 0)
+                except ValueError:
+                    value = int(float(text))
+        except (ValueError, TypeError):
+            # 格式问题交给 pack 报错, 这里不重复报
+            return None
+        name = spec.cn_name or spec.code_name
+        if spec.vmin is not None and value < spec.vmin:
+            return f"{name}={value} 低于最小值 {spec.vmin}"
+        if spec.vmax is not None and value > spec.vmax:
+            return f"{name}={value} 超过最大值 {spec.vmax}"
+        return None
 
     def unpack_param_value(self, param_id: int, raw: bytes):
         """按参数类型解出数值"""

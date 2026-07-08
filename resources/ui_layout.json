@@ -7,21 +7,21 @@
     "main_window": {
       "width": 1589,
       "height": 958,
-      "x": 629,
-      "y": 301
+      "x": 925,
+      "y": 195
     },
     "right_splitter": [
       902,
       0
     ],
     "log_splitter_sizes": [
-      341,
-      127
+      710,
+      180
     ],
-    "layout_edit": true,
+    "layout_edit": false,
     "telemetry": {
-      "mask": 1023,
-      "period_ms": 100
+      "mask": 327,
+      "period_ms": 5
     },
     "feedback_poll": {
       "enabled": false,
@@ -37,7 +37,7 @@
     },
     "virtual_motor_mode": false,
     "plot": {
-      "window_seconds": 20,
+      "window_seconds": 40,
       "follow": true,
       "auto_y": true,
       "current_visibility": {
@@ -65,10 +65,10 @@
       }
     },
     "motion": {
-      "current_cmd": 16,
+      "current_cmd": 17,
       "fields": {
-        "ud": 0.0,
-        "uq": 0.05
+        "id_ref": 0.0,
+        "iq_ref": 0.03
       }
     },
     "motor_param": {
@@ -100,7 +100,7 @@
       "history_visible": false,
       "active_task": [
         145,
-        2
+        3
       ],
       "config_panel": {
         "column_widths": {
@@ -115,6 +115,7 @@
         }
       }
     },
+    "pid": {},
     "twin_param": {
       "adv_enabled": {
         "adv_current": false,

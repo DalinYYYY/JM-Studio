@@ -675,6 +675,13 @@ class ParamPanel(QGroupBox):
             return self._reg.pack_motor_config_value(param_id, text)
         return self._reg.pack_param_value(param_id, text)
 
+    def check_value_range(self, param_id: int, text: str):
+        """返回越界原因(str)或 None; 无范围约束或非数值类型返回 None。"""
+        spec = self._param_specs.get(int(param_id))
+        if spec is None:
+            return None
+        return self._reg.check_spec_range(spec, text)
+
     def unpack_value(self, param_id: int, value_bytes: bytes):
         if self._source == "motor_config":
             return self._reg.unpack_motor_config_value(param_id, value_bytes)
