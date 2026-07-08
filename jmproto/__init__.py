@@ -17,14 +17,16 @@ from .cmd_def import (
     TopFsm, RunState, TOP_FSM_CN, RUN_STATE_CN,
     CalibState, CalibFailReason, CALIB_STATE_CN, CALIB_FAIL_REASON_CN,
     CALIB_LEVEL_CN, CALIB_SUBMODE_CN,
+    PidAutotuneFailReason, PID_AUTOTUNE_FAIL_REASON_CN,
     cmd_name, err_name, top_fsm_name, run_state_name, motion_state_name,
     calib_state_name, calib_fail_reason_name, calib_level_submode_name,
+    pid_autotune_fail_reason_name,
     MAGIC_BOOTLOADER, MAGIC_FACTORY_RESET,
 )
 from . import codec
 from .feedback import (
     FeedbackData, parse_state, parse_read_reply, parse_telemetry,
-    parse_calib_status,
+    parse_calib_status, parse_pid_autotune_ack,
 )
 from .registry import (
     ProtocolRegistry, CommandSpec, ParamSpec, Field, get_registry,
@@ -44,12 +46,14 @@ __all__ = [
     'CalibState', 'CalibFailReason',
     'CALIB_STATE_CN', 'CALIB_FAIL_REASON_CN',
     'CALIB_LEVEL_CN', 'CALIB_SUBMODE_CN',
+    'PidAutotuneFailReason', 'PID_AUTOTUNE_FAIL_REASON_CN',
     'cmd_name', 'err_name', 'top_fsm_name', 'run_state_name', 'motion_state_name',
     'calib_state_name', 'calib_fail_reason_name', 'calib_level_submode_name',
+    'pid_autotune_fail_reason_name',
     'MAGIC_BOOTLOADER', 'MAGIC_FACTORY_RESET',
     'codec',
     'FeedbackData', 'parse_state', 'parse_read_reply', 'parse_telemetry',
-    'parse_calib_status',
+    'parse_calib_status', 'parse_pid_autotune_ack',
     'ProtocolRegistry', 'CommandSpec', 'ParamSpec', 'Field', 'get_registry',
     'load_fault_csv', 'fault_code_lookup', 'fault_codes_by_source',
     'fault_mask_decode', 'fault_mask_to_str',

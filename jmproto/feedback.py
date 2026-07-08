@@ -7,6 +7,7 @@ from .cmd_def import (
     JmCmd, JmTlmBit,
     CalibState, CalibFailReason,
     calib_state_name, calib_fail_reason_name, calib_level_submode_name,
+    pid_autotune_fail_reason_name,
 )
 
 
@@ -217,4 +218,36 @@ def parse_calib_status(payload: bytes) -> dict:
         'state_cn': calib_state_name(state),
         'fail_reason_cn': calib_fail_reason_name(fail_reason),
         'target_cn': target_cn,
+    }
+
+
+def parse_pid_autotune_ack(payload: bytes) -> dict:
+    """解析 PID_AUTOTUNE(0x9A) 应答(8字节):
+    status(u8) / fail_reason(u8) / ring_select_done(u8) / reserved(u8×5)
+
+    返回 dict, 含原始数值字段 + 中文描述字段:
+      status, fail_reason, ring_select_done, reserved
+      status_cn, fail_reason_cn, ok
+    不足 8 字节时缺失字段以 0 填充(兼容下位机早期版本)。
+    """
+    p = bytes(payload)
+    if len(p) < 8:
+        p = p + bytes(8 - len(p))
+
+    status = p[0]
+    fail_reason = p[1]
+    ring_select_done = p[2]
+    reserved = p[3]
+
+    ok = (status == 0)
+    status_cn = "成功" if ok else "失败"
+
+    return {
+        'status': status,
+        'fail_reason': fail_reason,
+        'ring_select_done': ring_select_done,
+        'reserved': reserved,
+        'status_cn': status_cn,
+        'fail_reason_cn': pid_autotune_fail_reason_name(fail_reason),
+        'ok': ok,
     }

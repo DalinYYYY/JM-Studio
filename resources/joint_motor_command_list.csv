@@ -1,4 +1,4 @@
-序号,命令名称,CMD(hex),方向,功能类别,串口请求载荷(CMD后),串口应答载荷,数据长度(字节),编码格式,单位/范围,CAN_ID(ext=CMD<<8|MotorID),CAN数据区(8字节内),备注
+﻿序号,命令名称,CMD(hex),方向,功能类别,串口请求载荷(CMD后),串口应答载荷,数据长度(字节),编码格式,单位/范围,CAN_ID(ext=CMD<<8|MotorID),CAN数据区(8字节内),备注
 1,进入待机,0x00,Host->Motor,系统控制,无,ACK{state:u8},0,-,-,0x0000|ID,无,对应CONTROL_MODE_IDLE  电机进入IDLE停止输出
 2,位置保持,0x01,Host->Motor,系统控制,无,ACK{state:u8},0,-,-,0x0100|ID,无,CONTROL_MODE_HOLD  锁定当前位置
 3,机械刹车,0x02,Host->Motor,系统控制,无,ACK{state:u8},0,-,-,0x0200|ID,无,CONTROL_MODE_BRAKE  短接相线抱闸
@@ -65,43 +65,45 @@
 64,L7自动化集成校准,0x96,Host->Motor,校准,{submode:u8},ACK,1,u8,1,0x9600|ID,sub[0],CONTROL_MODE_CALIB_LEVEL7 submode:1=一键全自动
 65,标定进度查询,0x97,Host->Motor,校准,无,ACK{state:u8,fail_reason:u8,progress:u8,level:u8,submode:u8,step:u8,step_total:u8,reserved:u8},8,u8×8,state:0=空闲 1=进行中 2=完成 3=失败;fail_reason:0=无 1=超时 2=越界 3=前置未完成 4=采样异常 5=电机未转 6=过流 7=超速 8=Flash写失败 9=被中止;progress:0~100;level:1~7;submode:1~6;step:L7序列当前步;step_total:L7序列总步数(单步标定=0),0x9700|ID,无,CONTROL_MODE_CALIB_QUERY 返回 8 字节详细状态 ACK (无论 state 为何都回 ACK)
 66,标定中止,0x98,Host->Motor,校准,无,ACK,0,-,-,0x9800|ID,无,CONTROL_MODE_CALIB_ABORT
-67,清除故障,0xB0,Host->Motor,系统诊断,无,ACK{state:u8},0,-,-,0xB000|ID,无,CONTROL_MODE_CLEAR_FAULT FAULT->IDLE
-68,诊断模式,0xB1,Host->Motor,系统诊断,无,ACK{diag:bytes},0,-,-,0xB100|ID,无,CONTROL_MODE_DIAGNOSTIC
-69,进入Bootloader,0xB2,Host->Motor,系统诊断,{magic:u32=0xB00710AD},ACK,4,小端u32,魔数,0xB200|ID,magic[0:4],CONTROL_MODE_ENTER_BOOTLOADER 需魔数防误触
-70,保存配置,0xB3,Host->Motor,系统诊断,无,ACK{status:u8},0,-,-,0xB300|ID,无,CONTROL_MODE_SAVE_CONFIG 参数写入Flash
-71,恢复出厂,0xB4,Host->Motor,系统诊断,{magic:u32=0xFAC70RST},ACK{status:u8},4,小端u32,魔数,0xB400|ID,magic[0:4],CONTROL_MODE_FACTORY_RESET
-72,开始日志,0xB5,Host->Motor,系统诊断,{rate_hz:u16;mask:u32},ACK,6,小端混合,Hz/通道掩码,0xB500|ID,rate[0:2]mask[2:6],CONTROL_MODE_START_LOG
-73,停止日志,0xB6,Host->Motor,系统诊断,无,ACK,0,-,-,0xB600|ID,无,CONTROL_MODE_STOP_LOG
-74,高速采集,0xB7,Host->Motor,系统诊断,{ch_mask:u32;rate_hz:u32},ACK,8,小端u32,通道/Hz,0xB700|ID,mask[0:4]rate[4:8],CONTROL_MODE_HIGH_SPEED_DAQ
-75,单步调试,0xB8,Host->Motor,系统诊断,无,ACK,0,-,-,0xB800|ID,无,CONTROL_MODE_SINGLE_STEP
-76,读实时反馈,0xC0,Host->Motor,反馈查询,无,{pos:f32;vel:f32;torque:f32;temp:f32;volt:f32;err:u16},0,-,-,0xC000|ID,CAN压缩pos16+vel16+tq16+tmp8+err8,主反馈帧 上位机轮询
-77,读电机状态,0xC1,Host->Motor,反馈查询,无,{top_fsm:u8;run_state:u8;ctrl_mode:u8;enable:u8},0,-,-,0xC100|ID,fsm[0]run[1]mode[2]en[3],对应top_fsm_e/run_state_e
-78,读相电流,0xC2,Host->Motor,反馈查询,无,{ia:f32;ib:f32;ic:f32},0,-,-,0xC200|ID,CAN分包或i16压缩,三相电流
-79,读DQ电流,0xC3,Host->Motor,反馈查询,无,{id:f32;iq:f32},0,-,-,0xC300|ID,id[0:4]iq[4:8],dq轴电流反馈
-80,读母线信息,0xC4,Host->Motor,反馈查询,无,{vbus:f32;ibus:f32;power:f32},0,-,-,0xC400|ID,CAN分包,母线电压电流功率
-81,读温度,0xC5,Host->Motor,反馈查询,无,{temp_fet:f32;temp_motor:f32},0,-,-,0xC500|ID,fet[0:4]mot[4:8],功率管/电机温度
-82,读位置速度,0xC6,Host->Motor,反馈查询,无,{pos:f32;vel:f32},0,-,-,0xC600|ID,pos[0:4]vel[4:8],输出端位置速度
-83,读多圈位置,0xC7,Host->Motor,反馈查询,无,{multiturn:i32;single:f32},0,-,-,0xC700|ID,mt[0:4]sg[4:8],多圈计数+单圈
-84,读故障码,0xC8,Host->Motor,反馈查询,无,{fault_mask:u32;warn_mask:u32},0,-,-,0xC800|ID,flt[0:4]wrn[4:8],故障/警告位掩码
-85,读调试数据,0xC9,Host->Motor,反馈查询,无,ACK,0,-,-,0xC900|ID,代码当前未实现专用返回,默认按通用ACK处理
-86,同步遥测,0xCA,Motor->Host,反馈查询,无,{mask:u16;data:bytes},变长,小端u16,-,0xCA00|ID,mask后按位拼接遥测数据,对应parse_telemetry
-87,设置遥测,0xCB,Host->Motor,反馈查询,{enable:u8;mask:u16;period:u16},ACK{status:u8},5,小端混合,-,0xCB00|ID,enable[0]mask[1:3]period[3:5],对应set_telemetry
-88,读设备信息,0xD0,Host->Motor,设备信息,无,{hw_ver:u32;fw_ver:u32;uid:bytes12},0,-,-,0xD000|ID,CAN分包,硬件/固件版本+UID
-89,读设备名称,0xD1,Host->Motor,设备信息,无,{name:char[16]},0,-,-,0xD100|ID,CAN分包,电机名称字符串
-90,心跳/在线,0xD2,Both,设备信息,无,{state:u8;err:u16;ts:u32},0,-,-,0xD200|ID,周期上报,在线检测 可定时主动上报
-91,读单个参数,0xE0,Host->Motor,参数读写,{param_id:u16},{param_id:u16;type:u8;value:bytes},2,小端u16,见参数索引表,0xE000|ID,pid[0:2]+应答,通用参数读 param_id见第二张表
-92,写单个参数,0xE1,Host->Motor,参数读写,{param_id:u16;value:bytes},ACK{param_id:u16;status:u8},变长,小端混合,见参数索引表,0xE100|ID,pid[0:2]val[2:],通用参数写 RAM生效
-93,批量读参数,0xE2,Host->Motor,参数读写,{start_id:u16;count:u16},{values:bytes},4,小端u16,-,0xE200|ID,CAN需分包,连续参数块读取
-94,批量写参数,0xE3,Host->Motor,参数读写,{start_id:u16;count:u16;values:bytes},ACK{status:u8},变长,小端混合,-,0xE300|ID,CAN需分包,连续参数块写入
-95,参数存Flash,0xE4,Host->Motor,参数读写,无,ACK{status:u8},0,-,-,0xE400|ID,无,所有参数固化(同0xB3)
-96,参数恢复默认,0xE5,Host->Motor,参数读写,{param_id:u16=0xFFFF全部},ACK{status:u8},2,小端u16,-,0xE500|ID,pid[0:2],单参或全部恢复默认
-97,读电机配置,0xE6,Host->Motor,电机配置,{param_id:u16},{param_id:u16;type:u8;value:u32},2,小端u16,见motor_info.csv,0xE600|ID,pid[0:2]+应答,读motor_info单参 固定4字节值 type同0xE0
-98,写电机配置,0xE7,Host->Motor,电机配置,{param_id:u16;value:u32},ACK{param_id:u16;status:u8},6,小端混合,见motor_info.csv,0xE700|ID,pid[0:2]val[2:6],写motor_info单参 RAM生效 固定4字节值 需0xEA固化
-99,批量读电机配置,0xE8,Host->Motor,电机配置,{start_id:u16;count:u16},{start_id:u16;count:u8;value:u32[]},4,小端u16,见motor_info.csv,0xE800|ID,CAN需分包,块内连续ID批量读 固定4B/值 跨块间隔返回BAD_PARAM_ID
-100,批量写电机配置,0xE9,Host->Motor,电机配置,{start_id:u16;count:u16;value:u32[]},ACK{status:u8},变长,小端混合,见motor_info.csv,0xE900|ID,CAN需分包,块内连续ID批量写 固定4B/值
-101,电机配置存Flash,0xEA,Host->Motor,电机配置,无,ACK{status:u8},0,-,-,0xEA00|ID,无,把motor_info整块1024B写入Flash/EEPROM
-102,电机配置恢复默认,0xEB,Host->Motor,电机配置,{param_id:u16=0xFFFF全部},ACK{status:u8},2,小端u16,-,0xEB00|ID,pid[0:2],单参或全部恢复默认motor_info
-103,设置CAN_ID,0xF0,Host->Motor,CAN管理,{new_id:u8},ACK{new_id:u8},1,u8,1~127,0xF000|ID,nid[0],修改本机CAN地址需保存
-104,设置波特率,0xF1,Host->Motor,CAN管理,{baud_code:u8},ACK,1,u8,枚举,0xF100|ID,baud[0],0=1M 1=500K 2=250K 3=125K
-105,广播同步,0xF2,Host->All,CAN管理,无,无,0,-,-,0xF200|0x00,无,ID=0广播 所有电机同步执行缓存指令
-106,错误应答(NACK),0xFE,Motor->Host,通用,-,{cmd:u8;err_code:u8},2,小端,错误码,0xFE00|ID,cmd[0]err[1],任意命令失败时返回
+67,PID理论估计,0x9A,Host->Motor,PID管理,{ring_select:u8;cur_bw_hz:f32;vel_bw_hz:f32;pos_bw_hz:f32},ACK{status:u8;fail_reason:u8;ring_select_done:u8;reserved:u8[5]},13,小端,ring_select:0=电流环 1=速度环 2=位置环 3=全部;cur/vel/pos_bw_hz<=0用默认(电流1000/速度100/位置20Hz);fail_reason:0=无 1=辨识未就绪 2=非IDLE态 3=参数无效,0x9A00|ID,ring[0]cur[1:5]vel[5:9]pos[9:13],基于辨识参数零极点对消法计算三环PID并自动设source=2 仅IDLE态 不自动存Flash需0xEA固化
+68,PID来源切换,0x9B,Host->Motor,PID管理,{ring_select:u8;source:u8},ACK,2,u8×2,ring_select:0=电流环 1=速度环 2=位置环;source:0=默认 1=Flash工程值 2=理论估计,0x9B00|ID,ring[0]src[1],独立切换某环PID参数来源立即reload 仅IDLE态
+69,清除故障,0xB0,Host->Motor,系统诊断,无,ACK{state:u8},0,-,-,0xB000|ID,无,CONTROL_MODE_CLEAR_FAULT FAULT->IDLE
+70,诊断模式,0xB1,Host->Motor,系统诊断,无,ACK{diag:bytes},0,-,-,0xB100|ID,无,CONTROL_MODE_DIAGNOSTIC
+71,进入Bootloader,0xB2,Host->Motor,系统诊断,{magic:u32=0xB00710AD},ACK,4,小端u32,魔数,0xB200|ID,magic[0:4],CONTROL_MODE_ENTER_BOOTLOADER 需魔数防误触
+72,保存配置,0xB3,Host->Motor,系统诊断,无,ACK{status:u8},0,-,-,0xB300|ID,无,CONTROL_MODE_SAVE_CONFIG 参数写入Flash
+73,恢复出厂,0xB4,Host->Motor,系统诊断,{magic:u32=0xFAC70RST},ACK{status:u8},4,小端u32,魔数,0xB400|ID,magic[0:4],CONTROL_MODE_FACTORY_RESET
+74,开始日志,0xB5,Host->Motor,系统诊断,{rate_hz:u16;mask:u32},ACK,6,小端混合,Hz/通道掩码,0xB500|ID,rate[0:2]mask[2:6],CONTROL_MODE_START_LOG
+75,停止日志,0xB6,Host->Motor,系统诊断,无,ACK,0,-,-,0xB600|ID,无,CONTROL_MODE_STOP_LOG
+76,高速采集,0xB7,Host->Motor,系统诊断,{ch_mask:u32;rate_hz:u32},ACK,8,小端u32,通道/Hz,0xB700|ID,mask[0:4]rate[4:8],CONTROL_MODE_HIGH_SPEED_DAQ
+77,单步调试,0xB8,Host->Motor,系统诊断,无,ACK,0,-,-,0xB800|ID,无,CONTROL_MODE_SINGLE_STEP
+78,读实时反馈,0xC0,Host->Motor,反馈查询,无,{pos:f32;vel:f32;torque:f32;temp:f32;volt:f32;err:u16},0,-,-,0xC000|ID,CAN压缩pos16+vel16+tq16+tmp8+err8,主反馈帧 上位机轮询
+79,读电机状态,0xC1,Host->Motor,反馈查询,无,{top_fsm:u8;run_state:u8;ctrl_mode:u8;enable:u8},0,-,-,0xC100|ID,fsm[0]run[1]mode[2]en[3],对应top_fsm_e/run_state_e
+80,读相电流,0xC2,Host->Motor,反馈查询,无,{ia:f32;ib:f32;ic:f32},0,-,-,0xC200|ID,CAN分包或i16压缩,三相电流
+81,读DQ电流,0xC3,Host->Motor,反馈查询,无,{id:f32;iq:f32},0,-,-,0xC300|ID,id[0:4]iq[4:8],dq轴电流反馈
+82,读母线信息,0xC4,Host->Motor,反馈查询,无,{vbus:f32;ibus:f32;power:f32},0,-,-,0xC400|ID,CAN分包,母线电压电流功率
+83,读温度,0xC5,Host->Motor,反馈查询,无,{temp_fet:f32;temp_motor:f32},0,-,-,0xC500|ID,fet[0:4]mot[4:8],功率管/电机温度
+84,读位置速度,0xC6,Host->Motor,反馈查询,无,{pos:f32;vel:f32},0,-,-,0xC600|ID,pos[0:4]vel[4:8],输出端位置速度
+85,读多圈位置,0xC7,Host->Motor,反馈查询,无,{multiturn:i32;single:f32},0,-,-,0xC700|ID,mt[0:4]sg[4:8],多圈计数+单圈
+86,读故障码,0xC8,Host->Motor,反馈查询,无,{fault_mask:u32;warn_mask:u32},0,-,-,0xC800|ID,flt[0:4]wrn[4:8],故障/警告位掩码
+87,读调试数据,0xC9,Host->Motor,反馈查询,无,ACK,0,-,-,0xC900|ID,代码当前未实现专用返回,默认按通用ACK处理
+88,同步遥测,0xCA,Motor->Host,反馈查询,无,{mask:u16;data:bytes},变长,小端u16,-,0xCA00|ID,mask后按位拼接遥测数据,对应parse_telemetry
+89,设置遥测,0xCB,Host->Motor,反馈查询,{enable:u8;mask:u16;period:u16},ACK{status:u8},5,小端混合,-,0xCB00|ID,enable[0]mask[1:3]period[3:5],对应set_telemetry
+90,读设备信息,0xD0,Host->Motor,设备信息,无,{hw_ver:u32;fw_ver:u32;uid:bytes12},0,-,-,0xD000|ID,CAN分包,硬件/固件版本+UID
+91,读设备名称,0xD1,Host->Motor,设备信息,无,{name:char[16]},0,-,-,0xD100|ID,CAN分包,电机名称字符串
+92,心跳/在线,0xD2,Both,设备信息,无,{state:u8;err:u16;ts:u32},0,-,-,0xD200|ID,周期上报,在线检测 可定时主动上报
+93,读单个参数,0xE0,Host->Motor,参数读写,{param_id:u16},{param_id:u16;type:u8;value:bytes},2,小端u16,见参数索引表,0xE000|ID,pid[0:2]+应答,通用参数读 param_id见第二张表
+94,写单个参数,0xE1,Host->Motor,参数读写,{param_id:u16;value:bytes},ACK{param_id:u16;status:u8},变长,小端混合,见参数索引表,0xE100|ID,pid[0:2]val[2:],通用参数写 RAM生效
+95,批量读参数,0xE2,Host->Motor,参数读写,{start_id:u16;count:u16},{values:bytes},4,小端u16,-,0xE200|ID,CAN需分包,连续参数块读取
+96,批量写参数,0xE3,Host->Motor,参数读写,{start_id:u16;count:u16;values:bytes},ACK{status:u8},变长,小端混合,-,0xE300|ID,CAN需分包,连续参数块写入
+97,参数存Flash,0xE4,Host->Motor,参数读写,无,ACK{status:u8},0,-,-,0xE400|ID,无,所有参数固化(同0xB3)
+98,参数恢复默认,0xE5,Host->Motor,参数读写,{param_id:u16=0xFFFF全部},ACK{status:u8},2,小端u16,-,0xE500|ID,pid[0:2],单参或全部恢复默认
+99,读电机配置,0xE6,Host->Motor,电机配置,{param_id:u16},{param_id:u16;type:u8;value:u32},2,小端u16,见motor_info.csv,0xE600|ID,pid[0:2]+应答,读motor_info单参 固定4字节值 type同0xE0
+100,写电机配置,0xE7,Host->Motor,电机配置,{param_id:u16;value:u32},ACK{param_id:u16;status:u8},6,小端混合,见motor_info.csv,0xE700|ID,pid[0:2]val[2:6],写motor_info单参 RAM生效 固定4字节值 需0xEA固化
+101,批量读电机配置,0xE8,Host->Motor,电机配置,{start_id:u16;count:u16},{start_id:u16;count:u8;value:u32[]},4,小端u16,见motor_info.csv,0xE800|ID,CAN需分包,块内连续ID批量读 固定4B/值 跨块间隔返回BAD_PARAM_ID
+102,批量写电机配置,0xE9,Host->Motor,电机配置,{start_id:u16;count:u16;value:u32[]},ACK{status:u8},变长,小端混合,见motor_info.csv,0xE900|ID,CAN需分包,块内连续ID批量写 固定4B/值
+103,电机配置存Flash,0xEA,Host->Motor,电机配置,无,ACK{status:u8},0,-,-,0xEA00|ID,无,把motor_info整块1024B写入Flash/EEPROM
+104,电机配置恢复默认,0xEB,Host->Motor,电机配置,{param_id:u16=0xFFFF全部},ACK{status:u8},2,小端u16,-,0xEB00|ID,pid[0:2],单参或全部恢复默认motor_info
+105,设置CAN_ID,0xF0,Host->Motor,CAN管理,{new_id:u8},ACK{new_id:u8},1,u8,1~127,0xF000|ID,nid[0],修改本机CAN地址需保存
+106,设置波特率,0xF1,Host->Motor,CAN管理,{baud_code:u8},ACK,1,u8,枚举,0xF100|ID,baud[0],0=1M 1=500K 2=250K 3=125K
+107,广播同步,0xF2,Host->All,CAN管理,无,无,0,-,-,0xF200|0x00,无,ID=0广播 所有电机同步执行缓存指令
+108,错误应答(NACK),0xFE,Motor->Host,通用,-,{cmd:u8;err_code:u8},2,小端,错误码,0xFE00|ID,cmd[0]err[1],任意命令失败时返回

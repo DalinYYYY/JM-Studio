@@ -28,6 +28,7 @@ class JmClient(QObject):
     motor_info_read_result = pyqtSignal(int, int, object)   # param_id, type, value_bytes(固定4B)
     motor_info_read_bulk_result = pyqtSignal(int, list)     # start_id, [(param_id, value_bytes)...]
     calib_status_received = pyqtSignal(dict)           # 0x97 详细标定状态(parse_calib_status 结果)
+    pid_autotune_result_received = pyqtSignal(dict)    # 0x9A PID理论估计应答(parse_pid_autotune_ack 结果)
     raw_frame = pyqtSignal(int, bytes)                 # cmd, payload(RX 入口, 日志面板格式化)
     tx_frame = pyqtSignal(int, bytes)                  # cmd, payload(TX 入口, 日志面板格式化)
 
@@ -180,6 +181,25 @@ class JmClient(QObject):
         """电机配置恢复默认(0xEB): param_id=0xFFFF 全部恢复。"""
         return self._send(JmCmd.MOTOR_INFO_RESET, codec.wr_u16(param_id))
 
+    # ---- PID 管理 0x9A~0x9B ----
+    def pid_autotune(self, ring_select: int, cur_bw_hz: float = 0.0,
+                     vel_bw_hz: float = 0.0, pos_bw_hz: float = 0.0):
+        """PID 理论估计(0x9A): 基于辨识参数零极点对消法计算三环PID。
+        ring_select: 0=电流环 1=速度环 2=位置环 3=全部三环
+        cur/vel/pos_bw_hz: 各环带宽Hz, <=0 使用固件默认(电流1000/速度100/位置20Hz)
+        应答走 pid_autotune_result_received 信号(8字节ACK, 含status/fail_reason)。
+        仅 IDLE 态可执行, 不自动存 Flash(需调 motor_info_save 固化)。"""
+        payload = struct.pack('<Bfff', ring_select & 0xFF, cur_bw_hz, vel_bw_hz, pos_bw_hz)
+        return self._send(JmCmd.PID_AUTOTUNE, payload)
+
+    def pid_source_set(self, ring_select: int, source: int):
+        """PID 来源切换(0x9B): 独立设置某环参数来源, 立即 reload。
+        ring_select: 0=电流环 1=速度环 2=位置环
+        source: 0=默认 1=Flash工程值 2=理论估计
+        应答走通用 ack_received/nack_received 通道。仅 IDLE 态可执行。"""
+        payload = struct.pack('<BB', ring_select & 0xFF, source & 0xFF)
+        return self._send(JmCmd.PID_SOURCE_SET, payload)
+
     # ---- 遥测订阅 / 遥控开关 ----
     def set_telemetry(self, enable: bool, mask: int, period_ms: int = 0):
         """遥控模式开关: enable=True 启动周期上报, False 停止。
@@ -218,6 +238,12 @@ class JmClient(QObject):
         # (无论 state 为何都返回 ACK, 故需在 cmd<=SINGLE_STEP 通用 ACK 分支前特判)
         if cmd == JmCmd.CALIB_QUERY:
             self.calib_status_received.emit(jp.parse_calib_status(payload))
+            return
+
+        # PID_AUTOTUNE(0x9A) 应答: 8 字节 ACK(含 status/fail_reason), 不走通用 ACK 分支
+        # (无论成功/失败都返回 8 字节 ACK, 故需在 cmd<=SINGLE_STEP 通用 ACK 分支前特判)
+        if cmd == JmCmd.PID_AUTOTUNE:
+            self.pid_autotune_result_received.emit(jp.parse_pid_autotune_ack(payload))
             return
 
         # ACK 类应答 (0x00~0xB8, payload[0]==status)

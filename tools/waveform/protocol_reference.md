@@ -276,7 +276,22 @@ def crc16_calc(data: bytes) -> int:
 
 子模式定义见固件 `User/MotorCalibration/calib_types.h`。
 
-### 5.7 系统诊断 (0xB0 ~ 0xBF)
+### 5.7 PID 管理 (0x9A ~ 0x9B)
+
+三环独立参数来源管理。仅 IDLE 态可执行。
+
+| CMD | 名称 | 请求载荷 | 应答 |
+|-----|------|----------|------|
+| 0x9A | PID_AUTOTUNE | `{ring_select:u8; cur_bw_hz:f32; vel_bw_hz:f32; pos_bw_hz:f32}` | ACK{status:u8; fail_reason:u8; ring_select_done:u8; reserved:u8×5} |
+| 0x9B | PID_SOURCE_SET | `{ring_select:u8; source:u8}` | ACK / NACK |
+
+- `ring_select`: 0=电流环 1=速度环 2=位置环 3=全部三环(仅 0x9A)
+- `cur/vel/pos_bw_hz`: 各环带宽 Hz，<=0 使用固件默认(电流1000/速度100/位置20Hz)
+- `source`: 0=默认 1=Flash工程值 2=理论估计
+- `fail_reason`: 0=无 1=辨识未就绪 2=非IDLE态 3=参数无效
+- 0x9A 不自动存 Flash，需调 0xEA(MOTOR_INFO_SAVE) 固化
+
+### 5.8 系统诊断 (0xB0 ~ 0xBF)
 
 | CMD | 名称 | 请求载荷 | 应答 |
 |-----|------|----------|------|
@@ -290,7 +305,7 @@ def crc16_calc(data: bytes) -> int:
 | 0xB7 | HIGH_SPEED_DAQ | `{ch_mask:u32; rate_hz:u32}` | ACK |
 | 0xB8 | SINGLE_STEP | 无 | ACK |
 
-### 5.8 反馈查询 (0xC0 ~ 0xCF) — **波形显示核心**
+### 5.9 反馈查询 (0xC0 ~ 0xCF) — **波形显示核心**
 
 | CMD | 名称 | 请求载荷 | 应答载荷 |
 |-----|------|----------|----------|
@@ -307,7 +322,7 @@ def crc16_calc(data: bytes) -> int:
 | 0xCA | **TELEMETRY** | 无 (下位机主动推) | `{mask:u16; data:bytes}` 变长, 见 [§7](#7-同步遥测-telemetry) |
 | 0xCB | SET_TELEMETRY | `{enable:u8; mask:u16; period_ms:u16}` (5B) | `ACK{status:u8}` |
 
-### 5.9 设备信息 (0xD0 ~ 0xDF)
+### 5.10 设备信息 (0xD0 ~ 0xDF)
 
 | CMD | 名称 | 应答载荷 |
 |-----|------|----------|
@@ -315,7 +330,7 @@ def crc16_calc(data: bytes) -> int:
 | 0xD1 | READ_DEV_NAME | `{name:char[16]}` |
 | 0xD2 | HEARTBEAT | `{state:u8; err:u16; ts:u32}` (可周期主动上报) |
 
-### 5.10 参数读写 (0xE0 ~ 0xEF)
+### 5.11 参数读写 (0xE0 ~ 0xEF)
 
 | CMD | 名称 | 请求载荷 | 应答载荷 |
 |-----|------|----------|----------|
@@ -328,7 +343,7 @@ def crc16_calc(data: bytes) -> int:
 
 `type` 字段取值: 0=u8, 1=i8, 2=u16, 3=i16, 4=u32, 5=i32, 6=f32, 7=str
 
-### 5.11 CAN 管理 (0xF0 ~ 0xFF)
+### 5.12 CAN 管理 (0xF0 ~ 0xFF)
 
 | CMD | 名称 | 请求载荷 | 应答 |
 |-----|------|----------|------|

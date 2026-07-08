@@ -91,6 +91,12 @@ class JmCmd(IntEnum):
     CALIB_QUERY = 0x97   # 进度查询
     CALIB_ABORT = 0x98   # 中止标定
 
+    # PID 管理 0x9A~0x9B: 三环独立参数来源管理
+    # 0x9A: 触发理论估计(零极点对消法)并自动设 source=2, 仅IDLE态
+    # 0x9B: 独立切换某环 source, 仅IDLE态
+    PID_AUTOTUNE = 0x9A    # PID 理论估计
+    PID_SOURCE_SET = 0x9B  # PID 来源切换
+
     # 系统诊断 0xB0~0xBF
     CLEAR_FAULT = 0xB0
     DIAGNOSTIC = 0xB1
@@ -203,6 +209,31 @@ CALIB_FAIL_REASON_CN = {
     CalibFailReason.FLASH_WRITE: "Flash写入失败",
     CalibFailReason.ABORTED: "被中止",
 }
+
+
+class PidAutotuneFailReason(IntEnum):
+    """PID 理论估计失败原因码, 与固件 jm_proto_ops.c:app_pid_autotune 一致 (0x9A ACK 字段 1)"""
+    NONE = 0              # 无失败
+    CALIB_NOT_READY = 1   # 辨识数据未就绪(R/L 为默认值或未标定)
+    NOT_IDLE = 2          # 非 IDLE 态
+    BAD_PARAM = 3         # 参数无效(ring_select 越界 / 带宽非法)
+
+
+# PID 理论估计失败原因中文名 (供 UI 显示)
+PID_AUTOTUNE_FAIL_REASON_CN = {
+    PidAutotuneFailReason.NONE: "无",
+    PidAutotuneFailReason.CALIB_NOT_READY: "辨识未就绪",
+    PidAutotuneFailReason.NOT_IDLE: "非IDLE态",
+    PidAutotuneFailReason.BAD_PARAM: "参数无效",
+}
+
+
+def pid_autotune_fail_reason_name(reason: int) -> str:
+    """返回 PID 理论估计失败原因中文名, 未知则返回 (数值)"""
+    try:
+        return PID_AUTOTUNE_FAIL_REASON_CN[PidAutotuneFailReason(reason)]
+    except (ValueError, KeyError):
+        return f"({reason})"
 
 
 # 标定级别中文名 (1-7)
