@@ -398,6 +398,11 @@ class MainWindow(QMainWindow):
             "log_opts": self._log_panel.get_opts(),
             # 虚拟电机模式开关状态(下次连接虚拟引擎时自动恢复)
             "virtual_motor_mode": bool(self._btn_virtual_mode.isChecked()),
+            # 参数表 CSV 路径(运行时换表后记住, 下次启动自动加载)
+            "csv_paths": {
+                "motor_config": self._registry.motor_config_csv_path,
+                "motor_param": self._registry.params_csv_path,
+            },
         }
         # 各面板配置 (容错: 单面板失败不影响整体保存)
         for key, panel in (
@@ -494,6 +499,24 @@ class MainWindow(QMainWindow):
         vm = d.get("virtual_motor_mode")
         if isinstance(vm, bool):
             self._pending_virtual_mode = vm
+        # 参数表 CSV 路径: 启动时按持久化路径重新加载 registry 并刷新依赖面板
+        # (面板在 __init__._build_ui 已用默认 CSV 建好, 此处按自定义 CSV 重建;
+        #  必须在下面"各面板配置"opts 循环之前执行, 以便 opts 循环恢复列宽)
+        csv_paths = d.get("csv_paths")
+        if isinstance(csv_paths, dict):
+            reloaded_any = False
+            mc = csv_paths.get("motor_config")
+            if mc and Path(mc).is_file() and mc != self._registry.motor_config_csv_path:
+                if self._registry.reload_motor_config(mc):
+                    reloaded_any = True
+            pi = csv_paths.get("motor_param")
+            if pi and Path(pi).is_file() and pi != self._registry.params_csv_path:
+                if self._registry.reload_params(pi):
+                    reloaded_any = True
+            if reloaded_any:
+                for panel in (self._param_panel, self._config_panel,
+                              self._calib_results_panel, self._pid_params_panel):
+                    panel.reload()
         # 各面板配置 (容错: 单面板失败不影响其他)
         for key, panel in (
             ("plot", self._plot_panel),
