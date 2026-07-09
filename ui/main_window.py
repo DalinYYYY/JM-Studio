@@ -36,6 +36,7 @@ from ui.panels.calibration_panel import CalibrationPanel
 from ui.panels.pid_panel import PidPanel
 from ui.panels.twin_param_panel import TwinParamPanel
 from ui.panels.fault_info_panel import FaultInfoPanel
+from ui.csv_load_dialog import CsvLoadDialog
 from ui.theme import theme
 from ui import layout_store
 
@@ -579,6 +580,14 @@ class MainWindow(QMainWindow):
         self._btn_virtual_mode.setStyleSheet(self._virtual_mode_btn_style())
         self._btn_virtual_mode.toggled.connect(self._on_virtual_mode_toggled)
         layout.addWidget(self._btn_virtual_mode, 2, 0, 1, 2)
+        # 加载参数表 CSV: 运行时换 motor_info.csv / param_index.csv, 刷新全部参数表格
+        btn_load_csv = QPushButton("加载参数表CSV")
+        btn_load_csv.setToolTip(
+            "加载新的 motor_info.csv 或 param_index.csv, "
+            "电机配置/PID参数/标定结果/运行时参数表格将按新CSV重建(数据与格式均来自CSV)")
+        btn_load_csv.clicked.connect(self._open_csv_load_dialog)
+        self._apply_menu_button_style(btn_load_csv)
+        layout.addWidget(btn_load_csv, 3, 0, 1, 2)
         # 注: 标定操作历史开关已移到标定结果保存按钮同行最右 (CalibrationPanel 内部)
         return grp
 
@@ -1030,6 +1039,58 @@ class MainWindow(QMainWindow):
             if self._client.param_write(int(param_id), value):
                 panel.note_write_sent(int(param_id))
                 self._pending_param_writes.append(panel)
+
+    def _open_csv_load_dialog(self):
+        """打开 CSV 加载对话框: 选择 motor_info / param_index CSV 并刷新全部参数表格。"""
+        dlg = CsvLoadDialog(
+            self._registry.motor_config_csv_path,
+            self._registry.params_csv_path,
+            self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        chosen = dlg.chosen_paths()
+        mc_path = chosen["motor_config"]
+        pi_path = chosen["motor_param"]
+        reloaded = []
+        if mc_path and mc_path != self._registry.motor_config_csv_path:
+            if self._registry.reload_motor_config(mc_path):
+                reloaded.append("电机配置表")
+            else:
+                self._log_panel.log_warn(f"[CSV] 电机配置表加载失败: {mc_path}")
+        if pi_path and pi_path != self._registry.params_csv_path:
+            if self._registry.reload_params(pi_path):
+                reloaded.append("运行时参数表")
+            else:
+                self._log_panel.log_warn(f"[CSV] 运行时参数表加载失败: {pi_path}")
+        if reloaded:
+            self._reload_all_param_panels()
+            # 持久化(含新CSV路径), 复用关窗同款写回
+            layout_store.set_meta("settings", self._collect_settings())
+            msg = f"已加载 {' / '.join(reloaded)}, 参数表格已刷新"
+            self._log_panel.log(f"[CSV] {msg}")
+            self.statusBar().showMessage(msg, 4000)
+        else:
+            self._log_panel.log("[CSV] 无变更(路径未变或加载失败)")
+
+    def _reload_all_param_panels(self):
+        """CSV 重新加载后, 重建所有依赖 registry 的 ParamPanel 表格(保留列宽)。"""
+        panels = [self._param_panel, self._config_panel,
+                  self._calib_results_panel, self._pid_params_panel]
+        # reload 重建表格会清空列宽, 先备份
+        backups = []
+        for p in panels:
+            try:
+                backups.append(p.get_opts())
+            except Exception:
+                backups.append({})
+        for p in panels:
+            p.reload()
+        for p, opt in zip(panels, backups):
+            try:
+                if opt:
+                    p.set_opts(opt)
+            except Exception:
+                pass
 
     def _on_config_save(self):
         if not self._panel_remote_supported(self._config_panel):
