@@ -91,11 +91,17 @@ class JmCmd(IntEnum):
     CALIB_QUERY = 0x97   # 进度查询
     CALIB_ABORT = 0x98   # 中止标定
 
-    # PID 管理 0x9A~0x9B: 三环独立参数来源管理
-    # 0x9A: 触发理论估计(零极点对消法)并自动设 source=2, 仅IDLE态
-    # 0x9B: 独立切换某环 source, 仅IDLE态
-    PID_AUTOTUNE = 0x9A    # PID 理论估计
-    PID_SOURCE_SET = 0x9B  # PID 来源切换
+    # PID 管理 0xA0~0xAF: 三环独立参数来源管理 + 实时调试
+    # 0xA0: 触发理论估计(零极点对消法)并自动设 source=2, 仅IDLE态
+    # 0xA1: 独立切换某环 source(0=默认 1=Flash 2=理论估计 3=调试), 仅IDLE态
+    # 0xA2: 读取三环当前 source 状态
+    # 0xA5: 实时写单个PID参数(调试模式, 直接写profile, ISR下一拍生效)
+    # 0xA6: 实时读单个PID参数
+    PID_AUTOTUNE = 0xA0    # PID 理论估计
+    PID_SOURCE_SET = 0xA1  # PID 来源切换
+    PID_SOURCE_GET = 0xA2  # 读 PID 来源状态
+    PID_PARAM_SET = 0xA5   # 实时写PID参数
+    PID_PARAM_GET = 0xA6   # 实时读PID参数
 
     # 系统诊断 0xB0~0xBF
     CLEAR_FAULT = 0xB0

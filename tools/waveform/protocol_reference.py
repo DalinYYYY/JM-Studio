@@ -206,9 +206,12 @@ class JmCmd(IntEnum):
     CALIB_QUERY = 0x97   # 进度查询
     CALIB_ABORT = 0x98   # 中止标定
 
-    # PID 管理 0x9A~0x9B
-    PID_AUTOTUNE = 0x9A    # PID 理论估计
-    PID_SOURCE_SET = 0x9B  # PID 来源切换
+    # PID 管理 0xA0~0xAF
+    PID_AUTOTUNE = 0xA0    # PID 理论估计
+    PID_SOURCE_SET = 0xA1  # PID 来源切换
+    PID_SOURCE_GET = 0xA2  # 读 PID 来源状态
+    PID_PARAM_SET = 0xA5   # 实时写PID参数
+    PID_PARAM_GET = 0xA6   # 实时读PID参数
 
     # 系统诊断 0xB0~0xBF
     CLEAR_FAULT = 0xB0

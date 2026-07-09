@@ -222,7 +222,7 @@ def parse_calib_status(payload: bytes) -> dict:
 
 
 def parse_pid_autotune_ack(payload: bytes) -> dict:
-    """解析 PID_AUTOTUNE(0x9A) 应答(8字节):
+    """解析 PID_AUTOTUNE(0xA0) 应答(8字节):
     status(u8) / fail_reason(u8) / ring_select_done(u8) / reserved(u8×5)
 
     返回 dict, 含原始数值字段 + 中文描述字段:

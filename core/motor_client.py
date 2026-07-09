@@ -28,7 +28,9 @@ class JmClient(QObject):
     motor_info_read_result = pyqtSignal(int, int, object)   # param_id, type, value_bytes(固定4B)
     motor_info_read_bulk_result = pyqtSignal(int, list)     # start_id, [(param_id, value_bytes)...]
     calib_status_received = pyqtSignal(dict)           # 0x97 详细标定状态(parse_calib_status 结果)
-    pid_autotune_result_received = pyqtSignal(dict)    # 0x9A PID理论估计应答(parse_pid_autotune_ack 结果)
+    pid_autotune_result_received = pyqtSignal(dict)    # 0xA0 PID理论估计应答(parse_pid_autotune_ack 结果)
+    pid_source_received = pyqtSignal(int, int, int)    # 0xA2 三环source状态(cur, vel, pos)
+    pid_param_received = pyqtSignal(int, int, bytes)   # 0xA6 PID参数读取结果(ring, param_type, value4)
     raw_frame = pyqtSignal(int, bytes)                 # cmd, payload(RX 入口, 日志面板格式化)
     tx_frame = pyqtSignal(int, bytes)                  # cmd, payload(TX 入口, 日志面板格式化)
 
@@ -181,10 +183,10 @@ class JmClient(QObject):
         """电机配置恢复默认(0xEB): param_id=0xFFFF 全部恢复。"""
         return self._send(JmCmd.MOTOR_INFO_RESET, codec.wr_u16(param_id))
 
-    # ---- PID 管理 0x9A~0x9B ----
+    # ---- PID 管理 0xA0~0xA6 ----
     def pid_autotune(self, ring_select: int, cur_bw_hz: float = 0.0,
                      vel_bw_hz: float = 0.0, pos_bw_hz: float = 0.0):
-        """PID 理论估计(0x9A): 基于辨识参数零极点对消法计算三环PID。
+        """PID 理论估计(0xA0): 基于辨识参数零极点对消法计算三环PID。
         ring_select: 0=电流环 1=速度环 2=位置环 3=全部三环
         cur/vel/pos_bw_hz: 各环带宽Hz, <=0 使用固件默认(电流1000/速度100/位置20Hz)
         应答走 pid_autotune_result_received 信号(8字节ACK, 含status/fail_reason)。
@@ -193,12 +195,34 @@ class JmClient(QObject):
         return self._send(JmCmd.PID_AUTOTUNE, payload)
 
     def pid_source_set(self, ring_select: int, source: int):
-        """PID 来源切换(0x9B): 独立设置某环参数来源, 立即 reload。
+        """PID 来源切换(0xA1): 独立设置某环参数来源, 立即 reload。
         ring_select: 0=电流环 1=速度环 2=位置环
-        source: 0=默认 1=Flash工程值 2=理论估计
-        应答走通用 ack_received/nack_received 通道。仅 IDLE 态可执行。"""
+        source: 0=默认 1=Flash工程值 2=理论估计 3=调试
+        应答走通用 ack_received/nack_received 通道。仅 IDLE 态可执行。
+        source=3(调试)不持久化, 重启自动消失。"""
         payload = struct.pack('<BB', ring_select & 0xFF, source & 0xFF)
         return self._send(JmCmd.PID_SOURCE_SET, payload)
+
+    def pid_source_get(self):
+        """读取三环当前 PID 参数来源(0xA2)。
+        应答走 pid_source_received 信号(3字节: cur/vel/pos)。"""
+        return self._send(JmCmd.PID_SOURCE_GET)
+
+    def pid_param_set(self, ring: int, param_type: int, value: float):
+        """实时写单个PID参数(0xA5): 仅对应环 source=3(调试)时允许写。
+        ring: 0=D轴 1=Q轴 2=速度 3=位置
+        param_type: 1=kp 2=ki 3=kd 4=output_limit 5=integral_limit 6=output_filter_alpha
+        value: float 参数值(param_type=7 flags 时传 uint32 整数转 float)
+        应答走通用 ack_received/nack_received 通道。无 top_fsm 限制, 允许运行时整定。"""
+        payload = struct.pack('<BBf', ring & 0xFF, param_type & 0xFF, float(value))
+        return self._send(JmCmd.PID_PARAM_SET, payload)
+
+    def pid_param_get(self, ring: int, param_type: int):
+        """实时读单个PID参数(0xA6): 随时可读。
+        ring/param_type 同 pid_param_set。
+        应答走 pid_param_received 信号(ring, param_type, value4_bytes)。"""
+        payload = struct.pack('<BB', ring & 0xFF, param_type & 0xFF)
+        return self._send(JmCmd.PID_PARAM_GET, payload)
 
     # ---- 遥测订阅 / 遥控开关 ----
     def set_telemetry(self, enable: bool, mask: int, period_ms: int = 0):
@@ -240,10 +264,22 @@ class JmClient(QObject):
             self.calib_status_received.emit(jp.parse_calib_status(payload))
             return
 
-        # PID_AUTOTUNE(0x9A) 应答: 8 字节 ACK(含 status/fail_reason), 不走通用 ACK 分支
+        # PID_AUTOTUNE(0xA0) 应答: 8 字节 ACK(含 status/fail_reason), 不走通用 ACK 分支
         # (无论成功/失败都返回 8 字节 ACK, 故需在 cmd<=SINGLE_STEP 通用 ACK 分支前特判)
         if cmd == JmCmd.PID_AUTOTUNE:
             self.pid_autotune_result_received.emit(jp.parse_pid_autotune_ack(payload))
+            return
+
+        # PID_SOURCE_GET(0xA2) 应答: 3 字节 (cur_src/vel_src/pos_src), 不走通用 ACK 分支
+        if cmd == JmCmd.PID_SOURCE_GET:
+            if len(payload) >= 3:
+                self.pid_source_received.emit(payload[0], payload[1], payload[2])
+            return
+
+        # PID_PARAM_GET(0xA6) 应答: 6 字节 (ring + param_type + 4B value), 不走通用 ACK 分支
+        if cmd == JmCmd.PID_PARAM_GET:
+            if len(payload) >= 6:
+                self.pid_param_received.emit(payload[0], payload[1], payload[2:6])
             return
 
         # ACK 类应答 (0x00~0xB8, payload[0]==status)
