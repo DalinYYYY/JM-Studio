@@ -123,6 +123,17 @@ class ParamPanel(QGroupBox):
         if ids:
             self.read_params.emit(list(ids))
 
+    def reload(self):
+        """从 registry 重新构建表格(用于运行时 CSV 重新加载后刷新)。
+
+        清空待写队列与 fresh 标记(它们可能指向已失效的 param_id),
+        然后调用 _populate() 按 registry 当前内容重建表格。
+        _populate → _append_param_row 会重新构建 tooltip, 故 reload 后 tooltip 自动更新。
+        """
+        self._pending_writes.clear()
+        self._fresh_ids.clear()
+        self._populate()
+
     def _build(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -383,6 +394,30 @@ class ParamPanel(QGroupBox):
         self._table.setCellWidget(row, COL_READ, self._make_button_cell(read_btn))
         self._table.setCellWidget(row, COL_WRITE, self._make_button_cell(write_btn))
 
+    def _build_param_tooltip(self, p) -> str:
+        """构建参数详细信息的悬停提示文本(鼠标悬停描述/名称列时淡入显示)。
+
+        汇总 ParamSpec 全部可读字段: 中文名/单位/类型/范围[min,max]/读写/说明(含默认值与Remarks)。
+        范围行仅当存在 vmin/vmax 时显示; 说明行含 motor_info.csv 的默认值与 Remarks(加载时已拼入 desc)。
+        """
+        lines = []
+        if p.cn_name:
+            lines.append(f"中文名: {p.cn_name}")
+        if p.unit and p.unit != '-':
+            lines.append(f"单位: {p.unit}")
+        if p.dtype:
+            lines.append(f"类型: {p.dtype}")
+        # 范围: 仅当存在 vmin/vmax 时显示, 无约束则不显示该行
+        if p.vmin is not None or p.vmax is not None:
+            lo = p.vmin if p.vmin is not None else "-∞"
+            hi = p.vmax if p.vmax is not None else "+∞"
+            lines.append(f"范围: [{lo}, {hi}]")
+        if p.rw:
+            lines.append(f"读写: {p.rw}")
+        if p.desc:
+            lines.append(f"说明: {p.desc}")
+        return "\n".join(lines)
+
     def _append_param_row(self, p):
         row = self._table.rowCount()
         self._table.insertRow(row)
@@ -395,6 +430,12 @@ class ParamPanel(QGroupBox):
         current_item = self._make_cell_item("--")
         edit_item = self._make_cell_item("--", editable=p.writable)
         desc_item = self._make_cell_item(desc)
+
+        # 鼠标悬停描述列/名称列时淡入显示参数详细信息(含 min/max/单位/Remarks)
+        tooltip = self._build_param_tooltip(p)
+        if tooltip:
+            desc_item.setToolTip(tooltip)
+            name_item.setToolTip(tooltip)
 
         self._table.setItem(row, COL_NAME, name_item)
         self._table.setItem(row, COL_ID, id_item)
