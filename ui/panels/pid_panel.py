@@ -20,7 +20,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
     QPushButton, QSplitter, QTextEdit, QCheckBox, QDoubleSpinBox,
-    QButtonGroup, QRadioButton,
+    QButtonGroup, QRadioButton, QSizePolicy,
 )
 
 from jmproto.cmd_def import JmCmd, TopFsm
@@ -217,9 +217,25 @@ class PidPanel(QGroupBox):
         parent_layout.addWidget(box)
 
     def _build_results_history_split(self, parent_layout):
-        """结果/历史 Splitter: 上(PID 参数表) 下(操作历史)。"""
+        """结果/历史 Splitter: 上(PID 参数表) 下(操作历史)。
+
+        - 历史默认隐藏, 隐藏时参数表 stretch 占满
+        - 历史显示时 splitter 手柄可拖动, 两区皆可缩放
+        - 历史开关按钮放到参数面板保存按钮同行最右(由 attach_params_panel 注入)
+        - 输出框去掉 maxHeight, 填满整个历史子框
+        """
         split = QSplitter(Qt.Orientation.Vertical)
         split.setChildrenCollapsible(False)
+        split.setHandleWidth(6)
+        split.setStyleSheet(f"""
+            QSplitter::handle:vertical {{
+                background: {theme.hex('border')};
+                margin: 1px 0;
+            }}
+            QSplitter::handle:vertical:hover {{
+                background: {theme.hex('accent')};
+            }}
+        """)
 
         # 上: 参数表占位 (attach_params_panel 时替换)
         self._params_placeholder = QLabel("等待参数面板注入...")
@@ -229,19 +245,41 @@ class PidPanel(QGroupBox):
         split.addWidget(self._params_placeholder)
 
         # 下: 操作历史
-        hist_box = QGroupBox("操作历史")
-        hv = QVBoxLayout(hist_box)
+        self._history_grp = QGroupBox("操作历史")
+        hv = QVBoxLayout(self._history_grp)
         hv.setContentsMargins(4, 4, 4, 4)
+        hv.setSpacing(4)
         self._history_view = QTextEdit()
         self._history_view.setReadOnly(True)
-        self._history_view.setMaximumHeight(150)
-        hv.addWidget(self._history_view)
-        split.addWidget(hist_box)
+        self._history_view.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._history_view.setStyleSheet(
+            f"background:{theme.hex('panel_bg')}; color:{theme.hex('text')};"
+            f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size:12px;"
+            f"border:1px solid {theme.hex('border')};")
+        hv.addWidget(self._history_view, 1)
+
+        op_row = QHBoxLayout()
+        op_row.addStretch()
+        self._btn_clear_history = QPushButton("清空历史")
+        self._btn_clear_history.setFixedHeight(24)
+        self._btn_clear_history.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_clear_history.setStyleSheet(self._normal_btn_qss())
+        self._btn_clear_history.clicked.connect(self._on_clear_history)
+        op_row.addWidget(self._btn_clear_history)
+        hv.addLayout(op_row)
+
+        split.addWidget(self._history_grp)
 
         split.setStretchFactor(0, 4)
         split.setStretchFactor(1, 1)
+        split.setSizes([400, 100])
         parent_layout.addWidget(split, 1)
         self._params_split = split
+
+        # 默认隐藏历史, 让参数表占满
+        self._history_grp.setVisible(False)
+        self._history_visible = False
 
     # ========================================================================
     #  按钮样式
@@ -379,7 +417,7 @@ class PidPanel(QGroupBox):
             self._set_last_op(f"来源切换失败 (0x{err:02X})")
 
     def attach_params_panel(self, panel):
-        """注入 ParamPanel 实例, 替换占位控件。"""
+        """注入 ParamPanel 实例, 替换占位控件, 并把「历史:显/隐」开关注入其 footer。"""
         self._params_panel = panel
         # 替换 Splitter 中的占位控件
         idx = self._params_split.indexOf(self._params_placeholder)
@@ -388,15 +426,55 @@ class PidPanel(QGroupBox):
             self._params_placeholder.deleteLater()
             self._params_placeholder = None
             self._params_split.insertWidget(idx, panel)
+
+        # 历史开关按钮 — 注入到 ParamPanel 保存按钮同行最右 (同标定面板设计)
+        self._btn_history_toggle = QPushButton("历史: 隐")
+        self._btn_history_toggle.setCheckable(True)
+        self._btn_history_toggle.setChecked(False)
+        self._btn_history_toggle.setFixedHeight(24)
+        self._btn_history_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_history_toggle.setToolTip("显示/隐藏 操作历史 (显示后可拖动手柄调整与参数表的高度比例)")
+        self._btn_history_toggle.setStyleSheet(self._history_toggle_qss())
+        self._btn_history_toggle.toggled.connect(self._on_history_toggle)
+        panel.add_footer_widget(self._btn_history_toggle)
+        # 恢复持久化的历史显隐态
+        if getattr(self, "_history_visible", False):
+            self._btn_history_toggle.setChecked(True)
+
         self._set_last_op("参数面板已加载")
 
+    def _on_history_toggle(self, on: bool):
+        """「历史:显/隐」开关 (注入到参数面板保存按钮同行右侧)。"""
+        self._btn_history_toggle.setText("历史: 显" if on else "历史: 隐")
+        self.set_history_visible(on)
+
     def set_history_visible(self, visible: bool):
-        """切换操作历史区显隐。"""
+        """显示/隐藏整个操作历史区(含 QGroupBox), 隐藏时参数表独占空间。"""
+        self._history_visible = bool(visible)
+        if hasattr(self, "_history_grp"):
+            self._history_grp.setVisible(self._history_visible)
+        if hasattr(self, "_params_split"):
+            self._params_split.setStretchFactor(0, 4)
+            self._params_split.setStretchFactor(1, 1 if self._history_visible else 0)
+
+    def is_history_visible(self) -> bool:
+        return self._history_visible
+
+    def _on_clear_history(self):
+        self._history.clear()
         if self._history_view:
-            self._history_view.setVisible(visible)
-            parent = self._history_view.parentWidget()
-            if parent:
-                parent.setVisible(visible)
+            self._history_view.setPlainText("")
+
+    def _history_toggle_qss(self) -> str:
+        return (f"QPushButton{{background:{theme.hex('input_bg')};"
+                f"color:{theme.hex('text')};"
+                f"border:1px solid {theme.hex('border')};border-radius:3px;"
+                f"padding:0 10px;font-size:12px;}}"
+                f"QPushButton:hover{{border-color:{theme.hex('accent')};"
+                f"color:{theme.hex('accent')};}}"
+                f"QPushButton:checked{{background:{theme.hex('accent')};"
+                f"color:{theme.hex('card_bottom')};"
+                f"border-color:{theme.hex('accent')};font-weight:bold;}}")
 
     def apply_theme(self):
         """主题切换: 刷新所有控件样式。"""
@@ -407,16 +485,67 @@ class PidPanel(QGroupBox):
             self._autotune_btn.setStyleSheet(self._ok_btn_qss())
         if hasattr(self, '_source_apply_btn'):
             self._source_apply_btn.setStyleSheet(self._normal_btn_qss())
+        # splitter 手柄随主题刷新
+        if hasattr(self, "_params_split"):
+            self._params_split.setStyleSheet(f"""
+                QSplitter::handle:vertical {{
+                    background: {theme.hex('border')};
+                    margin: 1px 0;
+                }}
+                QSplitter::handle:vertical:hover {{
+                    background: {theme.hex('accent')};
+                }}
+            """)
+        # 历史开关按钮主题刷新
+        if hasattr(self, "_btn_history_toggle"):
+            self._btn_history_toggle.setStyleSheet(self._history_toggle_qss())
+        # 清空历史按钮
+        if hasattr(self, "_btn_clear_history"):
+            self._btn_clear_history.setStyleSheet(self._normal_btn_qss())
+        # 历史输出框
+        if self._history_view:
+            self._history_view.setStyleSheet(
+                f"background:{theme.hex('panel_bg')}; color:{theme.hex('text')};"
+                f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size:12px;"
+                f"border:1px solid {theme.hex('border')};")
         self._refresh_source_badges()
         self._refresh_status()
         if self._params_panel and hasattr(self._params_panel, 'apply_theme'):
             self._params_panel.apply_theme()
 
     def get_opts(self) -> dict:
-        return {}
+        """收集可持久化的 UI 配置: 历史显隐 + 内嵌参数面板列宽。"""
+        opts = {}
+        try:
+            opts["history_visible"] = bool(self._history_visible)
+        except Exception:
+            pass
+        if self._params_panel is not None:
+            try:
+                opts["params_panel"] = self._params_panel.get_opts()
+            except Exception:
+                pass
+        return opts
 
     def set_opts(self, opts: dict):
-        pass
+        """启动时套用配置 (容错)。"""
+        if not isinstance(opts, dict):
+            return
+        if "history_visible" in opts:
+            try:
+                vis = bool(opts["history_visible"])
+                self._history_visible = vis
+                if hasattr(self, "_btn_history_toggle"):
+                    self._btn_history_toggle.setChecked(vis)
+                else:
+                    self.set_history_visible(vis)
+            except Exception:
+                pass
+        if self._params_panel is not None and isinstance(opts.get("params_panel"), dict):
+            try:
+                self._params_panel.set_opts(opts["params_panel"])
+            except Exception:
+                pass
 
     # ========================================================================
     #  内部辅助
