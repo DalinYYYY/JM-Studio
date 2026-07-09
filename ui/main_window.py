@@ -154,7 +154,7 @@ class MainWindow(QMainWindow):
         self._plot_panel = PlotPanel()
         self._state_panel = StateMachinePanel()
         self._calib_panel = CalibrationPanel()
-        # PID 整定面板: 复用标定面板三段式布局, 0x9A/0x9B 命令收发 + ControlParam 读写
+        # PID 整定面板: 复用标定面板三段式布局, 0xA0~0xA6 命令收发 + ControlParam 读写
         self._pid_panel = PidPanel(self._registry)
         # PID 参数面板: 复用 motor_config 通道(0xE6/0xE7/0xEA), 仅展示 ControlParam 段
         self._pid_params_panel = ParamPanel(
@@ -738,6 +738,8 @@ class MainWindow(QMainWindow):
         c.param_read_result.connect(self._on_param_result)
         c.motor_info_read_result.connect(self._on_param_result)
         c.pid_autotune_result_received.connect(self._on_pid_autotune_result)
+        c.pid_source_received.connect(self._on_pid_source_received)
+        c.pid_param_received.connect(self._on_pid_param_received)
 
         # 状态机面板: 周期请求 -> 拉取 READ_STATE
         self._state_panel.poll_state.connect(self._on_poll_state)
@@ -765,11 +767,15 @@ class MainWindow(QMainWindow):
             lambda writes, panel=self._calib_results_panel:
                 self._on_param_write_many(panel, writes))
         self._calib_results_panel.save_all.connect(self._on_config_save)
-        # PID 面板: 专用信号直连 client (0x9A/0x9B 已有 struct.pack, 不走 registry 通用打包)
+        # PID 面板: 专用信号直连 client (0xA0~0xA6 已有 struct.pack, 不走 registry 通用打包)
         self._pid_panel.pid_autotune_requested.connect(
             lambda r, c_bw, v_bw, p_bw: self._on_pid_autotune(r, c_bw, v_bw, p_bw))
         self._pid_panel.pid_source_set_requested.connect(
             lambda r, s: self._on_pid_source_set(r, s))
+        self._pid_panel.pid_param_set_requested.connect(
+            lambda ring, ptype, val: self._on_pid_param_set(ring, ptype, val))
+        self._pid_panel.pid_param_get_requested.connect(
+            lambda ring, ptype: self._on_pid_param_get(ring, ptype))
         # PID 参数面板: 注入 PID Tab 内嵌, 复用 motor_config 通道(0xE6/0xE7/0xEA)
         self._pid_panel.attach_params_panel(self._pid_params_panel)
         self._pid_params_panel.read_param.connect(
@@ -872,6 +878,12 @@ class MainWindow(QMainWindow):
         self._link_connected = connected
         if not connected:
             self._telemetry_panel.set_running(False)
+        else:
+            # 连接建立后主动查询三环 PID 来源 (0xA2), 回填面板徽章
+            try:
+                self._client.pid_source_get()
+            except Exception:
+                pass
         self._refresh_statusbar_theme()
 
     def _refresh_statusbar_theme(self):
@@ -1202,7 +1214,7 @@ class MainWindow(QMainWindow):
         self._log_panel.log(f"[RX] ACK {cmd_name(cmd)}(0x{cmd:02X})")
         # 标定面板: 0x90~0x98 ACK 转发(内部按 cmd 过滤)
         self._calib_panel.on_ack(cmd)
-        # PID 面板: 0x9B 来源切换成功 ACK 转发(内部按 cmd 过滤)
+        # PID 面板: 0xA1 来源切换 / 0xA5 调试参数写入 成功 ACK 转发(内部按 cmd 过滤)
         self._pid_panel.on_ack(cmd)
         # 写完成: 0xE1(运行时参数) / 0xE7(电机配置) 共用同一待应答队列
         if cmd in (JmCmd.PARAM_WRITE, JmCmd.MOTOR_INFO_WRITE):
@@ -1225,7 +1237,7 @@ class MainWindow(QMainWindow):
         self._fault_info_panel.show_nack_error(cmd, err)
         # 标定面板: 0x90~0x98 NACK 转发(内部按 cmd 过滤)
         self._calib_panel.on_nack(cmd, err)
-        # PID 面板: 0x9B 来源切换失败 NACK 转发(内部按 cmd 过滤)
+        # PID 面板: 0xA1 来源切换 / 0xA5 调试参数写入 失败 NACK 转发(内部按 cmd 过滤)
         self._pid_panel.on_nack(cmd, err)
         # 读失败: 0xE0 / 0xE6 共用同一待应答队列
         if cmd in (JmCmd.PARAM_READ, JmCmd.MOTOR_INFO_READ) and self._pending_param_reads:
@@ -1254,7 +1266,7 @@ class MainWindow(QMainWindow):
         self._calib_panel.on_calib_status(status)
 
     def _on_pid_autotune_result(self, result: dict):
-        """0x9A PID_AUTOTUNE 应答 (JmClient.pid_autotune_result_received 信号)。
+        """0xA0 PID_AUTOTUNE 应答 (JmClient.pid_autotune_result_received 信号)。
 
         result 含: ok/status/fail_reason/ring_select_done + status_cn/fail_reason_cn。
         转发给 PID 面板做 source 徽章更新/历史记录, 主窗口仅记简要日志。
@@ -1268,8 +1280,24 @@ class MainWindow(QMainWindow):
             self._log_panel.log_warn(f"[RX] PID_AUTOTUNE 失败: {fail_cn}")
         self._pid_panel.on_autotune_result(result)
 
+    def _on_pid_source_received(self, cur_src: int, vel_src: int, pos_src: int):
+        """0xA2 PID_SOURCE_GET 应答 (JmClient.pid_source_received 信号)。
+
+        转发给 PID 面板更新 source 徽章 + 同步单选按钮, 主窗口仅记简要日志。
+        """
+        self._log_panel.log(
+            f"[RX] PID_SOURCE cur={cur_src} vel={vel_src} pos={pos_src}")
+        self._pid_panel.on_source_received(cur_src, vel_src, pos_src)
+
+    def _on_pid_param_received(self, ring: int, param_type: int, value4: bytes):
+        """0xA6 PID_PARAM_GET 应答 (JmClient.pid_param_received 信号)。
+
+        转发给 PID 面板显示读回值 + 历史记录。
+        """
+        self._pid_panel.on_pid_param_received(ring, param_type, value4)
+
     def _on_pid_autotune(self, ring_select: int, cur_bw: float, vel_bw: float, pos_bw: float):
-        """PID 面板请求理论估计 -> 调用 client.pid_autotune (0x9A)。"""
+        """PID 面板请求理论估计 -> 调用 client.pid_autotune (0xA0)。"""
         if not self._ensure_open():
             return
         try:
@@ -1278,11 +1306,29 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"发送异常: {e}")
 
     def _on_pid_source_set(self, ring_select: int, source: int):
-        """PID 面板请求来源切换 -> 调用 client.pid_source_set (0x9B)。"""
+        """PID 面板请求来源切换 -> 调用 client.pid_source_set (0xA1)。"""
         if not self._ensure_open():
             return
         try:
             self._client.pid_source_set(ring_select, source)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"发送异常: {e}")
+
+    def _on_pid_param_set(self, ring: int, param_type: int, value: float):
+        """PID 面板请求调试参数写入 -> 调用 client.pid_param_set (0xA5)。"""
+        if not self._ensure_open():
+            return
+        try:
+            self._client.pid_param_set(ring, param_type, value)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"发送异常: {e}")
+
+    def _on_pid_param_get(self, ring: int, param_type: int):
+        """PID 面板请求调试参数读取 -> 调用 client.pid_param_get (0xA6)。"""
+        if not self._ensure_open():
+            return
+        try:
+            self._client.pid_param_get(ring, param_type)
         except Exception as e:
             QMessageBox.critical(self, "错误", f"发送异常: {e}")
 
