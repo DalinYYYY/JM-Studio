@@ -5,18 +5,18 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1589,
-      "height": 958,
-      "x": 925,
-      "y": 195
+      "width": 1686,
+      "height": 954,
+      "x": 76,
+      "y": 174
     },
     "right_splitter": [
-      902,
+      898,
       0
     ],
     "log_splitter_sizes": [
-      710,
-      180
+      1104,
+      197
     ],
     "layout_edit": false,
     "telemetry": {
@@ -36,6 +36,10 @@
       "autoscroll": true
     },
     "virtual_motor_mode": false,
+    "csv_paths": {
+      "motor_config": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/motor_info.csv",
+      "motor_param": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/joint_motor_param_index.csv"
+    },
     "plot": {
       "window_seconds": 40,
       "follow": true,
@@ -53,10 +57,10 @@
           "auto_y": true
         },
         "vel": {
-          "auto_y": true
+          "auto_y": false
         },
         "current": {
-          "auto_y": true,
+          "auto_y": false,
           "legend": true
         },
         "angle": {
@@ -65,20 +69,20 @@
       }
     },
     "motion": {
-      "current_cmd": 17,
+      "current_cmd": 16,
       "fields": {
-        "id_ref": 0.0,
-        "iq_ref": 0.03
+        "ud": 0.0,
+        "uq": 1.0
       }
     },
     "motor_param": {
       "column_widths": {
-        "0": 220,
+        "0": 207,
         "1": 60,
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 365,
+        "5": 475,
         "6": 72,
         "7": 72
       }
@@ -90,7 +94,7 @@
         "2": 120,
         "3": 200,
         "4": 120,
-        "5": 359,
+        "5": 456,
         "6": 72,
         "7": 72
       }
@@ -100,22 +104,36 @@
       "history_visible": false,
       "active_task": [
         145,
-        3
+        2
       ],
       "config_panel": {
+        "column_widths": {
+          "0": 188,
+          "1": 60,
+          "2": 120,
+          "3": 120,
+          "4": 120,
+          "5": 1418,
+          "6": 72,
+          "7": 72
+        }
+      }
+    },
+    "pid": {
+      "history_visible": false,
+      "params_panel": {
         "column_widths": {
           "0": 220,
           "1": 60,
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 403,
+          "5": 518,
           "6": 72,
           "7": 72
         }
       }
     },
-    "pid": {},
     "twin_param": {
       "adv_enabled": {
         "adv_current": false,
