@@ -17,6 +17,9 @@ _RES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 _CMD_CSV = os.path.join(_RES_DIR, 'joint_motor_command_list.csv')
 _PARAM_CSV = os.path.join(_RES_DIR, 'joint_motor_param_index.csv')
 _MOTOR_INFO_CSV = os.path.join(_RES_DIR, 'motor_info.csv')
+# 公开默认 CSV 路径(供 UI 的"恢复默认"使用)
+DEFAULT_MOTOR_CONFIG_CSV = _MOTOR_INFO_CSV
+DEFAULT_PARAMS_CSV = _PARAM_CSV
 
 # 载荷字段解析: 形如 pos:f32 / magic:u32=0xB00710AD / param_id:u16
 _FIELD_RE = re.compile(r'([A-Za-z_]\w*)\s*:\s*([A-Za-z]\w*(?:\[\d+\])?)\s*(?:=\s*([^;]+))?')
@@ -151,6 +154,9 @@ class ProtocolRegistry:
         self.params = {}      # param_id(int) -> ParamSpec
         self.motor_config_params = {}  # param_id(int) -> ParamSpec, 来自 motor_info.csv
         self.warnings = []    # 加载告警(供日志显示)
+        # 当前参数表 CSV 路径(默认打包内置; 运行时可被 reload_* 覆盖)
+        self.motor_config_csv_path = _MOTOR_INFO_CSV
+        self.params_csv_path = _PARAM_CSV
         self._load_commands()
         self._load_params()
         self._load_motor_config_params()
@@ -207,8 +213,14 @@ class ProtocolRegistry:
                 int(cmd), name, "Host->Motor", cat, fields, "", "ACK", "", "")
 
     def _load_params(self):
+        self._parse_params_csv(_PARAM_CSV, self.params)
+        self.params_csv_path = _PARAM_CSV
+
+    def _parse_params_csv(self, csv_path: str, out: dict) -> bool:
+        """解析 joint_motor_param_index.csv 到 out(param_id -> ParamSpec)。"""
+        new_params = {}
         try:
-            with open(_PARAM_CSV, encoding='utf-8-sig') as f:
+            with open(csv_path, encoding='utf-8-sig') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     pid_str = (row.get('param_id') or '').strip()
@@ -219,7 +231,7 @@ class ProtocolRegistry:
                         nbytes = int((row.get('字节数') or '0').strip())
                     except ValueError:
                         nbytes = 0
-                    self.params[pid] = ParamSpec(
+                    new_params[pid] = ParamSpec(
                         param_id=pid,
                         code_name=(row.get('参数名(代码字段)') or '').strip(),
                         cn_name=(row.get('中文含义') or '').strip(),
@@ -231,13 +243,36 @@ class ProtocolRegistry:
                         desc=(row.get('中文含义') or '').strip(),
                     )
         except FileNotFoundError:
-            self.warnings.append(f"参数表 CSV 未找到, 参数面板将为空: {_PARAM_CSV}")
+            self.warnings.append(f"参数表 CSV 未找到, 参数面板将为空: {csv_path}")
+            return False
         except Exception as e:
-            self.warnings.append(f"参数表解析失败({e})")
+            self.warnings.append(f"参数表解析失败({e}): {csv_path}")
+            return False
+        out.clear()
+        out.update(new_params)
+        return True
+
+    def reload_params(self, csv_path: str) -> bool:
+        """运行时重新加载运行时参数表。成功替换, 失败保留旧数据。"""
+        new_params = {}
+        if self._parse_params_csv(csv_path, new_params):
+            self.params = new_params
+            self.params_csv_path = csv_path
+            return True
+        self.warnings.append(f"重新加载参数表失败, 保留旧数据: {csv_path}")
+        return False
 
     def _load_motor_config_params(self):
+        self._parse_motor_config_csv(_MOTOR_INFO_CSV, self.motor_config_params)
+        self.motor_config_csv_path = _MOTOR_INFO_CSV
+
+    def _parse_motor_config_csv(self, csv_path: str, out: dict) -> bool:
+        """解析 motor_info.csv 到 out(param_id -> ParamSpec)。
+        成功: 填充 out 并返回 True; 失败: out 保持原状, 追加 warning, 返回 False。
+        """
+        new_params = {}
         try:
-            with open(_MOTOR_INFO_CSV, encoding='utf-8-sig', newline='') as f:
+            with open(csv_path, encoding='utf-8-sig', newline='') as f:
                 reader = csv.DictReader(f)
                 for idx, row in enumerate(reader):
                     name = (row.get('VariableName') or '').strip()
@@ -259,7 +294,7 @@ class ProtocolRegistry:
                         desc_parts.append(remarks)
                     vmin = _parse_num(row.get('Min'))
                     vmax = _parse_num(row.get('Max'))
-                    self.motor_config_params[pid] = ParamSpec(
+                    new_params[pid] = ParamSpec(
                         param_id=pid,
                         code_name=name,
                         cn_name=(row.get('NameZh') or '').strip(),
@@ -273,9 +308,27 @@ class ProtocolRegistry:
                         vmax=vmax,
                     )
         except FileNotFoundError:
-            self.warnings.append(f"电机配置表 CSV 未找到, 电机配置面板将为空: {_MOTOR_INFO_CSV}")
+            self.warnings.append(f"电机配置表 CSV 未找到, 电机配置面板将为空: {csv_path}")
+            return False
         except Exception as e:
-            self.warnings.append(f"电机配置表解析失败({e})")
+            self.warnings.append(f"电机配置表解析失败({e}): {csv_path}")
+            return False
+        out.clear()
+        out.update(new_params)
+        return True
+
+    def reload_motor_config(self, csv_path: str) -> bool:
+        """运行时重新加载电机配置表。
+        成功: 替换 motor_config_params, 更新 motor_config_csv_path, 返回 True。
+        失败: 保留旧数据, 追加 warning, 返回 False。
+        """
+        new_params = {}
+        if self._parse_motor_config_csv(csv_path, new_params):
+            self.motor_config_params = new_params
+            self.motor_config_csv_path = csv_path
+            return True
+        self.warnings.append(f"重新加载电机配置表失败, 保留旧数据: {csv_path}")
+        return False
 
     # ---------------- 查询 ----------------
     def get_command(self, cmd: int):
