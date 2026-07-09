@@ -138,10 +138,11 @@ class MainWindow(QMainWindow):
         self._telemetry_panel = TelemetryPanel()
         self._feedback_panel = FeedbackPanel()
         self._param_panel = ParamPanel(
-            self._registry, title="电机参数", source="motor_param", show_save=False)
+            self._registry, title="电机参数", source="motor_param",
+            show_save=False, show_legend=False)
         self._config_panel = ParamPanel(
             self._registry, title="电机配置", source="motor_config",
-            show_save=True, save_text="保存配置到Flash/EEPROM")
+            show_save=True, save_text="保存配置到Flash/EEPROM", show_legend=False)
         # 标定结果面板: 复用 motor_config 通道(0xE6 读 / 0xE7 写 / 0xEA 固化),
         # 仅展示 MotorCalibParam 段(Index 16~42), 注入到标定 Tab 内嵌展示。
         # show_legend=False: 去掉图例行, 让表格直接占满
