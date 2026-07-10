@@ -11,12 +11,12 @@
       "y": 299
     },
     "right_splitter": [
-      886,
-      0
+      333,
+      135
     ],
     "log_splitter_sizes": [
-      341,
-      127
+      333,
+      135
     ],
     "layout_edit": true,
     "telemetry": {
@@ -37,7 +37,7 @@
     },
     "virtual_motor_mode": false,
     "csv_paths": {
-      "motor_config": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/motor_info.csv",
+      "motor_config": "C:\\Users\\dal12\\AppData\\Local\\Temp\\tmp66i267yx.csv",
       "motor_param": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/joint_motor_param_index.csv"
     },
     "plot": {

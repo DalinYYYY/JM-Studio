@@ -70,6 +70,8 @@ class TwinResponder:
         self.tlm_period_ms = 50
         # 额外参数存储(非 MotorParam 内置字段)
         self._extra_params: dict = {}
+        # 电机配置(motor_info)写入存储(非 MotorParam 内置字段)
+        self._motor_config_store: dict = {}
 
     # ================= 命令入口 =================
     def on_command(self, cmd: int, payload: bytes):
@@ -148,6 +150,14 @@ class TwinResponder:
         if cmd == int(JmCmd.PARAM_WRITE):
             return [self._param_write_frame(payload)]
         if cmd in (int(JmCmd.PARAM_SAVE), int(JmCmd.PARAM_RESET)):
+            return [self._ack(cmd)]
+
+        # ---- 电机配置读写 (0xE6~0xEB, motor_info) ----
+        if cmd == int(JmCmd.MOTOR_INFO_READ):
+            return [self._motor_info_read_frame(payload)]
+        if cmd == int(JmCmd.MOTOR_INFO_WRITE):
+            return [self._motor_info_write_frame(payload)]
+        if cmd in (int(JmCmd.MOTOR_INFO_SAVE), int(JmCmd.MOTOR_INFO_RESET)):
             return [self._ack(cmd)]
 
         return [self._ack(cmd)]
@@ -379,6 +389,57 @@ class TwinResponder:
             # 写入 MotorParam 成功: 重新加载控制器 PID 配置, 使增益/限幅实时生效
             self.engine.reload_params()
         return (int(JmCmd.PARAM_WRITE), codec.wr_u16(pid) + bytes([int(JmErr.OK)]))
+
+    # ---- 电机配置(motor_info)读写: 0xE6/0xE7, 值固定4字节 ----
+    def _motor_info_read_frame(self, payload: bytes):
+        if len(payload) < 2:
+            return self._nack(int(JmCmd.MOTOR_INFO_READ), int(JmErr.LENGTH))
+        pid = codec.rd_u16(payload, 0)
+        spec = self.reg.get_motor_config_param(pid)
+        if spec is None:
+            return self._nack(int(JmCmd.MOTOR_INFO_READ), int(JmErr.BAD_PARAM_ID))
+        value = self._motor_config_value(spec)
+        ptype = self._PTYPE.get(spec.dtype, int(JmParamType.F32))
+        vbytes = codec.pack_value(spec.dtype, value)
+        # motor_info 帧固定 4 字节值
+        vbytes = vbytes[:4].ljust(4, b'\x00')
+        return (int(JmCmd.MOTOR_INFO_READ), codec.wr_u16(pid) + bytes([ptype]) + vbytes)
+
+    def _motor_info_write_frame(self, payload: bytes):
+        if len(payload) < 3:
+            return self._nack(int(JmCmd.MOTOR_INFO_WRITE), int(JmErr.LENGTH))
+        pid = codec.rd_u16(payload, 0)
+        spec = self.reg.get_motor_config_param(pid)
+        if spec is None:
+            return self._nack(int(JmCmd.MOTOR_INFO_WRITE), int(JmErr.BAD_PARAM_ID))
+        val = codec.unpack_value(spec.dtype, payload[2:6])
+        # 优先写入 MotorParam 字段(使仿真即时生效), 否则存额外字典
+        if not self._set_param_field(spec.code_name, val):
+            self._motor_config_store[pid] = val
+        else:
+            self.engine.reload_params()
+        return (int(JmCmd.MOTOR_INFO_WRITE), codec.wr_u16(pid) + bytes([int(JmErr.OK)]))
+
+    def _motor_config_value(self, spec):
+        """取电机配置参数当前值: 优先 MotorParam 字段, 其次已写存储, 最后默认值。"""
+        val = self._get_param_field(spec.code_name)
+        if val is not None:
+            return val
+        if spec.param_id in self._motor_config_store:
+            return self._motor_config_store[spec.param_id]
+        # 解析 CSV DefaultValue (registry 加载时未单独存储, 从 desc "默认: x" 提取)
+        if spec.desc and spec.desc.startswith('默认: '):
+            default_str = spec.desc.split(';')[0][len('默认: '):].strip()
+            try:
+                if codec.is_float_type(spec.dtype):
+                    return float(default_str)
+                return int(default_str, 0)
+            except (ValueError, TypeError):
+                pass
+        # 兜底: 与 _param_value 一致的策略
+        if codec.is_float_type(spec.dtype):
+            return round(0.1 * (spec.param_id % 10) + 0.01 * spec.param_id, 4)
+        return spec.param_id % 100
 
     # ---- 参数值访问: 遍历 MotorParam 嵌套 dataclass ----
     def _param_value(self, spec):

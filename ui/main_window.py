@@ -1112,6 +1112,11 @@ class MainWindow(QMainWindow):
         """CSV 重新加载后, 重建所有依赖 registry 的 ParamPanel 表格(保留列宽)。"""
         panels = [self._param_panel, self._config_panel,
                   self._calib_results_panel, self._pid_params_panel]
+        # 清空读写队列: 在途读/写可能指向 reload 后已失效的 param_id
+        self._pending_param_reads.clear()
+        self._param_read_queue.clear()
+        self._pending_param_writes.clear()
+        self._param_write_queue.clear()
         # reload 重建表格会清空列宽, 先备份
         backups = []
         for p in panels:
@@ -1227,6 +1232,11 @@ class MainWindow(QMainWindow):
                 fn = getattr(pnl, "clear_fresh", None)
                 if callable(fn):
                     fn()
+        # 队列自愈: 若收到 PARAM_READ/MOTOR_INFO_READ 的意外 ACK(正常应走数据帧,
+        # 但某些固件/仿真器可能只回 ACK), 弹出读队列防止永久死锁
+        if cmd in (JmCmd.PARAM_READ, JmCmd.MOTOR_INFO_READ) and self._pending_param_reads:
+            self._pending_param_reads.popleft()
+            self._pump_param_read_queue()
 
     def _on_nack(self, cmd: int, err: int):
         # NACK 中文描述: err_name_cn 返回 "枚举名(中文)"; 错误信息加载到故障面板
