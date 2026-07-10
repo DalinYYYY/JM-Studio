@@ -103,6 +103,7 @@ class MotorCmd:
     stop: bool = False           # RUN→READY
     fault_clear: bool = False    # FAULT→IDLE
     reset: bool = False          # 任意→IDLE
+    estop: bool = False          # 急停 →SAFETY
 
     # 运动目标设置(None=未设置, 不覆盖既有目标)
     set_mode: ControlMode = ControlMode.NONE
@@ -341,6 +342,12 @@ class SystemStateMachine:
         #    (FAULT 由 _handle_fault 处理 reset; 其他状态在此处理)
         if cmd.reset and self.sys_state != SystemState.FAULT:
             self.reset()
+            return
+
+        # 2.5 estop 命令: 任意状态(含 FAULT)强制进 SAFETY
+        if cmd.estop and self.sys_state != SystemState.SAFETY:
+            self.sys_state = SystemState.SAFETY
+            self.run_state = RunState.STANDSTILL
             return
 
         # 3. 按当前状态处理命令

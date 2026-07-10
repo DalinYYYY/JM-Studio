@@ -96,8 +96,8 @@ def pack_value(dtype: str, value) -> bytes:
         n = type_nbytes(dtype)
         raw = str(value).encode('utf-8')[:n]
         return raw.ljust(n, b'\x00')
-    # 未知类型: 当 f32 处理
-    return struct.pack('<f', float(value))
+    # 未知类型: 报错, 避免与 unpack_value 的 None 返回不对称
+    raise ValueError(f"未知 dtype: {dtype}")
 
 
 def unpack_value(dtype: str, raw: bytes):

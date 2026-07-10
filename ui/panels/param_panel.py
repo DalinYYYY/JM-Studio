@@ -600,6 +600,13 @@ class ParamPanel(QGroupBox):
         self._set_write_button_state(int(pid), dirty, False)
         return pid
 
+    def reset_write_state(self):
+        """断开连接时调用: 清空全部待确认写状态, 恢复按钮显示。"""
+        while self._pending_writes:
+            pid, _ = self._pending_writes.popleft()
+            dirty = self._compute_dirty(int(pid))
+            self._set_write_button_state(int(pid), dirty, False)
+
     def _on_item_changed(self, item: QTableWidgetItem):
         if self._syncing_table:
             return

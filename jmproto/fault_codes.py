@@ -9,8 +9,7 @@
   - load_fault_csv(): 加载 CSV 故障码表
   - fault_mask_decode(mask): 将虚拟电机 fault_mask 位标志解码为故障描述列表
   - err_name_cn(err): JmErr 错误码中文描述
-  - FAULT_BIT_INFO: 虚拟电机 Fault 位详细信息
-  - FAULT_BIT_TO_CSV: 虚拟电机 Fault 位到 CSV 故障码的映射
+  - FAULT_BIT_INFO: 虚拟电机 Fault 位详细信息(含 CSV 故障码映射)
 """
 import csv
 import os

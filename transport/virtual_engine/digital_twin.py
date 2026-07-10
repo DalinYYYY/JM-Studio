@@ -225,8 +225,8 @@ class DigitalTwinEngine:
             if cmd.set_torque_ff is not None: c.set_torque_ff = cmd.set_torque_ff
             if cmd.set_vel_ff is not None: c.set_vel_ff = cmd.set_vel_ff
             if cmd.set_fault_disable is not None: c.set_fault_disable = cmd.set_fault_disable
-        # 更新通信心跳
-        self.fault_detector.update_comm(self.t_sim)
+            # 更新通信心跳(在锁内, 避免 t_sim 跨线程竞争)
+            self.fault_detector.update_comm(self.t_sim)
 
     def update_comm_heartbeat(self):
         """更新通信心跳(防 COMM_LOST)。"""

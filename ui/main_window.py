@@ -84,6 +84,11 @@ class MainWindow(QMainWindow):
         self._ui_timer = QTimer(self)
         self._ui_timer.setInterval(self._display_period_ms)
         self._ui_timer.timeout.connect(self._on_ui_tick)
+        # 命令超时看门狗: 设备不响应时弹出 pending 项, 防止读写队列永久死锁
+        self._cmd_watchdog = QTimer(self)
+        self._cmd_watchdog.setSingleShot(True)
+        self._cmd_watchdog.setInterval(1000)  # 1s 超时
+        self._cmd_watchdog.timeout.connect(self._on_cmd_timeout)
 
         self.setWindowTitle("JM Studio")
         self.setMinimumSize(1200, 800)
@@ -385,6 +390,7 @@ class MainWindow(QMainWindow):
                 "y": int(self.y()),
             },
             "right_splitter": self._safe_sizes(self._right_splitter),
+            "main_splitter": self._safe_sizes(self._main_splitter),
             "log_splitter_sizes": self._safe_sizes_log(),
             "layout_edit": bool(self._btn_layout_edit.isChecked()),
             "telemetry": {
@@ -411,6 +417,8 @@ class MainWindow(QMainWindow):
             ("motion", self._motion_panel),
             ("motor_param", self._param_panel),
             ("motor_config", self._config_panel),
+            ("calib_results", self._calib_results_panel),
+            ("pid_params", self._pid_params_panel),
             ("calib", self._calib_panel),
             ("pid", self._pid_panel),
             ("twin_param", self._twin_param_panel),
@@ -465,6 +473,13 @@ class MainWindow(QMainWindow):
             try:
                 self._right_splitter.setSizes([int(x) for x in rs])
                 self._log_splitter_sizes = [int(x) for x in rs]
+            except Exception:
+                pass
+        # 左右分栏 splitter 尺寸
+        ms = d.get("main_splitter")
+        if isinstance(ms, list) and len(ms) >= 2:
+            try:
+                self._main_splitter.setSizes([int(x) for x in ms])
             except Exception:
                 pass
         lss = d.get("log_splitter_sizes")
@@ -524,6 +539,8 @@ class MainWindow(QMainWindow):
             ("motion", self._motion_panel),
             ("motor_param", self._param_panel),
             ("motor_config", self._config_panel),
+            ("calib_results", self._calib_results_panel),
+            ("pid_params", self._pid_params_panel),
             ("calib", self._calib_panel),
             ("pid", self._pid_panel),
             ("twin_param", self._twin_param_panel),
@@ -862,6 +879,11 @@ class MainWindow(QMainWindow):
         self._pending_param_writes.clear()
         self._param_read_queue.clear()
         self._param_write_queue.clear()
+        self._cmd_watchdog.stop()
+        # 清除各 ParamPanel 内部待确认写状态, 防止"等待返回"高亮卡死
+        for pnl in (self._param_panel, self._config_panel,
+                    self._calib_results_panel, self._pid_params_panel):
+            pnl.reset_write_state()
         self._client.close()
         self._twin_param_panel.set_engine(None)
         self._fault_info_panel.set_engine(None)
@@ -964,6 +986,9 @@ class MainWindow(QMainWindow):
         if not self._ensure_open():
             self._telemetry_panel.set_running(False)
             return
+        # 强制补全 DQ|PHASE, 否则三相电流/DQ电流恒为0(与启动恢复路径一致)
+        if enable:
+            mask |= jp.JmTlmBit.DQ | jp.JmTlmBit.PHASE
         self._client.set_telemetry(enable, mask, period_ms)
         if enable:
             self._log_panel.log(
@@ -973,7 +998,7 @@ class MainWindow(QMainWindow):
 
     # ==================== 参数读写 ====================
     def _panel_remote_supported(self, panel: ParamPanel) -> bool:
-        # motor_config(motor_info 0xE6-0xEB) 与 motor_param(0xE0-0xE5) 均已支持
+        # 所有面板均支持远程读写(motor_config 0xE6-0xEB 与 motor_param 0xE0-0xE5 通道均已实现)
         return True
 
     def _on_param_read(self, panel: ParamPanel, param_id: int):
@@ -1060,9 +1085,11 @@ class MainWindow(QMainWindow):
         if panel.source() == "motor_config":
             if self._client.motor_info_read(int(param_id)):
                 self._pending_param_reads.append(panel)
+                self._cmd_watchdog.start()
         else:
             if self._client.param_read(int(param_id)):
                 self._pending_param_reads.append(panel)
+                self._cmd_watchdog.start()
 
     def _send_param_write_queued(self, panel: ParamPanel, param_id: int, value: bytes):
         if not self._client.is_open():
@@ -1071,10 +1098,12 @@ class MainWindow(QMainWindow):
             if self._client.motor_info_write(int(param_id), value):
                 panel.note_write_sent(int(param_id))
                 self._pending_param_writes.append(panel)
+                self._cmd_watchdog.start()
         else:
             if self._client.param_write(int(param_id), value):
                 panel.note_write_sent(int(param_id))
                 self._pending_param_writes.append(panel)
+                self._cmd_watchdog.start()
 
     def _open_csv_load_dialog(self):
         """打开 CSV 加载对话框: 选择 motor_info / param_index CSV 并刷新全部参数表格。"""
@@ -1142,7 +1171,11 @@ class MainWindow(QMainWindow):
             self._log_panel.log("[TX] 保存电机配置到Flash/EEPROM (0xEA)")
 
     def _on_param_result(self, param_id: int, ptype: int, value_bytes: bytes):
-        panel = self._pending_param_reads.popleft() if self._pending_param_reads else self._param_panel
+        if not self._pending_param_reads:
+            # 无待处理读请求(设备主动上报/重复帧/自愈误触), 丢弃避免误填默认面板
+            self._log_panel.log(f"[WARN] 收到意外参数应答 id={param_id}, 无待处理读请求")
+            return
+        panel = self._pending_param_reads.popleft()
         val = panel.unpack_value(param_id, value_bytes)
         # float 用 %.6g 格式化(6位有效数字), 去掉 float32 表示误差产生的长尾小数
         # 例: 0.10000000149011612 -> 0.1, 0.8500000238418579 -> 0.85, 1000 -> 1000
@@ -1164,7 +1197,27 @@ class MainWindow(QMainWindow):
         if spec is not None and val is not None and spec.code_name in self._MOTOR_PARAM_KEYS:
             self._motor_params[spec.code_name] = val
             self._feedback_panel.set_motor_params(self._motor_params)
+        self._cmd_watchdog.stop()
         self._pump_param_read_queue()
+
+    def _on_cmd_timeout(self):
+        """命令超时看门狗: 弹出当前 pending 项并推进队列, 防止设备不响应时死锁。"""
+        timed_out = []
+        if self._pending_param_reads:
+            panel = self._pending_param_reads.popleft()
+            timed_out.append(f"读({panel.panel_name()})")
+            self._pump_param_read_queue()
+        elif self._pending_param_writes:
+            panel = self._pending_param_writes.popleft()
+            panel.reject_pending_write()
+            timed_out.append(f"写({panel.panel_name()})")
+            self._pump_param_write_queue()
+        if timed_out:
+            self._log_panel.log_warn(f"命令超时, 弹出: {', '.join(timed_out)}")
+            self.statusBar().showMessage("命令超时, 队列已自愈", 3000)
+            # 若队列仍有待发项, 重启看门狗
+            if self._pending_param_reads or self._pending_param_writes:
+                self._cmd_watchdog.start()
 
     # ==================== 数据接收 ====================
     def _queue_feedback(self, fb):
@@ -1223,12 +1276,16 @@ class MainWindow(QMainWindow):
         self._pid_panel.on_ack(cmd)
         # 写完成: 0xE1(运行时参数) / 0xE7(电机配置) 共用同一待应答队列
         if cmd in (JmCmd.PARAM_WRITE, JmCmd.MOTOR_INFO_WRITE):
-            panel = self._pending_param_writes.popleft() if self._pending_param_writes else self._param_panel
-            panel.confirm_pending_write()
-            self._pump_param_write_queue()
+            if not self._pending_param_writes:
+                self._log_panel.log(f"[WARN] 收到意外写ACK {cmd_name(cmd)}, 无待处理写请求")
+            else:
+                panel = self._pending_param_writes.popleft()
+                panel.confirm_pending_write()
+                self._cmd_watchdog.stop()
+                self._pump_param_write_queue()
         # 需求2: 保存到 Flash/EEPROM (0xEA) ACK -> 标定结果/电机配置面板恢复正常颜色
         if cmd == JmCmd.MOTOR_INFO_SAVE:
-            for pnl in (self._calib_results_panel, self._config_panel):
+            for pnl in (self._calib_results_panel, self._config_panel, self._pid_params_panel):
                 fn = getattr(pnl, "clear_fresh", None)
                 if callable(fn):
                     fn()
@@ -1236,6 +1293,7 @@ class MainWindow(QMainWindow):
         # 但某些固件/仿真器可能只回 ACK), 弹出读队列防止永久死锁
         if cmd in (JmCmd.PARAM_READ, JmCmd.MOTOR_INFO_READ) and self._pending_param_reads:
             self._pending_param_reads.popleft()
+            self._cmd_watchdog.stop()
             self._pump_param_read_queue()
 
     def _on_nack(self, cmd: int, err: int):
@@ -1252,12 +1310,17 @@ class MainWindow(QMainWindow):
         # 读失败: 0xE0 / 0xE6 共用同一待应答队列
         if cmd in (JmCmd.PARAM_READ, JmCmd.MOTOR_INFO_READ) and self._pending_param_reads:
             self._pending_param_reads.popleft()
+            self._cmd_watchdog.stop()
             self._pump_param_read_queue()
         # 写失败: 0xE1 / 0xE7 共用同一待应答队列
         if cmd in (JmCmd.PARAM_WRITE, JmCmd.MOTOR_INFO_WRITE):
-            panel = self._pending_param_writes.popleft() if self._pending_param_writes else self._param_panel
-            panel.reject_pending_write()
-            self._pump_param_write_queue()
+            if not self._pending_param_writes:
+                self._log_panel.log(f"[WARN] 收到意外写NACK {cmd_name(cmd)}, 无待处理写请求")
+            else:
+                panel = self._pending_param_writes.popleft()
+                panel.reject_pending_write()
+                self._cmd_watchdog.stop()
+                self._pump_param_write_queue()
 
     def _on_calib_status(self, status: dict):
         """0x97 CALIB_QUERY 详细状态应答 (JmClient.calib_status_received 信号).

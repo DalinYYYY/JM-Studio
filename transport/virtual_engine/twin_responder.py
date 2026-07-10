@@ -61,6 +61,40 @@ _CTRL_TO_JMCMD = {
 class TwinResponder:
     """数字孪生应答器: 协议命令 <-> DigitalTwinEngine。"""
 
+    # motor_info.csv VariableName -> MotorParam 字段名别名映射
+    # (motor_info 用长名, MotorParam 用短名; 不在此表的 code_name 视为同名直接匹配)
+    _CSV_NAME_ALIASES = {
+        'phase_resistance': 'r',
+        'phase_inductance_d': 'ld',
+        'phase_inductance_q': 'lq',
+        'flux_linkage': 'flux',
+        'torque_constant': 'kt',
+        'rotor_inertia': 'inertia',
+        'current_lim': 'peak_current',
+        'current_control_bandwidth': 'current_bandwidth_hz',
+        'kp_ld': 'current_kp_d', 'ki_ld': 'current_ki_d',
+        'kp_lq': 'current_kp_q', 'ki_lq': 'current_ki_q',
+        'integral_limit': 'current_integral_limit',
+        'comp_du_V': 'deadtime_comp_v',
+        'pwm_duty_max': 'pwm_max_duty',
+        'kp_s': 'speed_kp', 'ki_s': 'speed_ki',
+        'vff': 'velocity_ff_gain', 'aff': 'accel_ff_gain',
+        'kp_p': 'position_kp',
+        'ki_p': 'position_integral_limit',
+        'position_filter_alpha': 'pos_filter_alpha',
+        'following_error_limit': 'follow_error_threshold',
+        'over_current_A': 'protect_over_current',
+        'over_voltage_V': 'protect_over_voltage',
+        'under_voltage_V': 'protect_under_voltage',
+        'over_temp_drive': 'protect_over_temp',
+        'over_temp_motor': 'motor_over_temp_threshold',
+        'over_speed_rad_s': 'protect_over_speed',
+        'error_enable_mask': 'protect_enable_mask',
+        'mit_kp': 'impedance_kp', 'mit_kd': 'impedance_kd',
+        'mit_max_current': 'iq_max',
+        'homing_speed': 'homing_speed_fast',
+    }
+
     def __init__(self, engine: DigitalTwinEngine = None):
         self.engine = engine or DigitalTwinEngine()
         self.reg = get_registry()
@@ -92,7 +126,7 @@ class TwinResponder:
             self.engine.step()
             return [self._ack(cmd)]
         if cmd == int(JmCmd.ESTOP):
-            self.engine.apply_cmd(MotorCmd(stop=True, disable=True))
+            self.engine.apply_cmd(MotorCmd(estop=True))
             self.engine.step()
             return [self._ack(cmd)]
         if cmd == int(JmCmd.CLEAR_FAULT):
@@ -104,7 +138,7 @@ class TwinResponder:
         # ---- 运动控制 ----
         spec = self.reg.get_command(cmd)
         is_motion = (spec is not None and
-                     spec.category in ("运动控制", "高级力控") and
+                     spec.category in ("运动控制", "高级力控", "轨迹同步", "特殊应用与测试") and
                      cmd <= int(JmCmd.SINGLE_STEP))
         if is_motion:
             top = self._top_fsm()
@@ -144,6 +178,16 @@ class TwinResponder:
             self._handle_set_telemetry(payload)
             return [self._ack(cmd)]
 
+        # ---- 标定查询(0x97): 返回 8 字节状态帧(state=IDLE/0) ----
+        if cmd == int(JmCmd.CALIB_QUERY):
+            # state=0(IDLE), fail_reason=0, progress=0, level=0, submode=0, step=0, step_total=0, reserved=0
+            return [(int(JmCmd.CALIB_QUERY), bytes(8))]
+
+        # ---- PID 自整定(0xA0): 返回 8 字节 ACK(status=OK) ----
+        if cmd == int(JmCmd.PID_AUTOTUNE):
+            # status=0(OK), fail_reason=0, ring_select_done=0, reserved×5=0
+            return [(int(JmCmd.PID_AUTOTUNE), bytes(8))]
+
         # ---- 参数读写 ----
         if cmd == int(JmCmd.PARAM_READ):
             return [self._param_read_frame(payload)]
@@ -160,7 +204,8 @@ class TwinResponder:
         if cmd in (int(JmCmd.MOTOR_INFO_SAVE), int(JmCmd.MOTOR_INFO_RESET)):
             return [self._ack(cmd)]
 
-        return [self._ack(cmd)]
+        # 未知命令返回 NACK(UNSUPPORTED), 避免掩盖上位机 bug
+        return [self._nack(cmd, int(JmErr.UNSUPPORTED))]
 
     # ================= 周期回调 =================
     def on_tick(self):
@@ -284,12 +329,10 @@ class TwinResponder:
         return (int(JmCmd.READ_FEEDBACK), payload)
 
     def _state_frame(self):
-        t = self._tlm()
         return (int(JmCmd.READ_STATE),
                 bytes([self._top_fsm() & 0xFF, self._run_state() & 0xFF,
                        self._ctrl_mode_jmcmd() & 0xFF,
-                       1 if self._top_fsm() in (int(TopFsm.READY), int(TopFsm.RUN)) else 0,
-                       int(t.get('run_state', 0)) & 0xFF]))  # 第5字节: 运动子状态(STANDSTILL/MOVING/...)
+                       1 if self._top_fsm() in (int(TopFsm.READY), int(TopFsm.RUN)) else 0]))
 
     def _read_reply_frame(self, cmd: int):
         t = self._tlm()
@@ -453,33 +496,39 @@ class TwinResponder:
             return round(0.1 * (spec.param_id % 10) + 0.01 * spec.param_id, 4)
         return spec.param_id % 100
 
+    def _resolve_field_name(self, code_name: str) -> str:
+        """将 motor_info.csv 的 VariableName 转换为 MotorParam 字段名。"""
+        return self._CSV_NAME_ALIASES.get(code_name, code_name)
+
     def _get_param_field(self, code_name: str):
         """从 MotorParam 的嵌套 dataclass 中按 code_name 查找字段值。"""
         if not code_name:
             return None
+        field_name = self._resolve_field_name(code_name)
         mp = self.engine.mp
         # 顶层字段
-        if hasattr(mp, code_name):
-            return getattr(mp, code_name)
+        if hasattr(mp, field_name):
+            return getattr(mp, field_name)
         # 遍历子 dataclass
         for fname in mp.__dataclass_fields__:
             sub = getattr(mp, fname)
-            if hasattr(sub, '__dataclass_fields__') and hasattr(sub, code_name):
-                return getattr(sub, code_name)
+            if hasattr(sub, '__dataclass_fields__') and hasattr(sub, field_name):
+                return getattr(sub, field_name)
         return None
 
     def _set_param_field(self, code_name: str, value) -> bool:
         """写入 MotorParam 的嵌套字段, 成功返回 True。"""
         if not code_name or value is None:
             return False
+        field_name = self._resolve_field_name(code_name)
         mp = self.engine.mp
-        if hasattr(mp, code_name):
-            setattr(mp, code_name, value)
+        if hasattr(mp, field_name):
+            setattr(mp, field_name, value)
             return True
         for fname in mp.__dataclass_fields__:
             sub = getattr(mp, fname)
-            if hasattr(sub, '__dataclass_fields__') and hasattr(sub, code_name):
-                setattr(sub, code_name, value)
+            if hasattr(sub, '__dataclass_fields__') and hasattr(sub, field_name):
+                setattr(sub, field_name, value)
                 return True
         return False
 

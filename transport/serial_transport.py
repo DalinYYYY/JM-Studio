@@ -60,7 +60,14 @@ class SerialTransport(Transport):
     def open(self, port: str = "", baudrate: int = 115200, **_) -> bool:
         try:
             if self._ser and self._ser.is_open:
-                self.close()
+                # 静默关闭旧连接, 不发 connected(False) 避免状态闪烁
+                with self._io_lock:
+                    self._running = False
+                    try:
+                        self._ser.close()
+                    except Exception:
+                        pass
+                self._wake_event.set()
             ser = serial.Serial(
                 port=port,
                 baudrate=baudrate,
@@ -129,8 +136,9 @@ class SerialTransport(Transport):
                                 if first:
                                     n = self._ser.in_waiting
                                     data = first + (self._ser.read(n) if n > 0 else b'')
+                            if data:
+                                self.rx_bytes += len(data)
                     if data:
-                        self.rx_bytes += len(data)
                         for cmd, payload in self._decoder.feed(data):
                             self.rx_frames += 1
                             self.frame_received.emit(cmd, bytes(payload))

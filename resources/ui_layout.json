@@ -5,22 +5,26 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1429,
-      "height": 942,
-      "x": 425,
-      "y": 299
+      "width": 1660,
+      "height": 956,
+      "x": 49,
+      "y": 153
     },
     "right_splitter": [
-      333,
-      135
+      900,
+      0
+    ],
+    "main_splitter": [
+      300,
+      1334
     ],
     "log_splitter_sizes": [
-      333,
-      135
+      341,
+      127
     ],
     "layout_edit": true,
     "telemetry": {
-      "mask": 327,
+      "mask": 367,
       "period_ms": 5
     },
     "feedback_poll": {
@@ -37,11 +41,11 @@
     },
     "virtual_motor_mode": false,
     "csv_paths": {
-      "motor_config": "C:\\Users\\dal12\\AppData\\Local\\Temp\\tmp66i267yx.csv",
+      "motor_config": "D:\\AAWorkSpace\\001_JointMotor\\SW\\JointMotor\\User\\Tools\\pyqt_gui\\resources\\motor_info.csv",
       "motor_param": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/joint_motor_param_index.csv"
     },
     "plot": {
-      "window_seconds": 40,
+      "window_seconds": 5,
       "follow": true,
       "auto_y": true,
       "current_visibility": {
@@ -69,10 +73,10 @@
       }
     },
     "motion": {
-      "current_cmd": 16,
+      "current_cmd": 17,
       "fields": {
-        "ud": 0.0,
-        "uq": 1.0
+        "id_ref": 0.0,
+        "iq_ref": 0.1
       }
     },
     "motor_param": {
@@ -82,7 +86,7 @@
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 229,
+        "5": 449,
         "6": 72,
         "7": 72
       }
@@ -94,17 +98,41 @@
         "2": 120,
         "3": 200,
         "4": 120,
-        "5": 210,
+        "5": 430,
+        "6": 72,
+        "7": 72
+      }
+    },
+    "calib_results": {
+      "column_widths": {
+        "0": 188,
+        "1": 60,
+        "2": 120,
+        "3": 120,
+        "4": 120,
+        "5": 506,
+        "6": 72,
+        "7": 72
+      }
+    },
+    "pid_params": {
+      "column_widths": {
+        "0": 220,
+        "1": 60,
+        "2": 120,
+        "3": 120,
+        "4": 120,
+        "5": 494,
         "6": 72,
         "7": 72
       }
     },
     "calib": {
-      "task_tab_index": 6,
+      "task_tab_index": 1,
       "history_visible": false,
       "active_task": [
-        150,
-        1
+        145,
+        3
       ],
       "config_panel": {
         "column_widths": {
@@ -113,7 +141,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 286,
+          "5": 506,
           "6": 72,
           "7": 72
         }
@@ -128,7 +156,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 274,
+          "5": 494,
           "6": 72,
           "7": 72
         }
@@ -144,7 +172,7 @@
     },
     "fault_info": {
       "disable_mask": 0,
-      "current_tab": 2
+      "current_tab": 0
     }
   },
   "theme": "dark",

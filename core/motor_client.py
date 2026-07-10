@@ -5,6 +5,7 @@ JmClient 持有一个 Transport(串口或 CAN), 订阅其 frame_received 做业�
 向 UI 暴露高层信号。命令打包基于 jmproto.registry, 新增命令无需改本文件。
 """
 
+import copy
 import struct
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -75,6 +76,8 @@ class JmClient(QObject):
             except Exception:
                 pass
         self._tp = transport
+        # 重置累积反馈, 避免旧设备数据混入新连接
+        self._last_feedback = jp.FeedbackData()
         transport.frame_received.connect(self._on_frame)
         transport.connected.connect(self.connected)
         transport.error_occurred.connect(self.error_occurred)
@@ -99,7 +102,8 @@ class JmClient(QObject):
     # ---------------- 统一发送(含 TX 日志) ----------------
     def _send(self, cmd: int, payload: bytes = b'') -> bool:
         ok = self._tp.send(cmd, payload)
-        self.tx_frame.emit(cmd, payload)
+        if ok:
+            self.tx_frame.emit(cmd, payload)
         return ok
 
     # ---------------- 数据驱动命令 ----------------
@@ -156,6 +160,8 @@ class JmClient(QObject):
     def motor_info_write(self, param_id: int, value: bytes):
         """写单个电机配置(0xE7, RAM生效): {param_id:u16;value:4B}。需调 motor_info_save 固化。"""
         if len(value) != 4:
+            self.error_occurred.emit(
+                f"motor_info_write param_id={param_id} value长度{len(value)}!=4, 已截断/补零")
             value = value[:4].ljust(4, b'\x00')
         return self._send(JmCmd.MOTOR_INFO_WRITE, codec.wr_u16(param_id) + value)
 
@@ -246,8 +252,8 @@ class JmClient(QObject):
                 setattr(merged, field, getattr(fb, field))
             except Exception:
                 pass
-        # merged 是被持续修改的同一对象; UI 侧只读不写, 安全
-        self.feedback_updated.emit(merged)
+        # 浅拷贝后发射, 避免 QueuedConnection 槽拿到被持续修改的同一对象
+        self.feedback_updated.emit(copy.copy(merged))
 
     def _on_frame(self, cmd: int, payload: bytes):
         self.raw_frame.emit(cmd, payload)
@@ -305,6 +311,10 @@ class JmClient(QObject):
             fb, filled = jp.parse_read_reply(cmd, payload)
             if fb is not None:
                 self._merge_and_emit_feedback(fb)
+            return
+
+        # READ_DEBUG(0xC9): 调试帧, 当前不解析, 避免误入 ACK 兜底分支
+        if cmd == JmCmd.READ_DEBUG:
             return
 
         # DEV_INFO
@@ -388,3 +398,6 @@ class JmClient(QObject):
         # 其余: 作 ACK 处理
         if len(payload) >= 1:
             self.ack_received.emit(cmd)
+        else:
+            # 空 payload 帧: 既不匹配特化分支也不满足 ACK 条件, 上报避免队列死锁
+            self.error_occurred.emit(f"空payload帧 cmd=0x{cmd:02X}")

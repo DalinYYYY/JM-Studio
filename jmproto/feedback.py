@@ -56,6 +56,8 @@ class FeedbackData:
         """从 READ_FEEDBACK(0xC0) 应答解析(22字节):
         pos,vel,torque,temp_motor,vbus(f32×5) + fault_mask(u16), 顺序须与固件 pack_feedback 一致"""
         fb = FeedbackData()
+        if len(payload) < 22:
+            return fb  # 截断帧, 返回空 filled_fields
         n = 0
         fb.pos = codec.rd_f32(payload, n); n += 4
         fb.vel = codec.rd_f32(payload, n); n += 4
@@ -130,6 +132,8 @@ def parse_telemetry(payload: bytes):
 
     def take_f32():
         nonlocal offset
+        if offset + 4 > len(payload):
+            return 0.0  # 截断帧保护, 避免抛 struct.error
         v = codec.rd_f32(payload, offset)
         offset += 4
         return v
@@ -150,23 +154,29 @@ def parse_telemetry(payload: bytes):
         fb.temp_fet = take_f32(); fb.temp_motor = take_f32()
         filled += ['temp_fet', 'temp_motor']
     if mask & JmTlmBit.MULTITURN:
-        fb.multiturn = codec.rd_i32(payload, offset); offset += 4
-        fb.single = take_f32()
+        if offset + 8 <= len(payload):
+            fb.multiturn = codec.rd_i32(payload, offset); offset += 4
+            fb.single = take_f32()
         filled += ['multiturn', 'single']
     if mask & JmTlmBit.TORQUE:
         fb.torque = take_f32()
         filled += ['torque']
     if mask & JmTlmBit.FAULT:
-        fb.fault_mask = codec.rd_u32(payload, offset); offset += 4
-        fb.warn_mask = codec.rd_u32(payload, offset); offset += 4
+        if offset + 8 <= len(payload):
+            fb.fault_mask = codec.rd_u32(payload, offset); offset += 4
+            fb.warn_mask = codec.rd_u32(payload, offset); offset += 4
         filled += ['fault_mask', 'warn_mask']
     if mask & JmTlmBit.STATE:
-        fb.top_fsm = payload[offset]; offset += 1
-        fb.run_state = payload[offset]; offset += 1
-        fb.ctrl_mode = payload[offset]; offset += 1
-        fb.enable = payload[offset]; offset += 1
+        if offset + 4 > len(payload):
+            filled += ['top_fsm', 'run_state', 'ctrl_mode', 'enable']
+        else:
+            fb.top_fsm = payload[offset]; offset += 1
+            fb.run_state = payload[offset]; offset += 1
+            fb.ctrl_mode = payload[offset]; offset += 1
+            fb.enable = payload[offset]; offset += 1
         # 可选第5字节: 运动子状态 (twin 扩展, 真机固件不发则保持默认0=STANDSTILL)
-        if offset < len(payload):
+        # 仅当 DEBUG 组不在 mask 中时才尝试读取, 否则会误消费 DEBUG 组首字节
+        if offset < len(payload) and not (mask & JmTlmBit.DEBUG):
             fb.motion_state = payload[offset]; offset += 1
         filled += ['top_fsm', 'run_state', 'ctrl_mode', 'enable', 'motion_state']
     if mask & JmTlmBit.DEBUG:

@@ -294,7 +294,7 @@ class MotorPhysics:
         s.enc_theta = s.enc_count * 2.0 * math.pi / self.enc_lines * self.enc_dir
         # 单圈 + 多圈
         total = s.enc_theta
-        s.multiturn = int(total // (2.0 * math.pi))
+        s.multiturn = int(total / (2.0 * math.pi))  # 截断取整(对齐 C int 转换, 负角度向零取整)
         s.single_turn = total % (2.0 * math.pi)
 
         # 位置低通滤波(对应 pos_filter_alpha)

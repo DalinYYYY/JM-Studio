@@ -90,7 +90,10 @@ class VirtualTransport(Transport):
     # ---------------- 定时器 ----------------
     def _on_sim_tick(self):
         """推进孪生仿真: 20ms 内按 FOC 周期(100μs)推进 200 步。"""
-        self._resp.advance(self._SIM_PERIOD_MS / 1000.0)
+        try:
+            self._resp.advance(self._SIM_PERIOD_MS / 1000.0)
+        except Exception as e:
+            self.error_occurred.emit(f"仿真步异常: {e}")
 
     def _sync_tlm_timer(self):
         if self._resp.tlm_enabled:
@@ -104,8 +107,11 @@ class VirtualTransport(Transport):
     def _on_tlm_tick(self):
         if not self._open:
             return
-        for rcmd, rpayload in self._resp.on_tick():
-            self._emit_frame(rcmd, rpayload)
+        try:
+            for rcmd, rpayload in self._resp.on_tick():
+                self._emit_frame(rcmd, rpayload)
+        except Exception as e:
+            self.error_occurred.emit(f"遥测周期异常: {e}")
 
     # ---------------- 孪生专属接口 ----------------
     def get_engine(self) -> DigitalTwinEngine:

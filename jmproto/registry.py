@@ -88,8 +88,11 @@ class ParamSpec:
         return 'W' in self.rw.upper()
 
 
-def _parse_payload_desc(desc: str):
-    """把 '{pos:f32;vel:f32}' 解析成 [Field...]; '无'/'-'/空 返回 []"""
+def _parse_payload_desc(desc: str, warnings=None):
+    """把 '{pos:f32;vel:f32}' 解析成 [Field...]; '无'/'-'/空 返回 []
+
+    warnings: 可选 list, 遇到不支持的类型(如 char[])时追加告警信息。
+    """
     fields = []
     if not desc:
         return fields
@@ -110,6 +113,8 @@ def _parse_payload_desc(desc: str):
                 except ValueError:
                     dval = None
             fields.append(Field(name, base, dval))
+        elif warnings is not None:
+            warnings.append(f"命令字段 '{name}' 类型 '{dtype}' 不支持, 已跳过")
     return fields
 
 
@@ -174,7 +179,7 @@ class ProtocolRegistry:
                         cmd = int(cmd_hex, 16)
                     except ValueError:
                         continue
-                    fields = _parse_payload_desc(row.get('串口请求载荷(CMD后)', ''))
+                    fields = _parse_payload_desc(row.get('串口请求载荷(CMD后)', ''), self.warnings)
                     spec = CommandSpec(
                         cmd=cmd,
                         name=(row.get('命令名称') or '').strip(),
