@@ -5,20 +5,20 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1686,
-      "height": 954,
-      "x": 76,
-      "y": 174
+      "width": 1429,
+      "height": 942,
+      "x": 425,
+      "y": 299
     },
     "right_splitter": [
-      898,
+      886,
       0
     ],
     "log_splitter_sizes": [
-      1104,
-      197
+      341,
+      127
     ],
-    "layout_edit": false,
+    "layout_edit": true,
     "telemetry": {
       "mask": 327,
       "period_ms": 5
@@ -82,7 +82,7 @@
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 475,
+        "5": 229,
         "6": 72,
         "7": 72
       }
@@ -94,17 +94,17 @@
         "2": 120,
         "3": 200,
         "4": 120,
-        "5": 456,
+        "5": 210,
         "6": 72,
         "7": 72
       }
     },
     "calib": {
-      "task_tab_index": 1,
+      "task_tab_index": 6,
       "history_visible": false,
       "active_task": [
-        145,
-        2
+        150,
+        1
       ],
       "config_panel": {
         "column_widths": {
@@ -113,7 +113,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 1418,
+          "5": 286,
           "6": 72,
           "7": 72
         }
@@ -128,7 +128,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 518,
+          "5": 274,
           "6": 72,
           "7": 72
         }

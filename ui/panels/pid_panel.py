@@ -19,11 +19,12 @@ from collections import deque
 from datetime import datetime
 from enum import IntEnum
 
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from PyQt6.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
     QPushButton, QSplitter, QTextEdit, QCheckBox, QDoubleSpinBox,
-    QButtonGroup, QRadioButton, QSizePolicy, QComboBox,
+    QButtonGroup, QRadioButton, QSizePolicy, QComboBox, QSlider,
+    QWidget, QScrollArea, QGridLayout,
 )
 
 from jmproto.cmd_def import JmCmd, TopFsm
@@ -73,6 +74,10 @@ class PidPanel(QGroupBox):
         self._history = deque(maxlen=self._HISTORY_MAX)
         # 内嵌参数面板引用 (由主窗口 attach_params_panel 注入)
         self._params_panel = None
+        # DEBUG 滑条组: ring(0/1/2/3) -> _SliderGroup 实例
+        self._debug_slider_groups = {}
+        # 写入后延迟回读定时器: 每个 (ring, param_type) 一个单次 QTimer
+        self._readback_timers = {}
         # 构建UI
         self._build()
         self._refresh_status()
@@ -81,14 +86,39 @@ class PidPanel(QGroupBox):
     #  UI 构建
     # ========================================================================
     def _build(self):
-        layout = QVBoxLayout(self)
+        """整个 PID 整定界面用 QScrollArea 包裹, 内容超出时整体滚动。"""
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._main_scroll = QScrollArea()
+        self._main_scroll.setWidgetResizable(True)
+        self._main_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._main_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._main_scroll.setStyleSheet(self._main_scroll_qss())
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
         self._build_status_card(layout)
         self._build_operation_panel(layout)
-        self._build_debug_panel(layout)
+        self._build_debug_slider_area(layout)
         self._build_results_history_split(layout)
+
+        self._main_scroll.setWidget(content)
+        outer.addWidget(self._main_scroll)
+
+    def _main_scroll_qss(self) -> str:
+        return (f"QScrollArea{{background:transparent; border:none;}}"
+                f"QScrollBar:vertical{{background:transparent; width:10px; margin:0;}}"
+                f"QScrollBar::handle:vertical{{background:{theme.hex('scroll_handle')};"
+                f"border-radius:4px; min-height:24px;}}"
+                f"QScrollBar::handle:vertical:hover{{background:{theme.hex('accent')};}}"
+                f"QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}"
+                f"QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{{background:transparent;}}")
 
     def _build_status_card(self, parent_layout):
         """状态卡: 左(连接状态 + 最近操作) 右(三环 source 徽章)。"""
@@ -226,57 +256,237 @@ class PidPanel(QGroupBox):
     # 0xA5/0xA6 调试参数: ring 与 param_type 映射 (与固件 motor_pid_profile_set_param 一致)
     _DEBUG_RING_ITEMS = [("D轴", 0), ("Q轴", 1), ("速度", 2), ("位置", 3)]
     _DEBUG_PARAM_ITEMS = [
-        ("kp", 1), ("ki", 2), ("kd", 3),
-        ("output_limit", 4), ("integral_limit", 5),
-        ("output_filter_alpha", 6), ("flags", 7),
+        ("比例KP", 1), ("积分KI", 2), ("微分KD", 3),
+        ("输出限幅", 4), ("积分限幅", 5),
+        ("滤波系数", 6), ("标志位", 7),
     ]
 
-    def _build_debug_panel(self, parent_layout):
-        """实时调试区 (0xA5 写 / 0xA6 读): 仅对应环 source=DEBUG 时允许写。
+    # 滑条精度: int 0~_SLIDER_STEPS 映射到 [min, max]
+    _SLIDER_STEPS = 10000
 
-        布局: ring选择 | param_type选择 | 值输入 | 写(0xA5) | 读(0xA6) | 读回值显示
+    # 各参数默认 min/max (首次 0xA6 读回前使用; 读回后按 读回值×2 自适应)
+    _PARAM_DEFAULT_RANGE = {
+        1: (0.0, 1.0),        # kp
+        2: (0.0, 1.0),        # ki
+        3: (0.0, 1.0),        # kd
+        4: (0.0, 30.0),       # output_limit
+        5: (0.0, 20.0),       # integral_limit
+        6: (0.0, 1.0),        # output_filter_alpha
+        7: (0.0, 65535.0),    # flags (uint32, 默认 0~0xFFFF)
+    }
+
+    # 写入后延迟回读时间 (ms)
+    _READBACK_DELAY_MS = 100
+
+    # ========================================================================
+    #  DEBUG 滑条面板区 (source=DEBUG 时动态展开, 0xA5 写 / 0xA6 轮询读)
+    # ========================================================================
+    def _build_debug_slider_area(self, parent_layout):
+        """滑条面板容器: 初始隐藏, 当某环 source 切换到 DEBUG 时动态添加对应滑条组。
+        滑条组直接展开 (由外层 _main_scroll 统一提供滚动)。
         """
-        box = QGroupBox("实时调试 (0xA5 写 / 0xA6 读)")
-        h = QHBoxLayout(box)
-        h.setContentsMargins(8, 8, 8, 8)
-        h.setSpacing(8)
+        self._slider_container = QGroupBox("DEBUG 实时调试滑条 (0xA5 写 / 0xA6 轮询读)")
+        self._slider_container.setStyleSheet(self._slider_container_qss())
+        v = QVBoxLayout(self._slider_container)
+        v.setContentsMargins(6, 6, 6, 6)
+        v.setSpacing(4)
 
-        h.addWidget(QLabel("环:"))
-        self._debug_ring_combo = QComboBox()
-        for name, val in self._DEBUG_RING_ITEMS:
-            self._debug_ring_combo.addItem(f"{name}({val})", val)
-        h.addWidget(self._debug_ring_combo)
+        # 滑条组动态挂载区 (直接布局, 不再用内部 QScrollArea)
+        self._slider_area = QVBoxLayout()
+        self._slider_area.setSpacing(6)
+        self._slider_area.setContentsMargins(2, 2, 2, 2)
+        v.addLayout(self._slider_area)
 
-        h.addWidget(QLabel("参数:"))
-        self._debug_param_combo = QComboBox()
-        for name, val in self._DEBUG_PARAM_ITEMS:
-            self._debug_param_combo.addItem(f"{name}({val})", val)
-        h.addWidget(self._debug_param_combo)
+        parent_layout.addWidget(self._slider_container)
+        # 初始隐藏 (无 DEBUG 组时不占空间)
+        self._slider_container.setVisible(False)
 
-        h.addWidget(QLabel("值:"))
-        self._debug_value_spin = QDoubleSpinBox()
-        self._debug_value_spin.setRange(-1e9, 1e9)
-        self._debug_value_spin.setDecimals(6)
-        self._debug_value_spin.setValue(0.0)
-        h.addWidget(self._debug_value_spin, 1)
+    def _slider_container_qss(self) -> str:
+        return (f"QGroupBox{{border:1px solid {theme.hex('accent')};"
+                f"border-radius:6px; margin-top:8px;"
+                f"background:{theme.hex('card_top')};"
+                f"font-weight:bold; color:{theme.hex('text_strong')};}}"
+                f"QGroupBox::title{{subcontrol-origin:margin; left:10px; padding:0 4px;"
+                f"background:{theme.hex('card_top')};}}")
 
-        self._debug_write_btn = QPushButton("写入 (0xA5)")
-        self._debug_write_btn.setStyleSheet(self._ok_btn_qss())
-        self._debug_write_btn.clicked.connect(self._on_debug_write_clicked)
-        h.addWidget(self._debug_write_btn)
+    def _ring_cn(self, ring: int) -> str:
+        """ring(0~3) -> 中文名。"""
+        if 0 <= ring < len(self._DEBUG_RING_ITEMS):
+            return self._DEBUG_RING_ITEMS[ring][0]
+        return f"ring{ring}"
 
-        self._debug_read_btn = QPushButton("读取 (0xA6)")
-        self._debug_read_btn.setStyleSheet(self._normal_btn_qss())
-        self._debug_read_btn.clicked.connect(self._on_debug_read_clicked)
-        h.addWidget(self._debug_read_btn)
+    def _param_name(self, param_type: int) -> str:
+        """param_type(1~7) -> 参数名。"""
+        if 1 <= param_type <= len(self._DEBUG_PARAM_ITEMS):
+            return self._DEBUG_PARAM_ITEMS[param_type - 1][0]
+        return f"type{param_type}"
 
-        self._debug_read_result = QLabel("--")
-        self._debug_read_result.setStyleSheet(
-            f"color:{theme.hex('accent')}; font-family:Consolas, monospace; font-size:12px;")
-        self._debug_read_result.setMinimumWidth(80)
-        h.addWidget(self._debug_read_result)
+    def _ensure_slider_group(self, ring: int):
+        """创建(若不存在)并显示指定 ring 的滑条组面板。"""
+        if ring in self._debug_slider_groups:
+            grp = self._debug_slider_groups[ring]
+            grp.container.setVisible(True)
+            return grp
+        grp = _SliderGroup(ring, self)
+        self._slider_area.addWidget(grp.container)
+        self._debug_slider_groups[ring] = grp
+        return grp
 
-        parent_layout.addWidget(box)
+    def _remove_slider_group(self, ring: int):
+        """移除指定 ring 的滑条组面板, 并取消该环的待发回读定时器。"""
+        grp = self._debug_slider_groups.pop(ring, None)
+        if grp is not None:
+            self._slider_area.removeWidget(grp.container)
+            grp.container.setParent(None)
+            grp.container.deleteLater()
+        # 取消该环所有待发的延迟回读
+        for key in list(self._readback_timers.keys()):
+            if key[0] == ring:
+                t = self._readback_timers.pop(key)
+                t.stop()
+                t.deleteLater()
+
+    def _sync_slider_groups(self):
+        """根据当前三环 source 状态同步滑条面板显隐。
+
+        D轴(ring=0)/Q轴(ring=1) 共享电流环 source;
+        速度(ring=2) 对应速度环 source;
+        位置(ring=3) 对应位置环 source。
+        """
+        ring_to_source_ring = {0: PidRing.CURRENT, 1: PidRing.CURRENT,
+                               2: PidRing.VELOCITY, 3: PidRing.POSITION}
+        new_rings = []
+        for ring, src_ring in ring_to_source_ring.items():
+            src = self._ring_source.get(src_ring, PidSource.DEFAULT)
+            if src == PidSource.DEBUG:
+                was_new = ring not in self._debug_slider_groups
+                self._ensure_slider_group(ring)
+                if was_new:
+                    new_rings.append(ring)
+            else:
+                self._remove_slider_group(ring)
+        # 容器显隐: 有 DEBUG 组时显示容器, 无时隐藏 (不占空间)
+        has_debug = len(self._debug_slider_groups) > 0
+        if hasattr(self, '_slider_container'):
+            self._slider_container.setVisible(has_debug)
+        # 新增 DEBUG 组时立即请求一次全部参数 (不再周期轮询)
+        if new_rings:
+            for ring in new_rings:
+                self._request_all_params(ring)
+
+    def _request_all_params(self, ring: int):
+        """一次性请求指定环的全部 7 个参数 (0xA6)。"""
+        for i in range(len(self._DEBUG_PARAM_ITEMS)):
+            self.pid_param_get_requested.emit(ring, i + 1)
+
+    def _schedule_readback(self, ring: int, param_type: int):
+        """写入后延迟 100ms 请求一次该参数 (确认写入生效)。"""
+        key = (ring, param_type)
+        # 若已有定时器在等待, 取消旧的 (避免重复请求)
+        old = self._readback_timers.pop(key, None)
+        if old is not None:
+            old.stop()
+            old.deleteLater()
+        t = QTimer(self)
+        t.setSingleShot(True)
+        t.setInterval(self._READBACK_DELAY_MS)
+        t.timeout.connect(lambda r=ring, p=param_type, tmr=t:
+                          self._on_readback_timeout(r, p, tmr))
+        self._readback_timers[key] = t
+        t.start()
+
+    def _on_readback_timeout(self, ring: int, param_type: int, tmr):
+        """延迟回读定时器到期: 发送一次 0xA6 请求。"""
+        self._readback_timers.pop((ring, param_type), None)
+        tmr.stop()
+        tmr.deleteLater()
+        self.pid_param_get_requested.emit(ring, param_type)
+
+    def _on_slider_pressed(self, ring: int, param_type: int):
+        """滑条开始拖动: 标记拖动中, 轮询时不覆盖。"""
+        grp = self._debug_slider_groups.get(ring)
+        if grp is not None:
+            grp.set_dragging(param_type, True)
+
+    def _on_slider_released(self, ring: int, param_type: int):
+        """滑条松开: 触发 0xA5 写入, 100ms 后回读确认。需先勾选激活。"""
+        grp = self._debug_slider_groups.get(ring)
+        if grp is None:
+            return
+        grp.set_dragging(param_type, False)
+        if not grp.is_enabled(param_type):  # 未勾选激活, 不写入
+            return
+        value = grp.slider_value(param_type)
+        if value is None:
+            return
+        pname = self._param_name(param_type)
+        ring_cn = self._ring_cn(ring)
+        self._add_history(f"[TX] 滑条写入 {ring_cn}.{pname} = {value:.6g}")
+        self.pid_param_set_requested.emit(ring, param_type, float(value))
+        # 写入后延迟 100ms 回读该参数
+        self._schedule_readback(ring, param_type)
+
+    def _on_slider_range_changed(self, ring: int, param_type: int):
+        """min/max 输入框修改: 重新映射滑条刻度 (不触发写入)。"""
+        grp = self._debug_slider_groups.get(ring)
+        if grp is not None:
+            grp.remap_slider(param_type)
+
+    def _on_slider_write_btn(self, ring: int, param_type: int):
+        """写入按钮: 读取当前滑条值并发送 0xA5, 100ms 后回读确认。需先勾选激活。"""
+        grp = self._debug_slider_groups.get(ring)
+        if grp is None:
+            return
+        if not grp.is_enabled(param_type):  # 未勾选激活, 不写入
+            return
+        value = grp.slider_value(param_type)
+        if value is None:
+            return
+        pname = self._param_name(param_type)
+        ring_cn = self._ring_cn(ring)
+        self._add_history(f"[TX] 按钮写入 {ring_cn}.{pname} = {value:.6g}")
+        self.pid_param_set_requested.emit(ring, param_type, float(value))
+        self._schedule_readback(ring, param_type)
+
+    def _on_slider_read_all(self, ring: int):
+        """全部读取按钮: 连续发送该环所有 7 个 0xA6 请求。"""
+        if not self._link_active:
+            return
+        for i in range(len(self._DEBUG_PARAM_ITEMS)):
+            self.pid_param_get_requested.emit(ring, i + 1)
+
+    def _on_slider_write_all(self, ring: int):
+        """全部写入按钮: 连续发送该环所有 7 个 0xA5 请求。"""
+        if not self._link_active:
+            return
+        grp = self._debug_slider_groups.get(ring)
+        if grp is None:
+            return
+        ring_cn = self._ring_cn(ring)
+        for i in range(len(self._DEBUG_PARAM_ITEMS)):
+            ptype = i + 1
+            if not grp.is_enabled(ptype):  # 未勾选激活, 跳过
+                continue
+            value = grp.slider_value(ptype)
+            if value is None:
+                continue
+            pname = self._param_name(ptype)
+            self._add_history(f"[TX] 批量写入 {ring_cn}.{pname} = {value:.6g}")
+            self.pid_param_set_requested.emit(ring, ptype, float(value))
+            self._schedule_readback(ring, ptype)
+
+    def _on_slider_restore_range(self, ring: int):
+        """恢复默认范围按钮: 各参数恢复自适应初始范围。"""
+        grp = self._debug_slider_groups.get(ring)
+        if grp is None:
+            return
+        for ptype in range(1, len(self._DEBUG_PARAM_ITEMS) + 1):
+            lo, hi = self._PARAM_DEFAULT_RANGE.get(ptype, (0.0, 1.0))
+            grp.set_range(ptype, lo, hi)
+
+    def _on_slider_read_all_click(self, ring: int):
+        """全部读取按钮: 立即请求该环全部 7 个参数。"""
+        self._request_all_params(ring)
 
     def _build_results_history_split(self, parent_layout):
         """结果/历史 Splitter: 上(PID 参数表) 下(操作历史)。
@@ -336,6 +546,7 @@ class PidPanel(QGroupBox):
         split.setStretchFactor(0, 4)
         split.setStretchFactor(1, 1)
         split.setSizes([400, 100])
+        split.setMinimumHeight(350)
         parent_layout.addWidget(split, 1)
         self._params_split = split
 
@@ -417,51 +628,30 @@ class PidPanel(QGroupBox):
         else:
             self._set_last_op("无来源变更")
 
-    def _on_debug_write_clicked(self):
-        """调试参数写入(0xA5)按钮回调: 仅对应环 source=DEBUG 时允许。"""
-        if not self._link_active:
-            self._add_history("[未连接] 请先连接电机")
-            self._set_last_op("未连接")
-            return
-        ring = self._debug_ring_combo.currentData()
-        ptype = self._debug_param_combo.currentData()
-        value = self._debug_value_spin.value()
-        ring_cn = self._DEBUG_RING_ITEMS[ring][0] if ring < len(self._DEBUG_RING_ITEMS) else f"ring{ring}"
-        pname = self._DEBUG_PARAM_ITEMS[ptype - 1][0] if 1 <= ptype <= len(self._DEBUG_PARAM_ITEMS) else f"type{ptype}"
-        # 检查对应环是否处于 DEBUG 模式 (D/Q轴→电流环)
-        src_ring = PidRing.CURRENT if ring <= 1 else (PidRing.VELOCITY if ring == 2 else PidRing.POSITION)
-        if self._ring_source.get(src_ring, PidSource.DEFAULT) != PidSource.DEBUG:
-            self._add_history(
-                f"[状态拒绝] {ring_cn} 对应 {_RING_CN[src_ring]} 未处于 DEBUG 模式, 无法写入")
-            self._set_last_op(f"需先切换 {_RING_CN[src_ring]} 到 DEBUG")
-            return
-        self._add_history(f"[TX] 调试写入 {ring_cn}.{pname} = {value}")
-        self._set_last_op(f"写入中... {ring_cn}.{pname}")
-        self.pid_param_set_requested.emit(ring, ptype, float(value))
-
-    def _on_debug_read_clicked(self):
-        """调试参数读取(0xA6)按钮回调: 随时可读。"""
-        if not self._link_active:
-            self._add_history("[未连接] 请先连接电机")
-            self._set_last_op("未连接")
-            return
-        ring = self._debug_ring_combo.currentData()
-        ptype = self._debug_param_combo.currentData()
-        ring_cn = self._DEBUG_RING_ITEMS[ring][0] if ring < len(self._DEBUG_RING_ITEMS) else f"ring{ring}"
-        pname = self._DEBUG_PARAM_ITEMS[ptype - 1][0] if 1 <= ptype <= len(self._DEBUG_PARAM_ITEMS) else f"type{ptype}"
-        self._add_history(f"[TX] 调试读取 {ring_cn}.{pname}")
-        self._set_last_op(f"读取中... {ring_cn}.{pname}")
-        self._debug_read_result.setText("...")
-        self.pid_param_get_requested.emit(ring, ptype)
-
     # ========================================================================
     #  公共 API (主窗口调用)
     # ========================================================================
+    def showEvent(self, event):
+        """界面显示时: 无特殊处理 (不再周期轮询)。"""
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        """界面隐藏(切换到其他tab)时: 取消所有待发的延迟回读定时器。"""
+        super().hideEvent(event)
+        self._cancel_all_readback()
+
+    def _cancel_all_readback(self):
+        """取消所有待发的延迟回读定时器。"""
+        for key, t in list(self._readback_timers.items()):
+            t.stop()
+            t.deleteLater()
+        self._readback_timers.clear()
+
     def set_link_active(self, active: bool):
+        """连接状态变化: 断连时取消所有延迟回读, 不重置 source 状态。"""
         self._link_active = active
         if not active:
-            self._ring_source = {r: PidSource.DEFAULT for r in PidRing}
-            self._refresh_source_badges()
+            self._cancel_all_readback()
         self._refresh_status()
 
     def update_state(self, top_fsm: int, run_state: int, ctrl_mode: int, enable: int):
@@ -519,6 +709,8 @@ class PidPanel(QGroupBox):
             f"[RX] PID来源 电流={_SOURCE_CN[self._ring_source[PidRing.CURRENT]]} "
             f"速度={_SOURCE_CN[self._ring_source[PidRing.VELOCITY]]} "
             f"位置={_SOURCE_CN[self._ring_source[PidRing.POSITION]]}")
+        # 同步 DEBUG 滑条面板显隐
+        self._sync_slider_groups()
 
 
     def on_ack(self, cmd: int):
@@ -532,13 +724,10 @@ class PidPanel(QGroupBox):
                 if src >= 0:
                     self._ring_source[PidRing(ring_id)] = PidSource(src)
             self._refresh_source_badges()
+            # 同步 DEBUG 滑条面板显隐
+            self._sync_slider_groups()
         elif cmd == int(JmCmd.PID_PARAM_SET):
-            ring = self._debug_ring_combo.currentData()
-            ptype = self._debug_param_combo.currentData()
-            ring_cn = self._DEBUG_RING_ITEMS[ring][0] if ring < len(self._DEBUG_RING_ITEMS) else f"ring{ring}"
-            pname = self._DEBUG_PARAM_ITEMS[ptype - 1][0] if 1 <= ptype <= len(self._DEBUG_PARAM_ITEMS) else f"type{ptype}"
-            self._add_history(f"[RX] 调试参数写入成功 {ring_cn}.{pname}")
-            self._set_last_op(f"写入成功 {ring_cn}.{pname}")
+            self._add_history(f"[RX] 调试参数写入成功")
 
     def on_nack(self, cmd: int, err: int):
         """0xA1 PID_SOURCE_SET / 0xA5 PID_PARAM_SET 失败 NACK。"""
@@ -554,22 +743,23 @@ class PidPanel(QGroupBox):
                 self._set_last_op(f"写入失败 (0x{err:02X})")
 
     def on_pid_param_received(self, ring: int, param_type: int, value4: bytes):
-        """0xA6 PID_PARAM_GET 应答 (6字节: ring + param_type + 4B value)。"""
+        """0xA6 PID_PARAM_GET 应答 (6字节: ring + param_type + 4B value)。
+
+        更新滑条面板位置。不更新状态栏 (轮询频繁, 避免刷屏)。
+        """
         import struct as _struct
         if len(value4) >= 4:
-            if param_type == 7:  # flags: uint32
+            if param_type == 7:  # flags: uint32, 仅显示十进制
                 val = _struct.unpack('<I', value4[:4])[0]
-                val_str = f"{val} (0x{val:08X})"
             else:
                 val = _struct.unpack('<f', value4[:4])[0]
-                val_str = f"{val:.6g}"
         else:
-            val_str = "--"
-        self._debug_read_result.setText(val_str)
-        ring_cn = self._DEBUG_RING_ITEMS[ring][0] if ring < len(self._DEBUG_RING_ITEMS) else f"ring{ring}"
-        pname = self._DEBUG_PARAM_ITEMS[param_type - 1][0] if 1 <= param_type <= len(self._DEBUG_PARAM_ITEMS) else f"type{param_type}"
-        self._add_history(f"[RX] 读取 {ring_cn}.{pname} = {val_str}")
-        self._set_last_op(f"读取完成 {ring_cn}.{pname}={val_str}")
+            val = None
+        # 滑条面板更新
+        if val is not None:
+            grp = self._debug_slider_groups.get(ring)
+            if grp is not None:
+                grp.update_value(param_type, float(val), is_uint32=(param_type == 7))
 
     def attach_params_panel(self, panel):
         """注入 ParamPanel 实例, 替换占位控件, 并把「历史:显/隐」开关注入其 footer。"""
@@ -640,14 +830,6 @@ class PidPanel(QGroupBox):
             self._autotune_btn.setStyleSheet(self._ok_btn_qss())
         if hasattr(self, '_source_apply_btn'):
             self._source_apply_btn.setStyleSheet(self._normal_btn_qss())
-        # 调试区按钮主题刷新
-        if hasattr(self, '_debug_write_btn'):
-            self._debug_write_btn.setStyleSheet(self._ok_btn_qss())
-        if hasattr(self, '_debug_read_btn'):
-            self._debug_read_btn.setStyleSheet(self._normal_btn_qss())
-        if hasattr(self, '_debug_read_result'):
-            self._debug_read_result.setStyleSheet(
-                f"color:{theme.hex('accent')}; font-family:Consolas, monospace; font-size:12px;")
         # splitter 手柄随主题刷新
         if hasattr(self, "_params_split"):
             self._params_split.setStyleSheet(f"""
@@ -671,6 +853,13 @@ class PidPanel(QGroupBox):
                 f"background:{theme.hex('panel_bg')}; color:{theme.hex('text')};"
                 f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size:12px;"
                 f"border:1px solid {theme.hex('border')};")
+        # DEBUG 滑条面板主题刷新
+        if hasattr(self, '_slider_container'):
+            self._slider_container.setStyleSheet(self._slider_container_qss())
+        if hasattr(self, '_main_scroll'):
+            self._main_scroll.setStyleSheet(self._main_scroll_qss())
+        for grp in self._debug_slider_groups.values():
+            grp.apply_theme()
         self._refresh_source_badges()
         self._refresh_status()
         if self._params_panel and hasattr(self._params_panel, 'apply_theme'):
@@ -747,3 +936,337 @@ class PidPanel(QGroupBox):
             sb = self._history_view.verticalScrollBar()
             if sb:
                 sb.setValue(sb.maximum())
+
+
+# ============================================================================
+#  _SliderGroup: 单个 ring 的调试滑条面板 (7 参数行 + 底部操作按钮)
+# ============================================================================
+class _SliderGroup:
+    """单个 ring 的调试滑条组状态 + UI 构建。
+
+    每行: 参数名 | QSlider | 当前值 | min输入 | max输入 | 写入按钮
+    滑条 int 0~_SLIDER_STEPS 映射到 [min, max] 浮点值。
+    """
+
+    def __init__(self, ring: int, panel: 'PidPanel'):
+        self.ring = ring
+        self.panel = panel
+        # param_type -> 行控件 dict
+        self.rows = {}
+        self._build_ui()
+
+    def _build_ui(self):
+        ring_cn = self.panel._ring_cn(self.ring)
+        self.container = QFrame()
+        self.container.setObjectName("debugSliderGroup")
+        self.container.setStyleSheet(
+            f"QFrame#debugSliderGroup{{border:1px solid {theme.hex('accent')};"
+            f"border-radius:6px;"
+            f"background:{theme.hex('card_top')};}}")
+        v = QVBoxLayout(self.container)
+        v.setContentsMargins(10, 8, 10, 8)
+        v.setSpacing(4)
+
+        # ---- 标题栏 ----
+        hdr = QHBoxLayout()
+        hdr.setSpacing(8)
+        title = QLabel(f"{ring_cn} · 实时调试")
+        title.setStyleSheet(
+            f"font-weight:bold; color:{theme.hex('text_strong')}; font-size:13px;")
+        hdr.addWidget(title)
+        badge = QLabel("DEBUG")
+        badge.setStyleSheet(
+            f"background:{theme.hex('accent')}; color:{theme.hex('card_top')};"
+            f"padding:1px 8px; border-radius:8px; font-size:11px; font-weight:bold;")
+        hdr.addWidget(badge)
+        hdr.addStretch()
+        self.poll_label = QLabel(f"写入后 {self.panel._READBACK_DELAY_MS}ms 回读确认")
+        self.poll_label.setStyleSheet(f"color:{theme.hex('muted')}; font-size:11px;")
+        hdr.addWidget(self.poll_label)
+        v.addLayout(hdr)
+
+        # ---- 表头 ----
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(2)
+        headers = ["启用", "参数", "滑条 (拖动松开即写入)", "当前值", "min", "max", "写入"]
+        col_widths = [40, 90, 0, 70, 60, 60, 48]
+        for col, (htext, w) in enumerate(zip(headers, col_widths)):
+            lbl = QLabel(htext)
+            lbl.setStyleSheet(
+                f"color:{theme.hex('muted')}; font-size:11px;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(lbl, 0, col)
+            if w > 0:
+                grid.setColumnMinimumWidth(col, w)
+
+        # ---- 7 行滑条 ----
+        for row_idx, (pname, ptype) in enumerate(self.panel._DEBUG_PARAM_ITEMS, start=1):
+            lo, hi = self.panel._PARAM_DEFAULT_RANGE.get(ptype, (0.0, 1.0))
+
+            # 激活勾选 (默认不勾选, 未勾选时滑条/写入按钮禁用, 保证安全)
+            enable_chk = QCheckBox()
+            enable_chk.setChecked(False)
+            enable_chk.setStyleSheet(
+                f"QCheckBox::indicator{{width:14px;height:14px;"
+                f"border:1px solid {theme.hex('btn_border')};border-radius:3px;"
+                f"background:{theme.hex('input_bg')};}}"
+                f"QCheckBox::indicator:checked{{background:{theme.hex('accent')};"
+                f"border:1px solid {theme.hex('accent')};}}")
+            grid.addWidget(enable_chk, row_idx, 0)
+
+            # 参数名
+            name_lbl = QLabel(pname)
+            name_lbl.setStyleSheet(
+                f"color:{theme.hex('text_strong')};"
+                f"font-size:12px; font-weight:bold;")
+            grid.addWidget(name_lbl, row_idx, 1)
+
+            # 滑条
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(0, self.panel._SLIDER_STEPS)
+            slider.setValue(0)
+            slider.setEnabled(False)  # 默认禁用, 勾选后启用
+            slider.setStyleSheet(self._slider_qss())
+            grid.addWidget(slider, row_idx, 2)
+
+            # 当前值
+            val_lbl = QLabel("--")
+            val_lbl.setStyleSheet(
+                f"color:{theme.hex('accent')}; font-family:Consolas,monospace;"
+                f"font-size:12px; font-weight:bold;")
+            val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            val_lbl.setMinimumWidth(70)
+            grid.addWidget(val_lbl, row_idx, 3)
+
+            # min 输入 (移除箭头按钮, 节省空间给数字显示)
+            min_spin = QDoubleSpinBox()
+            min_spin.setRange(-1e9, 1e9)
+            min_spin.setDecimals(6)
+            min_spin.setValue(lo)
+            min_spin.setMinimumWidth(68)
+            min_spin.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
+            min_spin.setStyleSheet(self._spin_qss())
+            grid.addWidget(min_spin, row_idx, 4)
+
+            # max 输入 (移除箭头按钮)
+            max_spin = QDoubleSpinBox()
+            max_spin.setRange(-1e9, 1e9)
+            max_spin.setDecimals(6)
+            max_spin.setValue(hi)
+            max_spin.setMinimumWidth(68)
+            max_spin.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
+            max_spin.setStyleSheet(self._spin_qss())
+            grid.addWidget(max_spin, row_idx, 5)
+
+            # 写入按钮
+            write_btn = QPushButton("0xA5")
+            write_btn.setFixedWidth(48)
+            write_btn.setEnabled(False)  # 默认禁用, 勾选后启用
+            write_btn.setStyleSheet(self._write_btn_qss())
+            grid.addWidget(write_btn, row_idx, 6)
+
+            # 存储行控件
+            self.rows[ptype] = {
+                'enable_chk': enable_chk,
+                'slider': slider,
+                'val_lbl': val_lbl,
+                'min_spin': min_spin,
+                'max_spin': max_spin,
+                'write_btn': write_btn,
+                'dragging': False,
+                'initialized': False,
+            }
+
+            # 信号绑定 (用默认参数捕获 ptype)
+            enable_chk.toggled.connect(
+                lambda checked, pt=ptype: self._on_enable_toggled(pt, checked))
+            slider.sliderPressed.connect(
+                lambda pt=ptype: self.panel._on_slider_pressed(self.ring, pt))
+            slider.sliderReleased.connect(
+                lambda pt=ptype: self.panel._on_slider_released(self.ring, pt))
+            min_spin.valueChanged.connect(
+                lambda _, pt=ptype: self.panel._on_slider_range_changed(self.ring, pt))
+            max_spin.valueChanged.connect(
+                lambda _, pt=ptype: self.panel._on_slider_range_changed(self.ring, pt))
+            write_btn.clicked.connect(
+                lambda _, pt=ptype: self.panel._on_slider_write_btn(self.ring, pt))
+
+        grid.setColumnStretch(2, 1)  # 滑条列占满剩余空间
+        v.addLayout(grid)
+
+        # ---- 底部操作栏 ----
+        footer = QHBoxLayout()
+        footer.setSpacing(6)
+        btn_read_all = QPushButton("全部读取 (0xA6×7)")
+        btn_write_all = QPushButton("全部写入 (0xA5×7)")
+        btn_restore = QPushButton("恢复默认范围")
+        for btn in (btn_read_all, btn_write_all, btn_restore):
+            btn.setStyleSheet(self.panel._normal_btn_qss())
+            btn.setFixedHeight(26)
+        btn_read_all.clicked.connect(lambda: self.panel._on_slider_read_all_click(self.ring))
+        btn_write_all.clicked.connect(lambda: self.panel._on_slider_write_all(self.ring))
+        btn_restore.clicked.connect(lambda: self.panel._on_slider_restore_range(self.ring))
+        footer.addWidget(btn_read_all)
+        footer.addWidget(btn_write_all)
+        footer.addWidget(btn_restore)
+        footer.addStretch()
+        v.addLayout(footer)
+
+    # ---- 值映射 ----
+    def _on_enable_toggled(self, ptype: int, checked: bool):
+        """激活勾选变化: 启用/禁用该行的滑条和写入按钮。"""
+        row = self.rows.get(ptype)
+        if row is None:
+            return
+        row['slider'].setEnabled(checked)
+        row['write_btn'].setEnabled(checked)
+        # 未勾选时清除拖动标记
+        if not checked:
+            row['dragging'] = False
+
+    def is_enabled(self, ptype: int) -> bool:
+        """该参数是否已勾选激活。"""
+        row = self.rows.get(ptype)
+        return row['enable_chk'].isChecked() if row else False
+
+    def _value_to_slider(self, ptype: int, value: float) -> int:
+        """浮点值 -> 滑条 int 位置。"""
+        row = self.rows.get(ptype)
+        if row is None:
+            return 0
+        lo = row['min_spin'].value()
+        hi = row['max_spin'].value()
+        if hi <= lo:
+            return 0
+        pos = int((value - lo) / (hi - lo) * self.panel._SLIDER_STEPS)
+        return max(0, min(self.panel._SLIDER_STEPS, pos))
+
+    def slider_value(self, ptype: int):
+        """滑条当前位置 -> 浮点值 (flags 返回 uint32)。"""
+        row = self.rows.get(ptype)
+        if row is None:
+            return None
+        pos = row['slider'].value()
+        lo = row['min_spin'].value()
+        hi = row['max_spin'].value()
+        if hi <= lo:
+            return lo
+        val = lo + pos / self.panel._SLIDER_STEPS * (hi - lo)
+        if ptype == 7:  # flags: uint32
+            return float(int(max(0, min(0xFFFFFFFF, val))))
+        return val
+
+    def remap_slider(self, ptype: int):
+        """min/max 变更后重新映射滑条位置 (保持当前值不变)。"""
+        row = self.rows.get(ptype)
+        if row is None:
+            return
+        # 读取当前显示值
+        txt = row['val_lbl'].text()
+        if txt == "--":
+            return
+        try:
+            val = float(txt)
+        except ValueError:
+            return
+        pos = self._value_to_slider(ptype, val)
+        # 临时阻塞信号避免触发 released
+        slider = row['slider']
+        was = slider.blockSignals(True)
+        slider.setValue(pos)
+        slider.blockSignals(was)
+
+    def set_range(self, ptype: int, lo: float, hi: float):
+        """设置 min/max (不触发 valueChanged 回调)。"""
+        row = self.rows.get(ptype)
+        if row is None:
+            return
+        row['min_spin'].blockSignals(True)
+        row['max_spin'].blockSignals(True)
+        row['min_spin'].setValue(lo)
+        row['max_spin'].setValue(hi)
+        row['min_spin'].blockSignals(False)
+        row['max_spin'].blockSignals(False)
+        self.remap_slider(ptype)
+
+    def set_dragging(self, ptype: int, on: bool):
+        row = self.rows.get(ptype)
+        if row is not None:
+            row['dragging'] = on
+
+    def is_dragging(self, ptype: int) -> bool:
+        row = self.rows.get(ptype)
+        return row['dragging'] if row else False
+
+    def update_value(self, ptype: int, value: float, is_uint32: bool = False):
+        """0xA6 应答回调: 更新滑条位置 + 当前值显示。
+
+        首次更新时按 读回值×2 自适应 max (不小于 0.001)。
+        用户拖动中不覆盖滑条位置。
+        """
+        row = self.rows.get(ptype)
+        if row is None:
+            return
+        # 显示值 (flags 仅显示十进制, 不显示16进制)
+        if is_uint32:
+            uval = int(max(0, min(0xFFFFFFFF, value)))
+            val_str = f"{uval}"
+        else:
+            val_str = f"{value:.6g}"
+        row['val_lbl'].setText(val_str)
+        # 首次初始化: 按 读回值×2 自适应 max
+        if not row['initialized']:
+            row['initialized'] = True
+            lo = row['min_spin'].value()
+            if is_uint32:
+                new_hi = max(value * 2, 65535.0, lo + 1)
+            else:
+                new_hi = max(abs(value) * 2, 0.001, lo + 0.001)
+            self.set_range(ptype, lo, new_hi)
+        # 更新滑条位置 (用户未拖动时)
+        if not row['dragging']:
+            pos = self._value_to_slider(ptype, value)
+            slider = row['slider']
+            was = slider.blockSignals(True)
+            slider.setValue(pos)
+            slider.blockSignals(was)
+
+    # ---- 样式 ----
+    def _slider_qss(self) -> str:
+        return (f"QSlider::groove:horizontal{{"
+                f"border:1px solid {theme.hex('border')};"
+                f"height:4px;background:{theme.hex('card_bottom')};"
+                f"border-radius:2px;}}"
+                f"QSlider::handle:horizontal{{"
+                f"background:{theme.hex('input_bg')};"
+                f"border:2px solid {theme.hex('accent')};"
+                f"width:12px;height:12px;margin:-6px 0;border-radius:8px;}}"
+                f"QSlider::sub-page:horizontal{{"
+                f"background:{theme.hex('accent')};border-radius:2px;}}")
+
+    def _spin_qss(self) -> str:
+        return (f"QDoubleSpinBox{{background:{theme.hex('input_bg')};"
+                f"border:1px solid {theme.hex('btn_border')};"
+                f"border-radius:3px;padding:1px 2px;"
+                f"font-size:11px;color:{theme.hex('text')};}}")
+
+    def _write_btn_qss(self) -> str:
+        return (f"QPushButton{{background:{theme.hex('accent')};color:{theme.hex('card_top')};"
+                f"border:none;border-radius:3px;padding:2px 6px;"
+                f"font-size:11px;font-weight:bold;}}"
+                f"QPushButton:hover{{opacity:0.85;}}")
+
+    def apply_theme(self):
+        """主题切换时刷新所有控件样式。"""
+        self.container.setStyleSheet(
+            f"QFrame#debugSliderGroup{{border:1px solid {theme.hex('accent')};"
+            f"border-radius:6px;background:{theme.hex('card_top')};}}")
+        for row in self.rows.values():
+            row['slider'].setStyleSheet(self._slider_qss())
+            row['min_spin'].setStyleSheet(self._spin_qss())
+            row['max_spin'].setStyleSheet(self._spin_qss())
+            row['write_btn'].setStyleSheet(self._write_btn_qss())
+            row['val_lbl'].setStyleSheet(
+                f"color:{theme.hex('accent')}; font-family:Consolas,monospace;"
+                f"font-size:12px; font-weight:bold;")
