@@ -579,10 +579,6 @@ class PidPanel(QGroupBox):
             self._add_history("[未连接] 请先连接电机")
             self._set_last_op("未连接, 无法整定")
             return
-        if self._current_top_fsm != int(TopFsm.IDLE):
-            self._add_history("[状态拒绝] 仅 IDLE 态可执行理论估计")
-            self._set_last_op("需切换到 IDLE 态")
-            return
         # 计算 ring_select: 0=电流 1=速度 2=位置 3=全部 (与固件约定)
         ring_select = 0
         for ring, chk in self._autotune_ring_checks.items():
@@ -609,10 +605,6 @@ class PidPanel(QGroupBox):
         if not self._link_active:
             self._add_history("[未连接] 请先连接电机")
             self._set_last_op("未连接")
-            return
-        if self._current_top_fsm != int(TopFsm.IDLE):
-            self._add_history("[状态拒绝] 仅 IDLE 态可切换来源")
-            self._set_last_op("需切换到 IDLE 态")
             return
         sent = 0
         for ring_id, grp in self._source_btn_groups.items():
