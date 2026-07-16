@@ -17,6 +17,10 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
+# 启动时加载功能开关(触发单例缓存), 控制是否加载特定功能模块
+from ui import feature_flags
+feature_flags.get_enabled_features()  # 预热缓存
+
 from ui.main_window import MainWindow
 
 
@@ -28,7 +32,7 @@ def main():
         )
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Joint Motor Controller")
+    app.setApplicationName("JM Studio")
     app.setApplicationVersion("1.0.0")
 
     # 设置默认字体(等宽字体用于数据显示)

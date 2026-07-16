@@ -38,6 +38,7 @@ from ui.panels.twin_param_panel import TwinParamPanel
 from ui.panels.fault_info_panel import FaultInfoPanel
 from ui.csv_load_dialog import CsvLoadDialog
 from ui.theme import theme
+from ui import feature_flags
 from ui import layout_store
 
 
@@ -90,7 +91,7 @@ class MainWindow(QMainWindow):
         self._cmd_watchdog.setInterval(1000)  # 1s 超时
         self._cmd_watchdog.timeout.connect(self._on_cmd_timeout)
 
-        self.setWindowTitle("JM Studio")
+        self.setWindowTitle("JM Studio v1.0.0")
         self.setMinimumSize(1200, 800)
 
         self._build_ui()
@@ -186,18 +187,30 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right)
 
         tabs = QTabWidget()
-        tabs.addTab(self._feedback_panel, "实时反馈")
-        tabs.addTab(self._state_panel, "状态机")
-        tabs.addTab(self._calib_panel, "电机标定")
-        tabs.addTab(self._pid_panel, "PID 整定")
-        tabs.addTab(self._param_panel, "电机参数")
-        tabs.addTab(self._config_panel, "电机配置")
-        tabs.addTab(self._twin_param_panel, "孪生参数")
-        tabs.addTab(self._fault_info_panel, "故障信息")
-        tabs.addTab(self._plot_panel, "实时曲线")
+        # 功能开关: 只控制是否显示 Tab, 面板实例始终创建(信号连接/转发不受影响)
+        ff = feature_flags
+        if ff.is_enabled("feedback_chart"):
+            tabs.addTab(self._feedback_panel, "实时反馈")
+        if ff.is_enabled("state_machine"):
+            tabs.addTab(self._state_panel, "状态机")
+        if ff.is_enabled("calibration"):
+            tabs.addTab(self._calib_panel, "电机标定")
+        if ff.is_enabled("pid_tuning"):
+            tabs.addTab(self._pid_panel, "PID 整定")
+        if ff.is_enabled("motor_params"):
+            tabs.addTab(self._param_panel, "电机参数")
+        if ff.is_enabled("motor_config"):
+            tabs.addTab(self._config_panel, "电机配置")
+        if ff.is_enabled("virtual_twin"):
+            tabs.addTab(self._twin_param_panel, "孪生参数")
+        if ff.is_enabled("fault_info"):
+            tabs.addTab(self._fault_info_panel, "故障信息")
+        if ff.is_enabled("waveform_plot"):
+            tabs.addTab(self._plot_panel, "实时曲线")
         self._tabs = tabs
         # 虚拟电机模式默认关闭: 初始隐藏孪生参数 Tab (故障信息面板内部子表/屏蔽区自行隐藏)
-        tabs.setTabVisible(tabs.indexOf(self._twin_param_panel), False)
+        if ff.is_enabled("virtual_twin"):
+            tabs.setTabVisible(tabs.indexOf(self._twin_param_panel), False)
         # A2: 切到标定 Tab 且已连接时, 自动读一次标定结果(MotorCalibParam 全段)
         tabs.currentChanged.connect(self._on_main_tab_changed)
 
@@ -214,10 +227,14 @@ class MainWindow(QMainWindow):
             }
         """)
         self._right_splitter.addWidget(tabs)
-        self._right_splitter.addWidget(self._log_panel)
-        self._right_splitter.setStretchFactor(0, 3)
-        self._right_splitter.setStretchFactor(1, 2)
-        self._right_splitter.setSizes([480, 300])
+        if feature_flags.is_enabled("log_panel"):
+            self._right_splitter.addWidget(self._log_panel)
+            self._right_splitter.setStretchFactor(0, 3)
+            self._right_splitter.setStretchFactor(1, 2)
+            self._right_splitter.setSizes([480, 300])
+        else:
+            self._right_splitter.setStretchFactor(0, 1)
+            self._log_panel_visible = False
         self._log_splitter_sizes = self._right_splitter.sizes()
 
         right_layout.addWidget(self._right_splitter)
@@ -278,6 +295,9 @@ class MainWindow(QMainWindow):
         btn.clicked.connect(self._toggle_log_panel)
         self._btn_toggle_log = btn
         self._update_log_toggle_button()
+        # log_panel 关闭时隐藏切换按钮(日志面板已在 _build_ui 隐藏)
+        if not feature_flags.is_enabled("log_panel"):
+            btn.setVisible(False)
         return btn
 
     def _log_toggle_btn_style(self) -> str:
@@ -412,7 +432,7 @@ class MainWindow(QMainWindow):
                 "motor_param": self._registry.params_csv_path,
             },
         }
-        # 各面板配置 (容错: 单面板失败不影响整体保存)
+        # 各面板配置 (容错: 单面板失败不影响整体保存; 被开关关闭的面板跳过)
         for key, panel in (
             ("plot", self._plot_panel),
             ("motion", self._motion_panel),
@@ -534,7 +554,7 @@ class MainWindow(QMainWindow):
                 for panel in (self._param_panel, self._config_panel,
                               self._calib_results_panel, self._pid_params_panel):
                     panel.reload()
-        # 各面板配置 (容错: 单面板失败不影响其他)
+        # 各面板配置 (容错: 单面板失败不影响其他; 被开关关闭的面板跳过)
         for key, panel in (
             ("plot", self._plot_panel),
             ("motion", self._motion_panel),
@@ -612,6 +632,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._btn_theme, 1, 1)
         # 虚拟电机模式开关: 仅在选中虚拟引擎并打开串口后可用。
         # 开启后显示孪生参数 Tab、虚拟电机 Fault 位子表与故障屏蔽区。
+        # virtual_twin 关闭时保留按钮但隐藏(避免大量引用点加守卫)
         self._btn_virtual_mode = QPushButton("虚拟电机: 关")
         self._btn_virtual_mode.setCheckable(True)
         self._btn_virtual_mode.setChecked(False)
@@ -622,6 +643,8 @@ class MainWindow(QMainWindow):
         self._btn_virtual_mode.setStyleSheet(self._virtual_mode_btn_style())
         self._btn_virtual_mode.toggled.connect(self._on_virtual_mode_toggled)
         layout.addWidget(self._btn_virtual_mode, 2, 0, 1, 2)
+        if not feature_flags.is_enabled("virtual_twin"):
+            self._btn_virtual_mode.setVisible(False)
         # 加载参数表 CSV: 运行时换 motor_info.csv / param_index.csv, 刷新全部参数表格
         btn_load_csv = QPushButton("加载参数表CSV")
         btn_load_csv.setToolTip(

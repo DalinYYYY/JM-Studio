@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QIntValidator
 
 from transport.serial_transport import SerialTransport
+from ui import feature_flags
 
 
 class ConnectionPanel(QGroupBox):
@@ -65,8 +66,9 @@ class ConnectionPanel(QGroupBox):
         if self._connected:
             return
         self._combo_port.clear()
-        # 始终提供虚拟数据引擎(演示, 无需硬件), 放在首位
-        self._combo_port.addItem("VIRTUAL  虚拟数据引擎 (演示, 无需硬件)")
+        # 虚拟数据引擎选项: 受 virtual_twin 功能开关控制, 关闭时不显示
+        if feature_flags.is_enabled("virtual_twin"):
+            self._combo_port.addItem("VIRTUAL  虚拟数据引擎 (演示, 无需硬件)")
         ports = SerialTransport.list_ports()
         for name, desc in ports:
             self._combo_port.addItem(f"{name}  {desc}")

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "features": {
+    "motor_config": true,
+    "motor_params": true,
+    "calibration": true,
+    "pid_tuning": true,
+    "feedback_chart": true,
+    "state_machine": true,
+    "waveform_plot": true,
+    "fault_info": true,
+    "virtual_twin": false,
+    "log_panel": true
+  }
+}
