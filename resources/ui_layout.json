@@ -5,18 +5,18 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1660,
-      "height": 956,
-      "x": 49,
-      "y": 153
+      "width": 1703,
+      "height": 945,
+      "x": 290,
+      "y": 313
     },
     "right_splitter": [
-      900,
+      889,
       0
     ],
     "main_splitter": [
       300,
-      1334
+      1377
     ],
     "log_splitter_sizes": [
       341,
@@ -45,16 +45,16 @@
       "motor_param": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/joint_motor_param_index.csv"
     },
     "plot": {
-      "window_seconds": 5,
+      "window_seconds": 10,
       "follow": true,
       "auto_y": true,
       "current_visibility": {
         "id": false,
         "iq": false,
-        "ibus": false,
-        "ia": true,
-        "ib": true,
-        "ic": true
+        "ibus": true,
+        "ia": false,
+        "ib": false,
+        "ic": false
       },
       "per_plot": {
         "pos": {
@@ -76,7 +76,7 @@
       "current_cmd": 17,
       "fields": {
         "id_ref": 0.0,
-        "iq_ref": 0.1
+        "iq_ref": 0.05
       }
     },
     "motor_param": {
@@ -86,7 +86,7 @@
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 449,
+        "5": 492,
         "6": 72,
         "7": 72
       }
@@ -98,7 +98,7 @@
         "2": 120,
         "3": 200,
         "4": 120,
-        "5": 430,
+        "5": 473,
         "6": 72,
         "7": 72
       }
@@ -110,7 +110,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 506,
+        "5": 549,
         "6": 72,
         "7": 72
       }
@@ -122,7 +122,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 494,
+        "5": 537,
         "6": 72,
         "7": 72
       }
@@ -141,7 +141,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 506,
+          "5": 549,
           "6": 72,
           "7": 72
         }
@@ -156,7 +156,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 494,
+          "5": 537,
           "6": 72,
           "7": 72
         }

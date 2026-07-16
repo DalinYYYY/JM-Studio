@@ -147,7 +147,8 @@ class MainWindow(QMainWindow):
             show_save=False, show_legend=False)
         self._config_panel = ParamPanel(
             self._registry, title="电机配置", source="motor_config",
-            show_save=True, save_text="保存配置到Flash/EEPROM", show_legend=False)
+            show_save=True, save_text="参数固化", show_legend=False,
+            show_import_export=True)
         # 标定结果面板: 复用 motor_config 通道(0xE6 读 / 0xE7 写 / 0xEA 固化),
         # 仅展示 MotorCalibParam 段(Index 16~42), 注入到标定 Tab 内嵌展示。
         # show_legend=False: 去掉图例行, 让表格直接占满

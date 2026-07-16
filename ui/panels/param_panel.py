@@ -7,11 +7,13 @@
 
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QFileDialog,
     QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -22,6 +24,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QBrush, QFont
 from collections import deque
+import json
+import os
 
 from jmproto.codec import is_float_type
 from ui.theme import theme
@@ -68,13 +72,16 @@ class ParamPanel(QGroupBox):
 
     def __init__(self, registry, parent=None, title="电机参数",
                  source="motor_param", show_save=False, save_text="保存到Flash",
-                 groups=None, show_legend=True, show_bulk_rw=False):
+                 groups=None, show_legend=True, show_bulk_rw=False,
+                 show_import_export=False):
         super().__init__("", parent)
         self._panel_name = title
         self._reg = registry
         self._source = source
         self._show_save = bool(show_save)
         self._save_text = save_text
+        # 导入/导出按钮+文件名标签: 仅 motor_config 面板启用
+        self._show_import_export = bool(show_import_export)
         # 是否显示图例(固有/可配置 色块说明); 内嵌场景(如标定结果)可关闭
         self._show_legend = bool(show_legend)
         # 需求3: 是否在底部显示全读/全写按钮(标定结果面板用)
@@ -200,24 +207,51 @@ class ParamPanel(QGroupBox):
         # 会作为独立小窗口在 Windows 上短暂弹出
         btn_layout.addWidget(self._btn_save)
         self._btn_save.setVisible(self._show_save)
+        # 全读/全写按钮: 先创建, 位置由下方模式决定(保存后 或 最右)
+        self._btn_read_all = self._make_button(
+            "参数全读",
+            lambda _=False: self.read_params.emit(list(self._param_specs.keys())),
+            width=88)
+        self._btn_write_all = self._make_button(
+            "参数全写", self._on_write_all_clicked, width=88)
+        # show_import_export 模式(电机配置面板): 全读/全写放保存按钮后、导入导出前
+        if self._show_import_export:
+            btn_layout.addWidget(self._btn_read_all)
+            btn_layout.addWidget(self._btn_write_all)
+            self._btn_read_all.setVisible(True)
+            self._btn_write_all.setVisible(True)
+        # 导入/导出按钮 + 文件名标签 (紧跟保存按钮, 在 footer 注入位之前)
+        self._btn_export = QPushButton("参数导出")
+        self._btn_export.setFixedHeight(24)
+        self._btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_export.clicked.connect(self._on_export_clicked)
+        self._btn_import = QPushButton("参数导入")
+        self._btn_import.setFixedHeight(24)
+        self._btn_import.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_import.clicked.connect(self._on_import_clicked)
+        self._lbl_import_file = QLabel("")
+        self._lbl_import_file.setStyleSheet(
+            f"color: {theme.hex('muted')}; font-style: italic;"
+        )
+        btn_layout.addWidget(self._btn_export)
+        btn_layout.addWidget(self._btn_import)
+        btn_layout.addWidget(self._lbl_import_file)
+        has_ie = self._show_import_export
+        self._btn_export.setVisible(has_ie)
+        self._btn_import.setVisible(has_ie)
+        self._lbl_import_file.setVisible(has_ie)
         # 需求3: 保存按钮后的注入位(放历史开关等), 在 stretch 之前
         self._footer_after_save = QHBoxLayout()
         self._footer_after_save.setContentsMargins(0, 0, 0, 0)
         btn_layout.addLayout(self._footer_after_save)
         btn_layout.addStretch()
-        # 需求3: 全读/全写放最右(show_bulk_rw 控制)
+        # show_bulk_rw 模式(标定/PID 面板): 全读/全写放最右(stretch 之后)
+        # 与 show_import_export 模式(电机配置面板, 按钮在保存后)互斥
         if self._show_bulk_rw:
-            # 需求5: 底部全读/全写复用 _make_button(width=72=列宽),
-            # 与上方单行读/写按钮宽度一致且套同一 base 样式; spacing=0 让两按钮紧贴
-            # 对齐表格 COL_READ+COL_WRITE 两列(合计 144px)
-            self._btn_read_all = self._make_button(
-                "全读",
-                lambda _=False: self.read_params.emit(list(self._param_specs.keys())),
-                width=72)
             btn_layout.addWidget(self._btn_read_all)
-            self._btn_write_all = self._make_button(
-                "全写", self._on_write_all_clicked, width=72)
             btn_layout.addWidget(self._btn_write_all)
+            self._btn_read_all.setVisible(True)
+            self._btn_write_all.setVisible(True)
         self._btn_layout = btn_layout   # 保留引用, 供 add_footer_widget 注入
         self._btn_row = btn_row
         layout.addWidget(btn_row)
@@ -704,6 +738,98 @@ class ParamPanel(QGroupBox):
                         self._table.setColumnWidth(col, int(w))
                 except Exception:
                     pass
+
+    # ==================== 导入/导出参数 ====================
+    def _on_export_clicked(self):
+        """导出当前面板参数到 JSON 文件。值取"当前值"列(读回值)。"""
+        params_data = []
+        for pid, spec in self._param_specs.items():
+            cur_item = self._current_items.get(int(pid))
+            value = cur_item.text().strip() if cur_item is not None else "--"
+            params_data.append({
+                "param_id": int(pid),
+                "code_name": spec.code_name,
+                "cn_name": spec.cn_name,
+                "value": value,
+                "unit": spec.unit,
+                "dtype": spec.dtype,
+            })
+        payload = {
+            "panel": self._panel_name,
+            "source": self._source,
+            "param_count": len(params_data),
+            "params": params_data,
+        }
+        default_name = f"{self._panel_name}_export.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出参数", default_name, "JSON 文件 (*.json)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"写入文件失败:\n{e}")
+            return
+        self._lbl_import_file.setText(f"已导出: {os.path.basename(path)}")
+        QMessageBox.information(
+            self, "导出成功", f"已导出 {len(params_data)} 个参数到:\n{path}"
+        )
+
+    def _on_import_clicked(self):
+        """从 JSON 文件导入参数, 填入"修改值"列并触发 dirty 高亮。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入参数", "", "JSON 文件 (*.json)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "导入失败", f"读取文件失败:\n{e}")
+            return
+        if not isinstance(payload, dict) or not isinstance(payload.get("params"), list):
+            QMessageBox.warning(self, "导入失败", "文件格式无效: 缺少 params 列表")
+            return
+        applied = 0
+        skipped = 0
+        self._syncing_table = True
+        try:
+            for item in payload["params"]:
+                if not isinstance(item, dict):
+                    skipped += 1
+                    continue
+                pid = item.get("param_id")
+                if pid is None:
+                    skipped += 1
+                    continue
+                pid = int(pid)
+                edit_item = self._edit_items.get(pid)
+                state = self._row_state.get(pid)
+                if edit_item is None or state is None or not state.get('writable'):
+                    skipped += 1
+                    continue
+                value = item.get("value", "")
+                if not isinstance(value, str):
+                    value = str(value)
+                value = value.strip()
+                if not value or value == "--":
+                    skipped += 1
+                    continue
+                edit_item.setText(value)
+                dirty = self._compute_dirty(pid)
+                self._set_write_button_state(pid, dirty, False)
+                applied += 1
+        finally:
+            self._syncing_table = False
+        self._lbl_import_file.setText(f"已导入: {os.path.basename(path)}")
+        tip = f'已导入 {applied} 个参数到修改值列'
+        if skipped:
+            tip += f'（跳过 {skipped} 项）'
+        tip += '\n请检查后点击「写」或「全写」下发。'
+        QMessageBox.information(self, "导入成功", tip)
 
     def _params_by_group(self):
         if self._source == "motor_config":
