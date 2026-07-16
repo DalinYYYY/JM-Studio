@@ -83,7 +83,7 @@ panel._cur_bw_spin.setValue(1000.0)
 panel._on_autotune_clicked()
 check(len(received_autotune) == 1, f"理论估计应发出 1 个信号, 实际 {len(received_autotune)}")
 if received_autotune:
-    check(received_autotune[0][0] == 3, f"ring_select 应为 3(全部), 实际 {received_autotune[0][0]}")
+    check(received_autotune[0][0] == 0x07, f"ring_mask 应为 0x07(三环全选), 实际 {received_autotune[0][0]}")
     check(received_autotune[0][1] == 1000.0, f"cur_bw 应为 1000.0, 实际 {received_autotune[0][1]}")
 
 
@@ -102,7 +102,7 @@ check((0, 1) in received_source, f"(0,1) 应在发出的信号中, 实际 {recei
 old_source = dict(panel._ring_source)
 panel.on_autotune_result({
     'ok': True, 'status': 0, 'fail_reason': 0,
-    'ring_select_done': 3, 'status_cn': '成功',
+    'ring_select_done': 0x07, 'status_cn': '成功',
     'fail_reason_cn': '无',
 })
 check(panel._ring_source[0] == 2, f"电流环 source 应为 2(AUTOTUNE), 实际 {panel._ring_source[0]}")

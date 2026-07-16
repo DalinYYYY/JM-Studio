@@ -8,7 +8,7 @@ PID 整定面板 (顶级 Tab)。
   4. 结果/历史 Splitter — ControlParam 参数表 + 操作历史
 
 信号:
-  pid_autotune_requested(ring_select, cur_bw, vel_bw, pos_bw) — 主窗口连 client.pid_autotune
+  pid_autotune_requested(ring_mask, cur_bw, vel_bw, pos_bw) — 主窗口连 client.pid_autotune
   pid_source_set_requested(ring_select, source)              — 主窗口连 client.pid_source_set
   pid_param_set_requested(ring, param_type, value)           — 主窗口连 client.pid_param_set
   pid_param_get_requested(ring, param_type)                  — 主窗口连 client.pid_param_get
@@ -55,7 +55,7 @@ class PidPanel(QGroupBox):
     """PID 整定面板 (顶级 Tab)。"""
 
     # ---- 请求信号 (主窗口连接到 JmClient) ----
-    pid_autotune_requested = pyqtSignal(int, float, float, float)  # ring_select, cur_bw, vel_bw, pos_bw
+    pid_autotune_requested = pyqtSignal(int, float, float, float)  # ring_mask(bit0=电流 bit1=速度 bit2=位置), cur_bw, vel_bw, pos_bw
     pid_source_set_requested = pyqtSignal(int, int)                # ring_select, source
     pid_param_set_requested = pyqtSignal(int, int, float)          # ring, param_type, value (0xA5)
     pid_param_get_requested = pyqtSignal(int, int)                 # ring, param_type (0xA6)
@@ -579,13 +579,11 @@ class PidPanel(QGroupBox):
             self._add_history("[未连接] 请先连接电机")
             self._set_last_op("未连接, 无法整定")
             return
-        # 计算 ring_select: 0=电流 1=速度 2=位置 3=全部 (与固件约定)
+        # 计算 ring_select 位掩码: bit0=电流 bit1=速度 bit2=位置 (可组合)
         ring_select = 0
         for ring, chk in self._autotune_ring_checks.items():
             if chk.isChecked():
                 ring_select |= (1 << int(ring))
-        if ring_select == 0b111:
-            ring_select = 3
         if ring_select == 0:
             self._add_history("[参数错误] 请至少选择一个环")
             self._set_last_op("未选择整定环")
@@ -657,13 +655,13 @@ class PidPanel(QGroupBox):
         ring_done = int(result.get('ring_select_done', 0))
         if ok:
             rings_cn = []
-            if ring_done in (0, 3):  # 0=电流 或 3=全部
+            if ring_done & 0x01:  # bit0=电流环
                 self._ring_source[PidRing.CURRENT] = PidSource.AUTOTUNE
                 rings_cn.append(_RING_CN[PidRing.CURRENT])
-            if ring_done in (1, 3):
+            if ring_done & 0x02:  # bit1=速度环
                 self._ring_source[PidRing.VELOCITY] = PidSource.AUTOTUNE
                 rings_cn.append(_RING_CN[PidRing.VELOCITY])
-            if ring_done in (2, 3):
+            if ring_done & 0x04:  # bit2=位置环
                 self._ring_source[PidRing.POSITION] = PidSource.AUTOTUNE
                 rings_cn.append(_RING_CN[PidRing.POSITION])
             self._refresh_source_badges()

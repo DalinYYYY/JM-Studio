@@ -92,7 +92,7 @@ class JmCmd(IntEnum):
     CALIB_ABORT = 0x98   # 中止标定
 
     # PID 管理 0xA0~0xAF: 三环独立参数来源管理 + 实时调试
-    # 0xA0: 触发理论估计(零极点对消法)并自动设 source=2, 仅IDLE态
+    # 0xA0: 触发理论估计(零极点对消法)并自动设 source=2, ring_mask位掩码(bit0=电流 bit1=速度 bit2=位置), 仅IDLE态
     # 0xA1: 独立切换某环 source(0=默认 1=Flash 2=理论估计 3=调试), 仅IDLE态
     # 0xA2: 读取三环当前 source 状态
     # 0xA5: 实时写单个PID参数(调试模式, 直接写profile, ISR下一拍生效)
@@ -222,7 +222,7 @@ class PidAutotuneFailReason(IntEnum):
     NONE = 0              # 无失败
     CALIB_NOT_READY = 1   # 辨识数据未就绪(R/L 为默认值或未标定)
     NOT_IDLE = 2          # 非 IDLE 态
-    BAD_PARAM = 3         # 参数无效(ring_select 越界 / 带宽非法)
+    BAD_PARAM = 3         # 参数无效(ring_mask 越界 / 带宽非法)
 
 
 # PID 理论估计失败原因中文名 (供 UI 显示)

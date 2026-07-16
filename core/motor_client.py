@@ -193,7 +193,7 @@ class JmClient(QObject):
     def pid_autotune(self, ring_select: int, cur_bw_hz: float = 0.0,
                      vel_bw_hz: float = 0.0, pos_bw_hz: float = 0.0):
         """PID 理论估计(0xA0): 基于辨识参数零极点对消法计算三环PID。
-        ring_select: 0=电流环 1=速度环 2=位置环 3=全部三环
+        ring_select: 位掩码 bit0=电流环 bit1=速度环 bit2=位置环 (可组合, 如 0x05=电流+位置)
         cur/vel/pos_bw_hz: 各环带宽Hz, <=0 使用固件默认(电流1000/速度100/位置20Hz)
         应答走 pid_autotune_result_received 信号(8字节ACK, 含status/fail_reason)。
         仅 IDLE 态可执行, 不自动存 Flash(需调 motor_info_save 固化)。"""
