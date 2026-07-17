@@ -151,6 +151,16 @@ def _parse_num(text):
         return None
 
 
+def _col(row, *names):
+    """从 CSV 行取第一个非空列值, 支持多种列名格式兼容(如 VariableName/param_name)。
+    返回去空白字符串; 全空返回 ''。"""
+    for n in names:
+        v = row.get(n)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return ''
+
+
 class ProtocolRegistry:
     """命令/参数注册表"""
 
@@ -222,30 +232,43 @@ class ProtocolRegistry:
         self.params_csv_path = _PARAM_CSV
 
     def _parse_params_csv(self, csv_path: str, out: dict) -> bool:
-        """解析 joint_motor_param_index.csv 到 out(param_id -> ParamSpec)。"""
+        """解析参数表 CSV 到 out(param_id -> ParamSpec)。
+        motor_param.csv 的 id 列是 1-based (生成器约定: validate 返回 0=全部通过),
+        加载时自动 -1 修正为 0-based, 与下位机 s_param_tbl 数组索引对齐。"""
         new_params = {}
         try:
             with open(csv_path, encoding='utf-8-sig') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    pid_str = (row.get('param_id') or '').strip()
+                    # 兼容两种列名: param_index.csv(param_id/参数名(代码字段)...)
+                    # 和 motor_param.csv(id/param_name/description...)
+                    pid_str = _col(row, 'param_id', 'id')
                     if not pid_str.isdigit():
                         continue
                     pid = int(pid_str)
+                    # motor_param.csv 的 id 列 1-based → 0-based (与下位机 s_param_tbl 对齐)
+                    if 'id' in row and 'param_id' not in row:
+                        pid -= 1
+                    dtype = _normalize_dtype(_col(row, '数据类型', 'data_type'))
+                    arr = _col(row, 'array_size')
+                    if dtype == 'char' and arr and arr != '1':
+                        dtype = f'char[{arr}]'
+                    # 优先用"字节数"列, 无则用 dtype 推算
+                    nbytes_str = _col(row, '字节数')
                     try:
-                        nbytes = int((row.get('字节数') or '0').strip())
+                        nbytes = int(nbytes_str) if nbytes_str else codec.type_nbytes(dtype)
                     except ValueError:
-                        nbytes = 0
+                        nbytes = codec.type_nbytes(dtype)
                     new_params[pid] = ParamSpec(
                         param_id=pid,
-                        code_name=(row.get('参数名(代码字段)') or '').strip(),
-                        cn_name=(row.get('中文含义') or '').strip(),
-                        dtype=_normalize_dtype(row.get('数据类型') or ''),
+                        code_name=_col(row, '参数名(代码字段)', 'param_name'),
+                        cn_name=_col(row, '中文含义', 'description'),
+                        dtype=dtype,
                         nbytes=nbytes,
-                        unit=(row.get('单位') or '').strip(),
-                        group=(row.get('所属分组') or '其他').strip(),
-                        rw=(row.get('读写') or 'RW').strip(),
-                        desc=(row.get('中文含义') or '').strip(),
+                        unit=_col(row, '单位', 'unit'),
+                        group=_col(row, '所属分组', 'group') or '其他',
+                        rw=_col(row, '读写', 'access') or 'RW',
+                        desc=_col(row, '中文含义', 'description'),
                     )
         except FileNotFoundError:
             self.warnings.append(f"参数表 CSV 未找到, 参数面板将为空: {csv_path}")
@@ -280,34 +303,40 @@ class ProtocolRegistry:
             with open(csv_path, encoding='utf-8-sig', newline='') as f:
                 reader = csv.DictReader(f)
                 for idx, row in enumerate(reader):
-                    name = (row.get('VariableName') or '').strip()
+                    # 兼容两种列名: motor_info.csv(VariableName/Index/NameZh/Category...)
+                    # 和 motor_param.csv(param_name/id/description/group/min_value/max_value...)
+                    name = _col(row, 'VariableName', 'param_name')
                     if not name:
                         continue
-                    index_text = (row.get('Index') or '').strip()
+                    index_text = _col(row, 'Index', 'id')
                     try:
                         pid = int(index_text, 0) if index_text else idx
                     except ValueError:
                         pid = idx
-                    dtype = _normalize_dtype(row.get('DataType') or '')
+                    dtype = _normalize_dtype(_col(row, 'DataType', 'data_type'))
+                    # motor_param.csv 的 char + array_size → char[N]
+                    arr = _col(row, 'array_size')
+                    if dtype == 'char' and arr and arr != '1':
+                        dtype = f'char[{arr}]'
                     nbytes = codec.type_nbytes(dtype)
-                    remarks = (row.get('Remarks') or '').strip()
-                    default = (row.get('DefaultValue') or '').strip()
+                    remarks = _col(row, 'Remarks', 'notes')
+                    default = _col(row, 'DefaultValue', 'default_value')
                     desc_parts = []
                     if default:
                         desc_parts.append(f"默认: {default}")
                     if remarks:
                         desc_parts.append(remarks)
-                    vmin = _parse_num(row.get('Min'))
-                    vmax = _parse_num(row.get('Max'))
+                    vmin = _parse_num(_col(row, 'Min', 'min_value'))
+                    vmax = _parse_num(_col(row, 'Max', 'max_value'))
                     new_params[pid] = ParamSpec(
                         param_id=pid,
                         code_name=name,
-                        cn_name=(row.get('NameZh') or '').strip(),
+                        cn_name=_col(row, 'NameZh', 'description'),
                         dtype=dtype,
                         nbytes=nbytes,
-                        unit=(row.get('Unit') or '').strip(),
-                        group=(row.get('Category') or '其他').strip(),
-                        rw=(row.get('Access') or 'RW').strip(),
+                        unit=_col(row, 'Unit', 'unit'),
+                        group=_col(row, 'Category', 'group') or '其他',
+                        rw=_col(row, 'Access', 'access') or 'RW',
                         desc='; '.join(desc_parts),
                         vmin=vmin,
                         vmax=vmax,

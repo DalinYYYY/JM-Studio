@@ -5,18 +5,18 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1472,
-      "height": 886,
-      "x": 619,
-      "y": 215
+      "width": 1795,
+      "height": 1091,
+      "x": 570,
+      "y": 179
     },
     "right_splitter": [
-      830,
+      1035,
       0
     ],
     "main_splitter": [
       300,
-      1146
+      1469
     ],
     "log_splitter_sizes": [
       341,
@@ -42,7 +42,7 @@
     "virtual_motor_mode": false,
     "csv_paths": {
       "motor_config": "D:\\AAWorkSpace\\001_JointMotor\\SW\\JointMotor\\User\\Tools\\pyqt_gui\\resources\\motor_info.csv",
-      "motor_param": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/joint_motor_param_index.csv"
+      "motor_param": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/motor_param.csv"
     },
     "plot": {
       "window_seconds": 20,
@@ -75,7 +75,7 @@
     "motion": {
       "current_cmd": 20,
       "fields": {
-        "vel_ref": 50.0
+        "vel_ref": 5.0
       }
     },
     "motor_param": {
@@ -85,7 +85,7 @@
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 261,
+        "5": 584,
         "6": 72,
         "7": 72
       }
@@ -97,7 +97,7 @@
         "2": 120,
         "3": 200,
         "4": 125,
-        "5": 237,
+        "5": 560,
         "6": 72,
         "7": 72
       }
@@ -109,7 +109,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 499,
+        "5": 541,
         "6": 72,
         "7": 72
       }
@@ -121,7 +121,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 487,
+        "5": 629,
         "6": 72,
         "7": 72
       }
@@ -140,7 +140,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 499,
+          "5": 541,
           "6": 72,
           "7": 72
         }
@@ -155,7 +155,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 487,
+          "5": 629,
           "6": 72,
           "7": 72
         }

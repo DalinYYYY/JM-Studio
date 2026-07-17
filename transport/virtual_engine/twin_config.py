@@ -1,4 +1,4 @@
-"""数字孪生参数配置: 从固件 motor_param.csv 加载 83 项参数。
+"""数字孪生参数配置: 从固件 motor_param.csv 加载 86 项参数。
 
 忠实映射固件 motor_param_t 的全部子结构(motor_base/gearbox/encoder/...)。
 孪生物理模型与控制器均从此处读取参数, 实现与固件"同参数源"。
@@ -8,7 +8,8 @@
   2. 上位机 resources/motor_info.csv
   3. 内置硬编码默认值(CSV 缺失时回退)
 
-参数读写按 param_id(1~83), 与协议 PARAM_READ/PARAM_WRITE 对齐。
+参数读写按 param_id(0~85), 与协议 PARAM_READ/PARAM_WRITE 对齐。
+motor_param.csv 的 id 列 1-based, 加载时自动 -1 修正为 0-based。
 """
 
 import os
@@ -182,60 +183,64 @@ def _build_param_map():
     """构造 param_id -> (dataclass实例引用, 属性名, dtype_str) 映射。"""
     # (csv param_name, 子结构对象变量名, 属性名)
     # 子结构变量名在 MotorParam 中的字段
+    # key 为 0-based param_id, 与下位机 s_param_tbl 数组索引对齐
+    # (对应 motor_param.csv 的 id 列 - 1)
     entries = [
-        # MotorInstance
-        (1, 'motor_id', 'motor_instance'), (2, 'motor_name', 'motor_instance'),
-        # MotorBase
-        (3, 'r', 'motor_base'), (4, 'ld', 'motor_base'), (5, 'lq', 'motor_base'),
-        (6, 'flux', 'motor_base'), (7, 'kt', 'motor_base'), (8, 'pole_pairs', 'motor_base'),
-        (9, 'rated_current', 'motor_base'), (10, 'peak_current', 'motor_base'),
-        (11, 'max_speed', 'motor_base'), (12, 'dead_time_ns', 'motor_base'),
-        (13, 'rated_voltage', 'motor_base'), (14, 'rated_speed_rpm', 'motor_base'),
-        (15, 'rated_torque', 'motor_base'), (16, 'peak_torque', 'motor_base'),
-        (17, 'inertia', 'motor_base'), (18, 'ke', 'motor_base'),
-        (19, 'pwm_freq_hz', 'motor_base'), (20, 'foc_freq_hz', 'motor_base'),
-        # Gearbox
-        (21, 'gear_ratio', 'gearbox_param'), (22, 'gear_efficiency', 'gearbox_param'),
-        (23, 'output_torque_const', 'gearbox_param'), (24, 'gear_backlash', 'gearbox_param'),
-        # Encoder
-        (25, 'enc_lines', 'encoder_param'), (26, 'enc_direction', 'encoder_param'),
-        (27, 'enc_offset', 'encoder_param'), (28, 'elec_angle_bias', 'encoder_param'),
-        (29, 'pos_filter_alpha', 'encoder_param'), (30, 'enc_type', 'encoder_param'),
-        (31, 'enc_auto_calib', 'encoder_param'), (32, 'speed_obs_gain', 'encoder_param'),
-        # PositionLimit
-        (33, 'multiturn_enable', 'position_limit'), (34, 'pos_min_limit', 'position_limit'),
-        (35, 'pos_max_limit', 'position_limit'), (36, 'limit_sw_enable', 'position_limit'),
-        # Homing
-        (37, 'homing_method', 'homing_param'), (38, 'homing_speed_fast', 'homing_param'),
-        (39, 'homing_speed_slow', 'homing_param'), (40, 'homing_offset', 'homing_param'),
-        (41, 'homing_current', 'homing_param'),
-        # CurrentLoop
-        (42, 'current_kp_d', 'current_loop'), (43, 'current_ki_d', 'current_loop'),
-        (44, 'current_kp_q', 'current_loop'), (45, 'current_ki_q', 'current_loop'),
-        (46, 'current_integral_limit', 'current_loop'), (47, 'decoupling_gain', 'current_loop'),
-        (48, 'deadtime_comp_v', 'current_loop'), (49, 'pwm_max_duty', 'current_loop'),
-        (50, 'current_bandwidth_hz', 'current_loop'), (51, 'current_filter_alpha', 'current_loop'),
-        (52, 'd_feedforward_gain', 'current_loop'), (53, 'q_feedforward_gain', 'current_loop'),
-        # PositionLoop
-        (54, 'speed_kp', 'position_loop'), (55, 'speed_ki', 'position_loop'),
-        (56, 'speed_integral_limit', 'position_loop'), (57, 'velocity_ff_gain', 'position_loop'),
-        (58, 'accel_ff_gain', 'position_loop'), (59, 'position_kp', 'position_loop'),
-        (60, 'position_integral_limit', 'position_loop'), (61, 'friction_coulomb', 'position_loop'),
-        (62, 'friction_viscous', 'position_loop'), (63, 'notch_freq_hz', 'position_loop'),
-        (64, 'notch_width_hz', 'position_loop'), (65, 'notch_depth_db', 'position_loop'),
-        (66, 'notch_enable', 'position_loop'), (67, 'speed_bandwidth_hz', 'position_loop'),
-        (68, 'speed_filter_alpha', 'position_loop'), (69, 'position_bandwidth_hz', 'position_loop'),
-        # Impedance
-        (70, 'impedance_kp', 'impedance_ctrl'), (71, 'impedance_kd', 'impedance_ctrl'),
-        (72, 'iq_max', 'impedance_ctrl'),
-        # Thermal
-        (73, 'thermal_resistance', 'thermal_model'), (74, 'thermal_time_const', 'thermal_model'),
-        (75, 'derating_temp_start', 'thermal_model'),
-        # Protection
-        (76, 'protect_over_current', 'protection_param'), (77, 'protect_over_voltage', 'protection_param'),
-        (78, 'protect_under_voltage', 'protection_param'), (79, 'protect_over_speed', 'protection_param'),
-        (80, 'protect_over_temp', 'protection_param'), (81, 'protect_under_temp', 'protection_param'),
-        (82, 'protect_pos_error', 'protection_param'), (83, 'protect_enable_mask', 'protection_param'),
+        # MotorInstance (csv id 1~2)
+        (0, 'motor_id', 'motor_instance'), (1, 'motor_name', 'motor_instance'),
+        # MotorBase (csv id 3~20)
+        (2, 'r', 'motor_base'), (3, 'ld', 'motor_base'), (4, 'lq', 'motor_base'),
+        (5, 'flux', 'motor_base'), (6, 'kt', 'motor_base'), (7, 'pole_pairs', 'motor_base'),
+        (8, 'rated_current', 'motor_base'), (9, 'peak_current', 'motor_base'),
+        (10, 'max_speed', 'motor_base'), (11, 'dead_time_ns', 'motor_base'),
+        (12, 'rated_voltage', 'motor_base'), (13, 'rated_speed_rpm', 'motor_base'),
+        (14, 'rated_torque', 'motor_base'), (15, 'peak_torque', 'motor_base'),
+        (16, 'inertia', 'motor_base'), (17, 'ke', 'motor_base'),
+        (18, 'pwm_freq_hz', 'motor_base'), (19, 'foc_freq_hz', 'motor_base'),
+        # Gearbox (csv id 21~24)
+        (20, 'gear_ratio', 'gearbox_param'), (21, 'gear_efficiency', 'gearbox_param'),
+        (22, 'output_torque_const', 'gearbox_param'), (23, 'gear_backlash', 'gearbox_param'),
+        # Encoder (csv id 25~32)
+        (24, 'enc_lines', 'encoder_param'), (25, 'enc_direction', 'encoder_param'),
+        (26, 'enc_offset', 'encoder_param'), (27, 'elec_angle_bias', 'encoder_param'),
+        (28, 'pos_filter_alpha', 'encoder_param'), (29, 'enc_type', 'encoder_param'),
+        (30, 'enc_auto_calib', 'encoder_param'), (31, 'speed_obs_gain', 'encoder_param'),
+        # PositionLimit (csv id 33~36)
+        (32, 'multiturn_enable', 'position_limit'), (33, 'pos_min_limit', 'position_limit'),
+        (34, 'pos_max_limit', 'position_limit'), (35, 'limit_sw_enable', 'position_limit'),
+        # Homing (csv id 37~41)
+        (36, 'homing_method', 'homing_param'), (37, 'homing_speed_fast', 'homing_param'),
+        (38, 'homing_speed_slow', 'homing_param'), (39, 'homing_offset', 'homing_param'),
+        (40, 'homing_current', 'homing_param'),
+        # CurrentLoop (csv id 42~56)
+        (41, 'current_kp_d', 'current_loop'), (42, 'current_ki_d', 'current_loop'),
+        (43, 'current_kp_q', 'current_loop'), (44, 'current_ki_q', 'current_loop'),
+        (45, 'current_integral_limit', 'current_loop'), (46, 'decoupling_gain', 'current_loop'),
+        (47, 'deadtime_comp_v', 'current_loop'), (48, 'pwm_max_duty', 'current_loop'),
+        (49, 'current_bandwidth_hz', 'current_loop'), (50, 'current_filter_alpha', 'current_loop'),
+        (51, 'd_feedforward_gain', 'current_loop'), (52, 'q_feedforward_gain', 'current_loop'),
+        (53, 'decouple_algo', 'current_loop'), (54, 'bemf_ff_enable', 'current_loop'),
+        (55, 'deadtime_comp_enable', 'current_loop'),
+        # PositionLoop (csv id 57~72)
+        (56, 'speed_kp', 'position_loop'), (57, 'speed_ki', 'position_loop'),
+        (58, 'speed_integral_limit', 'position_loop'), (59, 'velocity_ff_gain', 'position_loop'),
+        (60, 'accel_ff_gain', 'position_loop'), (61, 'position_kp', 'position_loop'),
+        (62, 'position_integral_limit', 'position_loop'), (63, 'friction_coulomb', 'position_loop'),
+        (64, 'friction_viscous', 'position_loop'), (65, 'notch_freq_hz', 'position_loop'),
+        (66, 'notch_width_hz', 'position_loop'), (67, 'notch_depth_db', 'position_loop'),
+        (68, 'notch_enable', 'position_loop'), (69, 'speed_bandwidth_hz', 'position_loop'),
+        (70, 'speed_filter_alpha', 'position_loop'), (71, 'position_bandwidth_hz', 'position_loop'),
+        # Impedance (csv id 73~75)
+        (72, 'impedance_kp', 'impedance_ctrl'), (73, 'impedance_kd', 'impedance_ctrl'),
+        (74, 'iq_max', 'impedance_ctrl'),
+        # Thermal (csv id 76~78)
+        (75, 'thermal_resistance', 'thermal_model'), (76, 'thermal_time_const', 'thermal_model'),
+        (77, 'derating_temp_start', 'thermal_model'),
+        # Protection (csv id 79~86)
+        (78, 'protect_over_current', 'protection_param'), (79, 'protect_over_voltage', 'protection_param'),
+        (80, 'protect_under_voltage', 'protection_param'), (81, 'protect_over_speed', 'protection_param'),
+        (82, 'protect_over_temp', 'protection_param'), (83, 'protect_under_temp', 'protection_param'),
+        (84, 'protect_pos_error', 'protection_param'), (85, 'protect_enable_mask', 'protection_param'),
     ]
     return entries
 
@@ -283,6 +288,9 @@ def load_motor_param(csv_path: str = None) -> MotorParam:
                 if not pid_str.isdigit():
                     continue
                 pid = int(pid_str)
+                # motor_param.csv 的 id 列 1-based → 0-based (与下位机 s_param_tbl 对齐)
+                if 'id' in row and 'param_id' not in row:
+                    pid -= 1
                 if pid not in pid_to_entry:
                     continue
                 attr, sub_name = pid_to_entry[pid]

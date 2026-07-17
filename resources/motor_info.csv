@@ -12,7 +12,7 @@ phase_resistance,相电阻,MotorCalibParam,RW,float,0.1,0.001,50,ohm,0x0080,20,�
 phase_inductance_d,d轴相电感,MotorCalibParam,RW,float,0.0001,0.000001,0.1,H,0x0080,21,标定值 电流环Kp=ωc·Ld依赖此值
 phase_inductance_q,q轴相电感,MotorCalibParam,RW,float,0.00012,0.000001,0.1,H,0x0080,22,标定值 IPMSM的Lq一般略大于Ld
 flux_linkage,永磁体磁链,MotorCalibParam,RW,float,0.001,0.00001,1,Wb,0x0080,23,标定值 反电势法辨识
-torque_constant,转矩常数,MotorCalibParam,RW,float,0.1,0.001,50,Nm/A,0x0080,24,标定值 速度环Kp=J·ωc/Kt依赖此值
+torque_constant,转矩常数,MotorCalibParam,RW,float,0.1,0.00001,50,Nm/A,0x0080,24,标定值 速度环Kp=J·ωc/Kt依赖此值
 rotor_inertia,转子惯量,MotorCalibParam,RW,float,0.00001,0.0000001,1,kg·m²,0x0080,25,标定值 速度环Kp/Ki依赖此值
 friction_coulomb,库仑摩擦力矩,MotorCalibParam,RW,float,0,0,500,Nm,0x0080,26,标定值 L5摩擦辨识
 friction_viscous,粘滞摩擦系数,MotorCalibParam,RW,float,0,0,100,Nm/(rad/s),0x0080,27,标定值 L5摩擦辨识
@@ -61,6 +61,10 @@ position_integral_limit,位置环积分限幅,ControlParam,RW,float,0,0,1000,rad
 position_filter_alpha,位置滤波系数,ControlParam,RW,float,0.1,0,1,,0x0140,83,一阶低通滤波系数
 position_filter_enable,位置滤波使能,ControlParam,RW,uint32_t,0,0,1,,0x0140,84,0:禁用 1:启用
 following_error_limit,跟随误差限制,ControlParam,RW,float,1000,0,1000000,P,0x0140,85,位置跟随误差保护阈值 调试期建议放大
+decouple_algo,交叉解耦算法,ControlParam,RW,uint32_t,1,0,2,,0x0140,86,0:NONE 1:FEEDFORWARD 2:FEEDBACK
+bemf_ff_enable,反电势前馈使能,ControlParam,RW,uint32_t,1,0,1,,0x0140,87,0:禁用 1:启用
+deadtime_comp_enable,死区补偿使能,ControlParam,RW,uint32_t,1,0,1,,0x0140,88,0:禁用 1:启用
+pid_source_mask,PID来源位掩码,ControlParam,RW,uint32_t,0,0,4294967295,,0x0140,127,bit[3:0]=电流环 bit[7:4]=速度环 bit[11:8]=位置环 0=默认 1=Flash 2=理论估计
 over_current_A,过流保护阈值,ProtectCommParam,RW,float,20,0.1,1000,A,0x0280,128, [ProtectCommParam段128-159 本表占用128-138]
 over_voltage_V,过压保护阈值,ProtectCommParam,RW,float,58,5,120,V,0x0280,129,
 under_voltage_V,欠压保护阈值,ProtectCommParam,RW,float,15,0,60,V,0x0280,130,
