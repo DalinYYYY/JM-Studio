@@ -5,6 +5,7 @@
 """
 
 import time
+import json
 from collections import deque
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QGroupBox, QGridLayout, QPushButton, QMessageBox, QLabel, QSplitter,
     QScrollArea, QLayout, QFrame, QDialog, QDialogButtonBox, QFormLayout,
-    QSpinBox, QApplication,
+    QSpinBox, QApplication, QComboBox, QFileDialog,
 )
 from PyQt6.QtCore import Qt, QTimer
 
@@ -40,6 +41,9 @@ from ui.csv_load_dialog import CsvLoadDialog
 from ui.theme import theme
 from ui import feature_flags
 from ui import layout_store
+from ui import preset_store
+from ui.preset_edit_dialog import PresetEditDialog
+from ui.preset_manage_dialog import PresetManageDialog
 
 
 class MainWindow(QMainWindow):
@@ -82,6 +86,9 @@ class MainWindow(QMainWindow):
         self._pending_param_writes = deque()
         self._param_read_queue = deque()
         self._param_write_queue = deque()
+        # P3: motor_info 导出状态(异步批量读时拦截 _on_param_result 收集值)
+        # None=未导出; dict={file_path, fields, total, collected, config_version}
+        self._export_state = None
         self._ui_timer = QTimer(self)
         self._ui_timer.setInterval(self._display_period_ms)
         self._ui_timer.timeout.connect(self._on_ui_tick)
@@ -150,6 +157,70 @@ class MainWindow(QMainWindow):
             self._registry, title="电机配置", source="motor_config",
             show_save=True, save_text="参数固化", show_legend=False,
             show_import_export=True)
+        # 电机型号预设下拉框: 包装 _config_panel, 顶部放 ComboBox + 应用按钮
+        # 选择预设后一键填充 9 个电气字段(R/Ld/Lq/flux/pole_pairs/Kt/inertia/peak_current/max_speed)
+        # 用户确认后点击"参数固化"按钮 0xEA 持久化
+        self._config_tab_container = QWidget()
+        _config_layout = QVBoxLayout(self._config_tab_container)
+        _config_layout.setContentsMargins(4, 4, 4, 4)
+        _preset_layout = QHBoxLayout()
+        _preset_layout.addWidget(QLabel("电机型号预设:"))
+        self._motor_preset_combo = QComboBox()
+        self._motor_preset_combo.addItem("(请选择电机型号)", None)
+        self._motor_preset_combo.addItem("(自定义参数)", "")
+        self._motor_preset_combo.currentIndexChanged.connect(self._on_motor_preset_selected)
+        _preset_layout.addWidget(self._motor_preset_combo, 1)
+        self._motor_preset_apply_btn = QPushButton("应用到 motor_info (0xE7)")
+        self._motor_preset_apply_btn.setToolTip(
+            "把所选电机型号的电气参数批量写入 motor_info RAM (0xE7)\n"
+            "写入后需点击下方'参数固化'按钮(0xEA)持久化到 Flash")
+        self._motor_preset_apply_btn.clicked.connect(self._on_motor_preset_apply)
+        _preset_layout.addWidget(self._motor_preset_apply_btn)
+        # P3: motor_info 导出/导入按钮 — 应对 CONFIG_VERSION 升级清空 Flash 风险
+        # 导出: 0xE6 批量读取 → JSON 文件; 导入: JSON 文件 → 0xE7 批量写入
+        self._motor_info_export_btn = QPushButton("导出")
+        self._motor_info_export_btn.setToolTip(
+            "通过 0xE6 批量读取所有 motor_info 字段, 保存为 JSON 文件\n"
+            "用于固件升级前备份 (CONFIG_VERSION 升级会清空 Flash)")
+        self._motor_info_export_btn.clicked.connect(self._on_motor_info_export)
+        _preset_layout.addWidget(self._motor_info_export_btn)
+        self._motor_info_import_btn = QPushButton("导入")
+        self._motor_info_import_btn.setToolTip(
+            "从 JSON 文件加载 motor_info, 通过 0xE7 批量写入 RAM\n"
+            "用于固件升级后恢复标定数据, 写入后需点 0xEA 固化")
+        self._motor_info_import_btn.clicked.connect(self._on_motor_info_import)
+        _preset_layout.addWidget(self._motor_info_import_btn)
+        # 新建电机预设按钮: 弹出 PresetEditDialog 新建用户预设
+        self._preset_new_btn = QPushButton("新建预设")
+        self._preset_new_btn.setToolTip(
+            "新建用户自定义电机预设，保存到 user_motor_presets.json\n"
+            "新建后可在下拉框选择并应用到下位机")
+        self._preset_new_btn.clicked.connect(self._on_preset_new)
+        _preset_layout.addWidget(self._preset_new_btn)
+        # 管理电机预设按钮: 弹出 PresetManageDialog 查看/编辑/删除/导入导出
+        self._preset_manage_btn = QPushButton("管理预设")
+        self._preset_manage_btn.setToolTip(
+            "管理电机预设: 查看/编辑/删除/复制/导入导出\n"
+            "内置预设只读，用户预设可编辑")
+        self._preset_manage_btn.clicked.connect(self._on_preset_manage)
+        _preset_layout.addWidget(self._preset_manage_btn)
+        # 重新标定按钮: 调用 0xEC 清除 is_calibrated + 编码器字段
+        # 用于场景: 同一电机重做编码器标定（如零位漂移）
+        self._motor_info_recalib_btn = QPushButton("重新标定")
+        self._motor_info_recalib_btn.setToolTip(
+            "清除标定状态（is_calibrated + 编码器字段），保留电机本体参数\n"
+            "用于同一电机重做标定（如编码器零位漂移）\n"
+            "流程: 清除 → 固化 → 重启 → 标定")
+        self._motor_info_recalib_btn.clicked.connect(self._on_motor_info_recalib)
+        _preset_layout.addWidget(self._motor_info_recalib_btn)
+        _config_layout.addLayout(_preset_layout)
+        _config_layout.addWidget(self._config_panel)
+        self._motor_presets = self._load_motor_presets()
+        _user_names = self._motor_presets.get("_user_names", set())
+        for name in self._motor_presets.get("presets", {}).keys():
+            display = f"[用户] {name}" if name in _user_names else name
+            self._motor_preset_combo.addItem(display, name)
+        self._motor_preset_apply_btn.setEnabled(False)
         # 标定结果面板: 复用 motor_config 通道(0xE6 读 / 0xE7 写 / 0xEA 固化),
         # 仅展示 MotorCalibParam 段(Index 16~42), 注入到标定 Tab 内嵌展示。
         # show_legend=False: 去掉图例行, 让表格直接占满
@@ -200,7 +271,7 @@ class MainWindow(QMainWindow):
         if ff.is_enabled("motor_params"):
             tabs.addTab(self._param_panel, "电机参数")
         if ff.is_enabled("motor_config"):
-            tabs.addTab(self._config_panel, "电机配置")
+            tabs.addTab(self._config_tab_container, "电机配置")
         if ff.is_enabled("virtual_twin"):
             tabs.addTab(self._twin_param_panel, "孪生参数")
         if ff.is_enabled("fault_info"):
@@ -1194,6 +1265,331 @@ class MainWindow(QMainWindow):
             self._client.motor_info_save()
             self._log_panel.log("[TX] 保存电机配置到Flash/EEPROM (0xEA)")
 
+    def _load_motor_presets(self):
+        """加载内置 motor_presets.json + 用户 user_motor_presets.json
+
+        返回: {"presets": {name: preset_dict}, "_user_names": set()}
+        用户预设名存入 _user_names 用于 ComboBox 显示 [用户] 前缀
+        """
+        # 内置预设
+        builtin_path = Path(__file__).parent.parent / "resources" / "motor_presets.json"
+        builtin = {"presets": {}}
+        try:
+            with open(builtin_path, encoding='utf-8') as f:
+                builtin = json.load(f)
+        except Exception as e:
+            self._log_panel.log_warn(f"[预设] 加载 motor_presets.json 失败: {e}")
+
+        # 用户预设
+        user_presets = preset_store.list_presets()
+
+        # 合并: 内置 + 用户（用户优先级高，名称冲突时用户覆盖）
+        merged = {"presets": {}, "_user_names": set()}
+        merged["presets"].update(builtin.get("presets", {}))
+        for name, preset in user_presets.items():
+            merged["presets"][name] = preset
+            merged["_user_names"].add(name)
+        return merged
+
+    def _on_motor_preset_selected(self, idx: int):
+        """电机型号 ComboBox 选择变化: 仅控制应用按钮启用状态"""
+        name = self._motor_preset_combo.currentData()
+        # name=None: 请选择; name="": 自定义; 其他: 预设名
+        self._motor_preset_apply_btn.setEnabled(name not in (None, ""))
+
+    def _on_motor_preset_apply(self):
+        """应用电机型号预设: 批量下发 9 个电气字段到 motor_info RAM (0xE7)"""
+        name = self._motor_preset_combo.currentData()
+        if not name:
+            return
+        presets = self._motor_presets.get("presets", {})
+        if name not in presets:
+            self._log_panel.log_warn(f"[预设] 未找到电机型号 '{name}'")
+            return
+        preset = presets[name]
+        # 从 registry 查找 VariableName -> param_id (motor_config 通道)
+        specs_by_name = {}
+        for pid, spec in self._registry.motor_config_params.items():
+            specs_by_name[spec.code_name] = (pid, spec)
+        # 目标字段的 VariableName (10 个: 9 电气字段 + 1 保护阈值联动)
+        # protect_over_current 在 ProtectCommParam 段(Index 128),
+        # 通过 0xE7 下发时 dispatch 自动处理段偏移
+        target_fields = [
+            "pole_pairs", "phase_resistance", "phase_inductance_d",
+            "phase_inductance_q", "flux_linkage", "torque_constant",
+            "rotor_inertia", "peak_current", "max_speed",
+            "protect_over_current",
+        ]
+        writes = []
+        skipped = []
+        for fname in target_fields:
+            if fname not in preset:
+                skipped.append(f"{fname}(预设缺失)")
+                continue
+            if fname not in specs_by_name:
+                skipped.append(f"{fname}(CSV无此字段)")
+                continue
+            pid, spec = specs_by_name[fname]
+            value = preset[fname]
+            # 数值转字符串(与 _on_param_write_many 的签名一致: (param_id, text))
+            text = str(value)
+            writes.append((pid, text))
+        if skipped:
+            self._log_panel.log_warn(f"[预设] 部分字段跳过: {', '.join(skipped)}")
+        if not writes:
+            self._log_panel.log_warn(f"[预设] 电机型号 '{name}' 无可写字段")
+            return
+        label = preset.get("label", name)
+        reply = QMessageBox.question(
+            self, "应用电机型号预设",
+            f"确认将电机型号 '{name}' ({label}) 的 {len(writes)} 个电气参数\n"
+            f"批量写入 motor_info RAM (0xE7)?\n\n"
+            f"写入后请点击下方'参数固化'按钮(0xEA)持久化到 Flash, 重启生效。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        # 复用批量写通道(走 _on_param_write_many → 0xE7)
+        self._on_param_write_many(self._config_panel, writes)
+        self._log_panel.log(f"[预设] 已应用电机型号 '{name}' ({len(writes)} 项 0xE7 写入), 请点击'参数固化'持久化")
+        # P0: 写入成功后明确提示用户需两步操作才能完全生效
+        # 原因: motor_profile_sync_to_param 仅在启动时执行一次,
+        # 运行期不刷新 peak_current/max_speed 到控制环
+        QMessageBox.information(
+            self, "电机型号预设已应用",
+            f"已将 '{name}' 预设的 {len(writes)} 个字段写入 motor_info RAM (0xE7)。\n\n"
+            "请完成以下两步才能让新参数完全生效：\n"
+            "  1. 点击下方'参数固化'按钮 (0xEA) 持久化到 Flash\n"
+            "  2. 重启设备 (断电重上 或 发送 RESET 命令)\n"
+            "     原因: motor_profile_sync_to_param 仅在启动时执行一次,\n"
+            "     运行期不刷新 peak_current/max_speed 到控制环",
+            QMessageBox.StandardButton.Ok)
+
+    # ==================== P4: 用户预设管理 ====================
+    def _on_preset_new(self):
+        """新建用户电机预设: 弹出 PresetEditDialog"""
+        dlg = PresetEditDialog(self, existing_preset=None)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            name, preset = dlg.get_preset()
+            if not name:
+                return
+            if preset_store.get(name) is not None:
+                QMessageBox.warning(self, "冲突", f"用户预设 '{name}' 已存在")
+                return
+            if not preset_store.add(name, preset):
+                QMessageBox.critical(self, "失败", "写入 user_motor_presets.json 失败")
+                return
+            # 重新加载 ComboBox
+            self._reload_preset_combo()
+            self._log_panel.log(f"[预设] 已新建用户预设 '{name}'")
+
+    def _reload_preset_combo(self):
+        """重新加载 ComboBox（预设变更后调用）"""
+        self._motor_preset_combo.clear()
+        self._motor_preset_combo.addItem("(请选择电机型号)", None)
+        self._motor_preset_combo.addItem("(自定义参数)", "")
+        self._motor_presets = self._load_motor_presets()
+        _user_names = self._motor_presets.get("_user_names", set())
+        for name in self._motor_presets.get("presets", {}).keys():
+            display = f"[用户] {name}" if name in _user_names else name
+            self._motor_preset_combo.addItem(display, name)
+        self._motor_preset_apply_btn.setEnabled(False)
+
+    def _on_preset_manage(self):
+        """打开预设管理对话框"""
+        # 过滤掉用户预设，只传内置预设给对话框
+        all_presets = self._motor_presets.get("presets", {})
+        user_names = self._motor_presets.get("_user_names", set())
+        builtin_only = {k: v for k, v in all_presets.items() if k not in user_names}
+
+        dlg = PresetManageDialog(self, builtin_presets=builtin_only)
+        dlg.exec()
+        # 对话框关闭后重新加载 ComboBox
+        self._reload_preset_combo()
+
+    # ==================== P5: 重新标定向导 (0xEC) ====================
+    def _on_motor_info_recalib(self):
+        """重新标定向导: 清除标定状态以便重做标定
+
+        场景: 同一电机编码器零位漂移，需重做 L3 编码器标定，
+        电机本体参数（R/Ld/Lq/flux）不变。
+        """
+        if not self._ensure_open():
+            return
+
+        reply = QMessageBox.question(
+            self, "重新标定向导",
+            "此操作将清除以下字段，以便重新标定：\n\n"
+            "  • is_calibrated → 0（标定状态标志）\n"
+            "  • enc_offset → 0（编码器零位偏移）\n"
+            "  • elec_angle_bias → 0（电角度偏移）\n"
+            "  • enc_direction → 0（编码器方向）\n\n"
+            "保留以下字段（电机本体参数不变）：\n"
+            "  • R / Ld / Lq / flux / pole_pairs / Kt / inertia\n"
+            "  • peak_current / max_speed / protect_over_current\n\n"
+            "操作流程：\n"
+            "  1. 点击'是'清除上述字段（仅 RAM，不落盘）\n"
+            "  2. 点击'参数固化'按钮（0xEA）持久化到 Flash\n"
+            "  3. 重启设备\n"
+            "  4. 进入'电机标定'Tab 执行 L3 编码器标定\n"
+            "  5. 标定完成后再次'参数固化' + 重启\n\n"
+            "确认继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # 调用 0xEC 命令（异步发送，ACK 通过 ack_received/nack_received 信号返回）
+        if not self._client.motor_info_recalib_reset():
+            QMessageBox.critical(self, "重新标定失败",
+                "0xEC 命令发送失败，请检查:\n"
+                "  • 设备是否已连接\n"
+                "  • 串口/CAN 是否正常")
+            return
+
+        self._log_panel.log("[重新标定] 已发送 0xEC 命令清除 is_calibrated + 编码器字段（RAM）")
+
+        QMessageBox.information(
+            self, "重新标定命令已发送",
+            "已发送 0xEC 命令清除标定状态字段（仅 RAM，未落盘）。\n\n"
+            "请完成以下步骤：\n"
+            "  1. 等待设备 ACK 应答（看日志面板）\n"
+            "  2. 点击下方'参数固化'按钮 (0xEA) 持久化到 Flash\n"
+            "  3. 重启设备 (断电重上 或 发送 RESET 命令)\n"
+            "  4. 进入'电机标定'Tab 执行 L3 编码器零位/方向标定\n"
+            "  5. 标定完成后再次'参数固化' + 重启",
+            QMessageBox.StandardButton.Ok)
+
+    # ==================== P3: motor_info 导出/导入 ====================
+    def _on_motor_info_export(self):
+        """导出 motor_info: 0xE6 批量读取所有字段 → JSON 文件。
+        异步流程: 触发批量读 → _on_param_result 拦截收集 → _finalize_export 保存。"""
+        if not self._ensure_open():
+            return
+        if self._export_state is not None:
+            QMessageBox.warning(self, "导出进行中", "上一次导出尚未完成, 请稍候")
+            return
+        # 弹保存对话框
+        default_name = time.strftime("motor_info_export_%Y%m%d_%H%M%S.json")
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "导出 motor_info 到文件", default_name, "JSON 文件 (*.json)")
+        if not file_path:
+            return
+        # 收集所有 motor_config 通道的 param_id (排序确保 JSON 字段顺序稳定)
+        param_ids = sorted(self._registry.motor_config_params.keys())
+        if not param_ids:
+            QMessageBox.warning(self, "导出失败", "motor_config 通道无可用字段")
+            return
+        # 初始化导出状态
+        self._export_state = {
+            "file": file_path,
+            "fields": {},
+            "total": len(param_ids),
+            "collected": 0,
+            "skipped": 0,
+        }
+        self._log_panel.log(f"[导出] 开始批量读取 {len(param_ids)} 个字段 → {file_path}")
+        # 触发批量读(异步, _on_param_result 会拦截收集)
+        self._on_param_read_many(self._config_panel, param_ids)
+
+    def _finalize_export(self):
+        """导出完成: 序列化 fields 为 JSON 保存到文件。"""
+        if self._export_state is None:
+            return
+        state = self._export_state
+        self._export_state = None
+        try:
+            # 读取 config_version (Index 0) 用于版本兼容性检查
+            config_version = state["fields"].get("0", 0)
+            try:
+                config_version = int(config_version)
+            except (ValueError, TypeError):
+                config_version = 0
+            export_data = {
+                "_meta": {
+                    "export_time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "config_version": config_version,
+                    "total_fields": state["total"],
+                    "collected": state["collected"],
+                    "skipped": state["skipped"],
+                    "tool": "JM Studio v1.0.0",
+                },
+                "fields": state["fields"],
+            }
+            with open(state["file"], "w", encoding="utf-8") as f:
+                json.dump(export_data, f, ensure_ascii=False, indent=2)
+            self._log_panel.log(
+                f"[导出] 完成: {state['collected']}/{state['total']} 字段保存到 {state['file']}")
+            QMessageBox.information(
+                self, "motor_info 导出完成",
+                f"已导出 {state['collected']}/{state['total']} 个字段到:\n{state['file']}\n\n"
+                "此文件可用于固件升级后恢复标定数据 (导入功能)。",
+                QMessageBox.StandardButton.Ok)
+        except Exception as e:
+            self._log_panel.log_warn(f"[导出] 保存文件失败: {e}")
+            QMessageBox.critical(self, "导出失败", f"保存文件失败:\n{e}")
+
+    def _on_motor_info_import(self):
+        """导入 motor_info: JSON 文件 → 0xE7 批量写入 RAM。"""
+        if not self._ensure_open():
+            return
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "从文件导入 motor_info", "", "JSON 文件 (*.json)")
+        if not file_path:
+            return
+        try:
+            with open(file_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "导入失败", f"加载 JSON 文件失败:\n{e}")
+            return
+        fields = data.get("fields", {})
+        if not fields:
+            QMessageBox.warning(self, "导入失败", "JSON 文件中无 fields 字段或为空")
+            return
+        # 版本兼容性检查
+        meta = data.get("_meta", {})
+        file_version = meta.get("config_version", "未知")
+        # 构造 writes 列表: [(param_id, text), ...]
+        # 只导入当前 registry 中存在的 param_id (避免导入旧版本不存在的字段)
+        valid_pids = set(self._registry.motor_config_params.keys())
+        writes = []
+        skipped = []
+        for pid_str, value in fields.items():
+            try:
+                pid = int(pid_str)
+            except (ValueError, TypeError):
+                skipped.append(f"{pid_str}(无效ID)")
+                continue
+            if pid not in valid_pids:
+                skipped.append(f"{pid}(当前CSV无此字段)")
+                continue
+            writes.append((pid, str(value)))
+        if skipped:
+            self._log_panel.log_warn(f"[导入] 部分字段跳过: {', '.join(skipped[:5])}{'...' if len(skipped) > 5 else ''}")
+        if not writes:
+            QMessageBox.warning(self, "导入失败", "JSON 文件中无有效字段可导入")
+            return
+        reply = QMessageBox.question(
+            self, "导入 motor_info",
+            f"确认从文件导入 {len(writes)} 个字段到 motor_info RAM (0xE7)?\n\n"
+            f"源文件: {file_path}\n"
+            f"源 config_version: {file_version}\n\n"
+            "写入后需点击'参数固化'按钮 (0xEA) + 重启设备才能完全生效。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._on_param_write_many(self._config_panel, writes)
+        self._log_panel.log(f"[导入] 已从 {file_path} 写入 {len(writes)} 项到 motor_info RAM")
+        QMessageBox.information(
+            self, "motor_info 导入完成",
+            f"已将 {len(writes)} 个字段写入 motor_info RAM (0xE7)。\n\n"
+            "请完成以下两步才能让数据完全生效：\n"
+            "  1. 点击下方'参数固化'按钮 (0xEA) 持久化到 Flash\n"
+            "  2. 重启设备 (断电重上 或 发送 RESET 命令)",
+            QMessageBox.StandardButton.Ok)
+
     def _on_param_result(self, param_id: int, ptype: int, value_bytes: bytes):
         if not self._pending_param_reads:
             # 无待处理读请求(设备主动上报/重复帧/自愈误触), 丢弃避免误填默认面板
@@ -1213,6 +1609,14 @@ class MainWindow(QMainWindow):
         panel.set_value(param_id, disp)
         name = spec.code_name if spec else f"id={param_id}"
         self._log_panel.log(f"[RX] {panel.panel_name()} {name}(id={param_id}) = {disp}")
+        # P3: motor_info 导出拦截 — 收集读回值到 _export_state
+        # _on_motor_info_export 触发批量读后, 每次读应答都收集到这里
+        # 收集完成后由 _finalize_export 序列化为 JSON 保存
+        if self._export_state is not None:
+            self._export_state["fields"][str(param_id)] = disp
+            self._export_state["collected"] += 1
+            if self._export_state["collected"] >= self._export_state["total"]:
+                self._finalize_export()
         # Task 5: Index 16 (is_calibrated) 读回值同步到标定面板的已标定徽章
         # (无论哪个 panel 收到, 都转发给 calib_panel; 写后 ACK 不自动读回时徽章靠乐观更新)
         if param_id == 16:

@@ -189,6 +189,15 @@ class JmClient(QObject):
         """电机配置恢复默认(0xEB): param_id=0xFFFF 全部恢复。"""
         return self._send(JmCmd.MOTOR_INFO_RESET, codec.wr_u16(param_id))
 
+    def motor_info_recalib_reset(self):
+        """清除标定状态以便重新标定(0xEC): 保留电机本体参数。
+        
+        清除 is_calibrated + 编码器字段(enc_offset/elec_angle_bias/enc_direction)，
+        保留电气字段(R/Ld/Lq/flux/pole_pairs/Kt/inertia)和限幅字段(peak_current/max_speed)。
+        仅清 RAM，需随后调用 motor_info_save() 固化到 Flash。
+        ACK 走通用 ack_received/nack_received 通道。"""
+        return self._send(JmCmd.MOTOR_INFO_RECALIB_RESET)
+
     # ---- PID 管理 0xA0~0xA6 ----
     def pid_autotune(self, ring_select: int, cur_bw_hz: float = 0.0,
                      vel_bw_hz: float = 0.0, pos_bw_hz: float = 0.0):

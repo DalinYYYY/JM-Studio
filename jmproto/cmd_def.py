@@ -148,6 +148,7 @@ class JmCmd(IntEnum):
     MOTOR_INFO_WRITE_BULK = 0xE9  # 批量写(块内连续ID, 固定4B/值)
     MOTOR_INFO_SAVE = 0xEA        # 把motor_info整块写入Flash
     MOTOR_INFO_RESET = 0xEB       # 恢复默认(param_id=0xFFFF全部)
+    MOTOR_INFO_RECALIB_RESET = 0xEC  # 清除标定状态以便重新标定(保留电机本体参数)
 
     # CAN管理与通用 0xF0~0xFF
     SET_CAN_ID = 0xF0

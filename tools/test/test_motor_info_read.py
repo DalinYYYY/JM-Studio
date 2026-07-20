@@ -90,8 +90,9 @@ cmd, payload = frame[0]
 check(cmd == int(JmCmd.NACK), f"未知 id 应返回 NACK, 实际 0x{cmd:02X}")
 check(payload[0] == int(JmCmd.MOTOR_INFO_READ), "NACK payload[0] 应为 0xE6")
 
-# ---- 5. MOTOR_INFO_SAVE / MOTOR_INFO_RESET 返回 ACK ----
-for cmd_code in (JmCmd.MOTOR_INFO_SAVE, JmCmd.MOTOR_INFO_RESET):
+# ---- 5. MOTOR_INFO_SAVE / MOTOR_INFO_RESET / MOTOR_INFO_RECALIB_RESET 返回 ACK ----
+for cmd_code in (JmCmd.MOTOR_INFO_SAVE, JmCmd.MOTOR_INFO_RESET,
+                 JmCmd.MOTOR_INFO_RECALIB_RESET):
     frame = resp.on_command(int(cmd_code), b'')
     cmd, payload = frame[0]
     check(cmd == int(cmd_code) and payload == bytes([int(JmErr.OK)]),
@@ -138,6 +139,61 @@ if param_ids:
             break
     check(len(mw._pending_param_reads) == 0,
           f"motor_param 读队列应已清空, 实际残留 {len(mw._pending_param_reads)}")
+
+# ---- 8. 0xEC 端到端: motor_client.motor_info_recalib_reset 通过虚拟引擎拿到 ACK ----
+ack_cmd = []
+mw._client.ack_received.connect(lambda c: ack_cmd.append(c))
+mw._client.motor_info_recalib_reset()
+for _ in range(300):
+    app.processEvents()
+    if ack_cmd:
+        break
+check(len(ack_cmd) == 1 and ack_cmd[0] == int(JmCmd.MOTOR_INFO_RECALIB_RESET),
+      f"motor_info_recalib_reset 应收到 0xEC ACK, 实际 {ack_cmd}")
+
+# ---- 9. 用户预设 CRUD: preset_store ----
+from ui import preset_store
+
+# 临时改名 user_motor_presets.json 避免污染现有数据
+import pathlib
+_preset_path = pathlib.Path(preset_store.path())
+_backup = None
+if _preset_path.exists():
+    _backup = _preset_path.read_text(encoding='utf-8')
+    _preset_path.unlink()
+
+try:
+    # 新建用户预设
+    ok = preset_store.add("TestMotor", {
+        "label": "TestMotor (用户自定义)",
+        "pole_pairs": 7,
+        "phase_resistance": 0.2,
+        "phase_inductance_d": 0.001,
+        "phase_inductance_q": 0.001,
+        "flux_linkage": 0.005,
+        "torque_constant": 0.06,
+        "rotor_inertia": 1e-5,
+        "peak_current": 5.0,
+        "max_speed": 100.0,
+        "protect_over_current": 7.0,
+    })
+    check(ok, "add('TestMotor') 应成功")
+    names = preset_store.list_presets()
+    check("TestMotor" in names, "TestMotor 应出现在用户预设列表")
+    # 范围校验: pole_pairs 必须 >= 1
+    errors = preset_store.validate({
+        "pole_pairs": 0, "phase_resistance": 0.1,
+        "phase_inductance_d": 0.001, "phase_inductance_q": 0.001,
+        "flux_linkage": 0.005, "torque_constant": 0.06,
+        "rotor_inertia": 1e-5, "peak_current": 5.0, "max_speed": 100.0,
+        "protect_over_current": 7.0,
+    })
+    check(len(errors) > 0, "pole_pairs=0 应校验失败")
+finally:
+    if _backup is not None:
+        _preset_path.write_text(_backup, encoding='utf-8')
+    elif _preset_path.exists():
+        _preset_path.unlink()
 
 mw.close()
 

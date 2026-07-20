@@ -33,7 +33,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("JM Studio")
-    app.setApplicationVersion("1.0.0")
+    app.setApplicationVersion("1.0.1")
 
     # 设置默认字体(等宽字体用于数据显示)
     font = QFont("Microsoft YaHei UI", 9)

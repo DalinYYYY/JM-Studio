@@ -106,7 +106,8 @@
 105,批量写电机配置,0xE9,Host->Motor,电机配置,{start_id:u16;count:u16;value:u32[]},ACK{status:u8},变长,小端混合,见motor_info.csv,0xE900|ID,CAN需分包,块内连续ID批量写 固定4B/值
 106,电机配置存Flash,0xEA,Host->Motor,电机配置,无,ACK{status:u8},0,-,-,0xEA00|ID,无,把motor_info整块1024B写入Flash/EEPROM
 107,电机配置恢复默认,0xEB,Host->Motor,电机配置,{param_id:u16=0xFFFF全部},ACK{status:u8},2,小端u16,-,0xEB00|ID,pid[0:2],单参或全部恢复默认motor_info
-108,设置CAN_ID,0xF0,Host->Motor,CAN管理,{new_id:u8},ACK{new_id:u8},1,u8,1~127,0xF000|ID,nid[0],修改本机CAN地址需保存
-109,设置波特率,0xF1,Host->Motor,CAN管理,{baud_code:u8},ACK,1,u8,枚举,0xF100|ID,baud[0],0=1M 1=500K 2=250K 3=125K
-110,广播同步,0xF2,Host->All,CAN管理,无,无,0,-,-,0xF200|0x00,无,ID=0广播 所有电机同步执行缓存指令
-111,错误应答(NACK),0xFE,Motor->Host,通用,-,{cmd:u8;err_code:u8},2,小端,错误码,0xFE00|ID,cmd[0]err[1],任意命令失败时返回
+108,电机配置重新标定复位,0xEC,Host->Motor,电机配置,无,ACK{status:u8},0,-,-,0xEC00|ID,无,清除is_calibrated+编码器字段 保留电气字段和限幅字段 需随后0xEA固化
+109,设置CAN_ID,0xF0,Host->Motor,CAN管理,{new_id:u8},ACK{new_id:u8},1,u8,1~127,0xF000|ID,nid[0],修改本机CAN地址需保存
+110,设置波特率,0xF1,Host->Motor,CAN管理,{baud_code:u8},ACK,1,u8,枚举,0xF100|ID,baud[0],0=1M 1=500K 2=250K 3=125K
+111,广播同步,0xF2,Host->All,CAN管理,无,无,0,-,-,0xF200|0x00,无,ID=0广播 所有电机同步执行缓存指令
+112,错误应答(NACK),0xFE,Motor->Host,通用,-,{cmd:u8;err_code:u8},2,小端,错误码,0xFE00|ID,cmd[0]err[1],任意命令失败时返回

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "presets": {
+    "5010_360_V1": {
+      "pole_pairs": 7.0,
+      "phase_resistance": 0.12,
+      "phase_inductance_d": 5e-05,
+      "phase_inductance_q": 5e-05,
+      "flux_linkage": 3.8e-05,
+      "torque_constant": 0.0004,
+      "rotor_inertia": 5e-06,
+      "peak_current": 6.0,
+      "max_speed": 150.0,
+      "protect_over_current": 7.8
+    }
+  }
+}

@@ -31,6 +31,8 @@ pwm_freq_hz,PWM载波频率,MotorCalibParam,RW,uint32_t,20000,1000,200000,Hz,0x0
 dead_time_ns,PWM死区时间,MotorCalibParam,RW,float,500,50,5000,ns,0x0080,40,不同功率器件可能不同
 shunt_resistance,电流采样电阻,MotorCalibParam,RW,float,0.01,0.0001,1,ohm,0x0080,41,硬件相关 不同板子不同
 current_amp_gain,电流放大增益,MotorCalibParam,RW,float,50,1,10000,,0x0080,42,硬件相关 运放增益
+peak_current,峰值电流,MotorCalibParam,RW,float,6,0.1,200,A,0x0080,43,电机峰值电流(运行期限幅) 切换电机型号时需同步修改
+max_speed,最大转速,MotorCalibParam,RW,float,150,10,1000,rad/s,0x0080,44,电机最大转速(运行期限幅) 切换电机型号时需同步修改
 device_zero,设备零度,DeviceParam,RW,float,0,-12.566,12.566,rad,0x0100,48,机械零点位置 [DeviceParam段48-63 本表占用48-55]
 device_time,设备生产日期,DeviceParam,RW,uint32_t,0,0,99999999,,0x0100,49,YYYYMMDD格式
 can_id,CAN节点ID,DeviceParam,RW,uint32_t,1,0,2047,,0x0100,50,11位标准ID

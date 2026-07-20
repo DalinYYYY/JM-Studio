@@ -70,7 +70,12 @@ class TwinResponder:
         'flux_linkage': 'flux',
         'torque_constant': 'kt',
         'rotor_inertia': 'inertia',
-        'current_lim': 'peak_current',
+        # current_lim(Index 32) 与 peak_current(Index 43) 是两个独立字段:
+        #   current_lim = 硬件保护瞬时电流上限 (仿真模型不直接使用, 仅存储)
+        #   peak_current = 运行期限幅电流 (映射到 MotorParam.peak_current 用于限幅)
+        'current_lim': 'current_lim',
+        'peak_current': 'peak_current',
+        'max_speed': 'max_speed',
         'current_control_bandwidth': 'current_bandwidth_hz',
         'kp_ld': 'current_kp_d', 'ki_ld': 'current_ki_d',
         'kp_lq': 'current_kp_q', 'ki_lq': 'current_ki_q',
@@ -201,7 +206,10 @@ class TwinResponder:
             return [self._motor_info_read_frame(payload)]
         if cmd == int(JmCmd.MOTOR_INFO_WRITE):
             return [self._motor_info_write_frame(payload)]
-        if cmd in (int(JmCmd.MOTOR_INFO_SAVE), int(JmCmd.MOTOR_INFO_RESET)):
+        if cmd in (int(JmCmd.MOTOR_INFO_SAVE), int(JmCmd.MOTOR_INFO_RESET),
+                   int(JmCmd.MOTOR_INFO_RECALIB_RESET)):
+            # 0xEC (RECALIB_RESET): 虚拟引擎不维护 is_calibrated/编码器字段语义,
+            # 仅回 ACK 让上位机烟雾测试可通过; 真实语义由下位机 motor_info_calib.c 实现
             return [self._ack(cmd)]
 
         # 未知命令返回 NACK(UNSUPPORTED), 避免掩盖上位机 bug
