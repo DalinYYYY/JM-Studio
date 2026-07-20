@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ui.theme import theme
+from ui.display_filter import MovingAverageAngle, MovingAverage
 
 try:
     import pyqtgraph as pg
@@ -273,6 +274,9 @@ class PlotPanel(QGroupBox):
         self._current_checks = {}
         self._latest_t = None          # 增量维护的最新时间戳
         self._auto_range_counter = 0
+        self._angle_ma = MovingAverageAngle(window=8)   # angle 曲线移动平均, 平滑 0.01rad 编码器噪声
+        self._pos_ma = MovingAverage(window=8)          # pos 曲线移动平均, 平滑多圈位置噪声
+        self._vel_ma = MovingAverage(window=8)          # vel 曲线移动平均, 平滑速度噪声(PLL观测器)
         self._build()
 
     def _build(self):
@@ -643,6 +647,9 @@ class PlotPanel(QGroupBox):
         self._t0 = None
         self._latest_t = None
         self._auto_range_counter = 0
+        self._angle_ma.reset()
+        self._pos_ma.reset()
+        self._vel_ma.reset()
         for buf in self._buffers.values():
             buf.clear()
         for buf in self._extra_buffers.values():
@@ -733,8 +740,13 @@ class PlotPanel(QGroupBox):
         if self._t0 is None:
             self._t0 = ts
         t = ts - self._t0
-        self._buffers['pos'].append(t, getattr(fb, 'pos', 0.0))
-        self._buffers['vel'].append(t, getattr(fb, 'vel', 0.0))
+        # pos/vel 移动平均平滑编码器/PLL噪声
+        pos_v = float(self._pos_ma.update_batch(
+            np.array([getattr(fb, 'pos', 0.0)], dtype=np.float32))[0])
+        vel_v = float(self._vel_ma.update_batch(
+            np.array([getattr(fb, 'vel', 0.0)], dtype=np.float32))[0])
+        self._buffers['pos'].append(t, pos_v)
+        self._buffers['vel'].append(t, vel_v)
         self._buffers['id'].append(t, getattr(fb, 'id', 0.0))
         self._buffers['iq'].append(t, getattr(fb, 'iq', 0.0))
         self._buffers['ibus'].append(t, getattr(fb, 'ibus', 0.0))
@@ -742,14 +754,17 @@ class PlotPanel(QGroupBox):
         self._buffers['ib'].append(t, getattr(fb, 'ib', 0.0))
         self._buffers['ic'].append(t, getattr(fb, 'ic', 0.0))
         # 机械角度: 显示单圈角度 [0, 2π) rad (对应 0~360°), 与电机机械相一致
+        # 移动平均(圆形均值)平滑编码器噪声, 避免静止段毛刺
         single = float(getattr(fb, 'single', 0.0))
+        single = float(self._angle_ma.update_batch(
+            np.array([single], dtype=np.float32))[0])
         self._buffers['angle'].append(t, single)
         if self._latest_t is None or t > self._latest_t:
             self._latest_t = t
 
-    # 字段提取顺序 (与 _buffers 对齐)
+    # 字段提取顺序 (与 _buffers 对齐, pos/vel 单独滤波不在此循环)
     _FEEDBACK_FIELDS = (
-        'pos', 'vel', 'id', 'iq', 'ibus', 'ia', 'ib', 'ic',
+        'id', 'iq', 'ibus', 'ia', 'ib', 'ic',
     )
 
     def feed_feedback_batch(self, ts_list, fb_list):
@@ -766,16 +781,27 @@ class PlotPanel(QGroupBox):
         ts_arr = np.empty(n, dtype=np.float32)
         for i in range(n):
             ts_arr[i] = ts_list[i] - self._t0
-        # 各字段值数组
+        # pos/vel 单独滤波(移动平均平滑编码器/PLL噪声), 其余字段直接写入
+        ys_pos = np.empty(n, dtype=np.float32)
+        ys_vel = np.empty(n, dtype=np.float32)
+        for i in range(n):
+            ys_pos[i] = getattr(fb_list[i], 'pos', 0.0)
+            ys_vel[i] = getattr(fb_list[i], 'vel', 0.0)
+        ys_pos = self._pos_ma.update_batch(ys_pos)
+        ys_vel = self._vel_ma.update_batch(ys_vel)
+        self._buffers['pos'].append_batch(ts_arr, ys_pos)
+        self._buffers['vel'].append_batch(ts_arr, ys_vel)
+        # 其余字段(id/iq/ibus/ia/ib/ic)
         for field in self._FEEDBACK_FIELDS:
             ys = np.empty(n, dtype=np.float32)
             for i in range(n):
                 ys[i] = getattr(fb_list[i], field, 0.0)
             self._buffers[field].append_batch(ts_arr, ys)
-        # 机械角度 (单圈)
+        # 机械角度 (单圈) - 移动平均(圆形均值)平滑编码器噪声
         ys_angle = np.empty(n, dtype=np.float32)
         for i in range(n):
             ys_angle[i] = getattr(fb_list[i], 'single', 0.0)
+        ys_angle = self._angle_ma.update_batch(ys_angle)
         self._buffers['angle'].append_batch(ts_arr, ys_angle)
         # 增量维护最新时间戳 (避免 _refresh 全扫描)
         last_t = float(ts_arr[-1])

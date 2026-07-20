@@ -25,6 +25,7 @@ from jmproto import top_fsm_name, run_state_name, motion_state_name, cmd_name, f
 from ui.panels._edit_mixin import LayoutEditMixin
 from ui import layout_store
 from ui.theme import theme
+from ui.display_filter import AngleDeadZone
 
 
 _FONT_FAMILIES = ["Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Segoe UI", "sans-serif"]
@@ -664,6 +665,7 @@ class _MotorView(QWidget):
         self._timer.stop()
 
     def set_feedback(self, single_rad, omega, iq, enabled):
+        # single_rad 已由 FeedbackPanel.update_feedback 做位置死区滤波, 这里直接接收
         self._tgt_th = float(single_rad)
         self._omega = float(omega)
         self._iq = float(iq)
@@ -924,6 +926,11 @@ class FeedbackPanel(QWidget):
         self._last_state = (None, None, None, None)
         self._pole_pairs = _MotorView.DEFAULT_POLE_PAIRS
         self._elec_bias = 0.0     # elec_angle_bias (rad), 由 set_motor_params 注入
+        # 位置变化死区: 静止时锁定 single, 避免编码器噪声导致数值卡片/示意图抖动;
+        # 数值卡片与转子示意图共用同一滤波实例, 保证显示一致
+        self._single_filter = AngleDeadZone(pos_threshold=0.05)
+        self._disp_pos = 0.0        # 解锁时缓存的 pos, 锁定时保持不变
+        self._disp_multiturn = 0    # 解锁时缓存的 multiturn, 锁定时保持不变
         self._poll_timer = QTimer(self)
         self._poll_timer.setSingleShot(False)
         self._poll_timer.timeout.connect(self._on_poll_tick)
@@ -973,9 +980,9 @@ class FeedbackPanel(QWidget):
         ])
         self._card_motion = _ParamCard("位置 / 角度 / 速度", [
             ("电机位置", "pos", "{:+.4f}", "rad"),
-            ("电机速度", "vel", "{:+.4f}", "rad/s"),
-            ("机械角度", "_mech_deg", "{:.2f}", "°"),
-            ("电角度", "_elec_deg", "{:.2f}", "°"),
+            ("电机速度", "vel", "{:+.3f}", "rad/s"),
+            ("机械角度", "_mech_deg", "{:.1f}", "°"),
+            ("电角度", "_elec_deg", "{:.1f}", "°"),
             ("多圈计数", "multiturn", "{}", ""),
         ])
         self._card_state = _ParamCard("状态 / 故障", [
@@ -1106,17 +1113,38 @@ class FeedbackPanel(QWidget):
         # 机械角度(单圈 0~360°) + 电角度(0~360°): 由 single + pole_pairs + elec_bias 计算。
         # theta_e = (theta_m * pp + bias) % 2π, 而 theta_m ≡ single (mod 2π),
         # 故 theta_e = (single * pp + bias) % 2π, 与物理引擎一致且适用真机固件。
-        single = float(getattr(fb, "single", 0.0) or 0.0)
+        # 位置死区滤波: 静止时锁定 single, 避免编码器 0.01rad 噪声导致数值/示意图抖动;
+        # 数值卡片与示意图共用同一滤波结果, 保证显示一致。
+        # 关键: 锁定时同步把速度置零! 否则 _MotorView._tick() 的航位推算会用噪声速度
+        # (位置差分得到, 0.01rad@50Hz → ±0.5rad/s)持续推进显示角度, 拉回系数又追不上,
+        # 形成"漂移-拉回"的低频摆动, 把位置噪声放大成肉眼可见的指针晃动
+        raw_single = float(getattr(fb, "single", 0.0) or 0.0)
+        vel = float(getattr(fb, "vel", 0.0) or 0.0)
+        single = self._single_filter.update(raw_single, vel)
+        disp_vel = 0.0 if self._single_filter.is_locked else vel
         mech_deg = math.degrees(single) % 360.0
         elec_rad = (single * self._pole_pairs + self._elec_bias) % (2.0 * math.pi)
         elec_deg = math.degrees(elec_rad) % 360.0
-        self._card_motion.set_text("_mech_deg", f"{mech_deg:.2f}")
-        self._card_motion.set_text("_elec_deg", f"{elec_deg:.2f}")
+        self._card_motion.set_text("_mech_deg", f"{mech_deg:.1f}")
+        self._card_motion.set_text("_elec_deg", f"{elec_deg:.1f}")
+        # 速度卡片: 锁定时置零, 避免噪声速度跳动
+        self._card_motion.set_text("vel", f"{disp_vel:+.3f}")
+        # pos(多圈位置) 与 multiturn: 锁定时保持上次值不变, 避免编码器噪声导致 pos
+        # 末位抖动和 multiturn int 跳变 ±1。pos 与 single/multiturn 的关系:
+        # pos = multiturn * 2π + single, 锁定时 single 已锁定, pos/multiturn 也应锁定。
+        if not self._single_filter.is_locked:
+            v_pos = getattr(fb, "pos", None)
+            if v_pos is not None:
+                self._disp_pos = float(v_pos)
+            v_mt = getattr(fb, "multiturn", None)
+            if v_mt is not None:
+                self._disp_multiturn = int(v_mt)
+        self._card_motion.set_text("pos", f"{self._disp_pos:+.4f}")
+        self._card_motion.set_text("multiturn", str(self._disp_multiturn))
 
-        # 电机旋转示意(单圈角 + 速度 + iq)
+        # 电机旋转示意(滤波后的单圈角 + 静止置零的速度 + iq)
         self._motor.set_feedback(
-            getattr(fb, "single", 0.0), getattr(fb, "vel", 0.0),
-            getattr(fb, "iq", 0.0), self._enabled)
+            single, disp_vel, getattr(fb, "iq", 0.0), self._enabled)
 
         # FOC 框图电气量
         def f(attr, fmt):
@@ -1133,7 +1161,7 @@ class FeedbackPanel(QWidget):
                 f"ib {f('ib','{:+.2f}')} A",
                 f"ic {f('ic','{:+.2f}')} A",
             ],
-            "thw": f"{f('single','{:.3f}')}rad / {f('vel','{:.2f}')}",
+            "thw": f"{single:.3f}rad / {disp_vel:+.2f}",
         })
 
         # 故障/警告: 显示十六进制 + 解码描述(故障时加载完整中文信息)
@@ -1211,6 +1239,9 @@ class FeedbackPanel(QWidget):
         if not active:
             self._last_state = (None, None, None, None)
             self._enabled = False
+            self._single_filter.reset(0.0)   # 断开时重置死区, 避免重连后锁定到旧值
+            self._disp_pos = 0.0
+            self._disp_multiturn = 0
             self._motor.set_enabled(False)
             self._refresh_state_styles()
 

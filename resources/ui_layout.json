@@ -6,12 +6,12 @@
     "display_buffer_max": 21200,
     "main_window": {
       "width": 1795,
-      "height": 1091,
-      "x": 570,
-      "y": 179
+      "height": 1051,
+      "x": 526,
+      "y": 107
     },
     "right_splitter": [
-      1035,
+      995,
       0
     ],
     "main_splitter": [
@@ -61,7 +61,7 @@
           "auto_y": true
         },
         "vel": {
-          "auto_y": false
+          "auto_y": true
         },
         "current": {
           "auto_y": false,
@@ -75,7 +75,7 @@
     "motion": {
       "current_cmd": 20,
       "fields": {
-        "vel_ref": 5.0
+        "vel_ref": 6.0
       }
     },
     "motor_param": {
@@ -109,7 +109,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 541,
+        "5": 641,
         "6": 72,
         "7": 72
       }
@@ -140,7 +140,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 541,
+          "5": 641,
           "6": 72,
           "7": 72
         }
