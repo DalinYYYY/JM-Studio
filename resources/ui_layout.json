@@ -5,18 +5,18 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1605,
-      "height": 1078,
-      "x": 537,
-      "y": 99
+      "width": 1737,
+      "height": 1052,
+      "x": 58,
+      "y": 95
     },
     "right_splitter": [
-      1022,
+      996,
       0
     ],
     "main_splitter": [
-      302,
-      1277
+      330,
+      1381
     ],
     "log_splitter_sizes": [
       341,
@@ -25,7 +25,7 @@
     "layout_edit": true,
     "telemetry": {
       "mask": 367,
-      "period_ms": 5
+      "period_ms": 2
     },
     "feedback_poll": {
       "enabled": false,
@@ -45,13 +45,13 @@
       "motor_param": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/motor_param.csv"
     },
     "plot": {
-      "window_seconds": 20,
+      "window_points": 5000,
       "follow": true,
       "auto_y": true,
       "current_visibility": {
-        "id": false,
-        "iq": false,
-        "ibus": true,
+        "id": true,
+        "iq": true,
+        "ibus": false,
         "ia": false,
         "ib": false,
         "ic": false
@@ -61,7 +61,7 @@
           "auto_y": true
         },
         "vel": {
-          "auto_y": true
+          "auto_y": false
         },
         "current": {
           "auto_y": false,
@@ -70,12 +70,16 @@
         "angle": {
           "auto_y": true
         }
+      },
+      "debug_window": {
+        "checked": false
       }
     },
     "motion": {
-      "current_cmd": 21,
+      "current_cmd": 16,
       "fields": {
-        "pos_ref": -300.0
+        "ud": 0.0,
+        "uq": 1.0
       }
     },
     "motor_param": {
@@ -85,7 +89,7 @@
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 392,
+        "5": 758,
         "6": 72,
         "7": 72
       }
@@ -97,7 +101,7 @@
         "2": 120,
         "3": 200,
         "4": 125,
-        "5": 360,
+        "5": 726,
         "6": 72,
         "7": 72
       }
@@ -109,7 +113,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 449,
+        "5": 815,
         "6": 72,
         "7": 72
       }
@@ -121,7 +125,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 437,
+        "5": 803,
         "6": 72,
         "7": 72
       }
@@ -140,7 +144,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 449,
+          "5": 815,
           "6": 72,
           "7": 72
         }
@@ -155,7 +159,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 437,
+          "5": 803,
           "6": 72,
           "7": 72
         }

@@ -37,11 +37,13 @@ from ui.panels.calibration_panel import CalibrationPanel
 from ui.panels.pid_panel import PidPanel
 from ui.panels.twin_param_panel import TwinParamPanel
 from ui.panels.fault_info_panel import FaultInfoPanel
+from ui.panels.debug_plot_window import DebugPlotWindow
 from ui.csv_load_dialog import CsvLoadDialog
 from ui.theme import theme
 from ui import feature_flags
 from ui import layout_store
 from ui import preset_store
+from ui import APP_NAME, APP_VERSION
 from ui.preset_edit_dialog import PresetEditDialog
 from ui.preset_manage_dialog import PresetManageDialog
 
@@ -60,6 +62,8 @@ class MainWindow(QMainWindow):
         self._motor_params = {}
         # 虚拟电机模式开关的期望状态(从持久化读取, 连接虚拟引擎后套用)
         self._pending_virtual_mode = False
+        # 调试通道窗口
+        self._debug_window: DebugPlotWindow | None = None
         self._logo_path = Path(__file__).resolve().parent.parent / "resources" / "pic" / "log_ioc.png"
         if self._logo_path.exists():
             self.setWindowIcon(QIcon(str(self._logo_path)))
@@ -98,7 +102,7 @@ class MainWindow(QMainWindow):
         self._cmd_watchdog.setInterval(1000)  # 1s 超时
         self._cmd_watchdog.timeout.connect(self._on_cmd_timeout)
 
-        self.setWindowTitle("JM Studio v1.0.0")
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setMinimumSize(1200, 800)
 
         self._build_ui()
@@ -520,6 +524,14 @@ class MainWindow(QMainWindow):
                 s[key] = panel.get_opts()
             except Exception:
                 pass
+        # 调试窗口运行时配置 (只在窗口打开时收集)
+        if self._debug_window is not None:
+            try:
+                dw_opts = self._debug_window.get_opts()
+                if isinstance(dw_opts, dict):
+                    s["plot"]["debug_window"].update(dw_opts)
+            except Exception:
+                pass
         return s
 
     def _safe_sizes(self, splitter) -> list:
@@ -803,6 +815,8 @@ class MainWindow(QMainWindow):
             fn = getattr(panel, "apply_theme", None)
             if callable(fn):
                 fn()
+        if self._debug_window is not None:
+            self._debug_window.apply_theme()
         self._refresh_statusbar_theme()
         layout_store.set_meta("theme", name)
 
@@ -860,6 +874,7 @@ class MainWindow(QMainWindow):
         # 面板 -> 客户端
         self._conn_panel.connect_requested.connect(self._on_connect)
         self._conn_panel.disconnect_requested.connect(self._on_disconnect)
+        self._plot_panel.debug_window_toggled.connect(self._on_debug_window_toggled)
         self._control_panel.command.connect(self._on_control_command)
         self._motion_panel.send_command.connect(self._on_motion_command)
         # 标定面板: 复用运动指令发送通道 (cmd=0x90~0x98, values={"submode":N} 或 {})
@@ -984,7 +999,35 @@ class MainWindow(QMainWindow):
         self._fault_info_panel.set_engine(None)
         # 断开连接: 强制关闭并禁用虚拟电机模式开关
         self._force_disable_virtual_mode()
+        # 关闭调试窗口
+        if self._debug_window is not None:
+            self._debug_window.close()
+            self._debug_window = None
+        self._plot_panel.set_debug_checkbox(False)
         self.statusBar().showMessage("已断开")
+
+    def _on_debug_window_toggled(self, checked: bool):
+        """PlotPanel 调试通道复选框变化 → 创建/关闭调试窗口。"""
+        if checked:
+            if self._debug_window is None:
+                self._debug_window = DebugPlotWindow()
+                self._debug_window.window_closed.connect(self._on_debug_window_closed)
+                # 恢复上次窗口大小/位置/通道名称 (从持久化配置)
+                settings = layout_store.get_meta("settings", {})
+                plot_opts = settings.get("plot", {})
+                dw_opts = plot_opts.get("debug_window", {})
+                if isinstance(dw_opts, dict):
+                    self._debug_window.set_opts(dw_opts)
+            self._debug_window.show()
+        else:
+            if self._debug_window is not None:
+                self._debug_window.close()
+                self._debug_window = None
+
+    def _on_debug_window_closed(self):
+        """用户手动关闭调试窗口 → 同步取消 PlotPanel 复选框。"""
+        self._plot_panel.set_debug_checkbox(False)
+        self._debug_window = None
 
     def _on_connected(self, connected: bool):
         self._conn_panel.set_connected(connected)
@@ -1512,7 +1555,7 @@ class MainWindow(QMainWindow):
                     "total_fields": state["total"],
                     "collected": state["collected"],
                     "skipped": state["skipped"],
-                    "tool": "JM Studio v1.0.0",
+                    "tool": f"{APP_NAME} v{APP_VERSION}",
                 },
                 "fields": state["fields"],
             }
@@ -1652,7 +1695,7 @@ class MainWindow(QMainWindow):
         if len(self._feedback_pending) >= self._display_buffer_max:
             self._feedback_pending.popleft()
             self._feedback_dropped += 1
-        self._feedback_pending.append((time.monotonic(), fb))
+        self._feedback_pending.append(fb)
 
     def _queue_state(self, top_fsm, run_state, ctrl_mode, enable):
         self._latest_state = (top_fsm, run_state, ctrl_mode, enable)
@@ -1679,14 +1722,22 @@ class MainWindow(QMainWindow):
                 batch.append(self._feedback_pending.popleft())
 
             # P4 优化: 批量向量化喂曲线, 避免逐帧 Python 调用开销
-            ts_list = [item[0] for item in batch]
-            fb_list = [item[1] for item in batch]
-            self._plot_panel.feed_feedback_batch(ts_list, fb_list)
-            last_fb = batch[-1][1]
+            # X 轴使用数据点编号, 无需时间戳
+            self._plot_panel.feed_feedback_batch(batch)
+            last_fb = batch[-1]
             self._feedback_panel.update_feedback(last_fb)
             # 实时故障解码: 故障上升沿才记入历史
             self._fault_info_panel.update_fault_mask(
                 getattr(last_fb, 'fault_mask', 0) or 0)
+            # 调试通道数据分发 (逐帧全部绘制)
+            if self._debug_window is not None and self._debug_window.isVisible():
+                debug_vals = []
+                for fb in batch:
+                    d = getattr(fb, 'debug', ())
+                    if d:
+                        debug_vals.append(d)
+                if debug_vals:
+                    self._debug_window.feed_debug_batch(debug_vals)
 
         if self._feedback_dropped:
             now = time.monotonic()

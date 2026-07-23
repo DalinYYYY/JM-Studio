@@ -21,6 +21,7 @@ from PyQt6.QtGui import QFont
 from ui import feature_flags
 feature_flags.get_enabled_features()  # 预热缓存
 
+from ui import APP_NAME, APP_VERSION
 from ui.main_window import MainWindow
 
 
@@ -32,8 +33,8 @@ def main():
         )
 
     app = QApplication(sys.argv)
-    app.setApplicationName("JM Studio")
-    app.setApplicationVersion("1.0.1")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
 
     # 设置默认字体(等宽字体用于数据显示)
     font = QFont("Microsoft YaHei UI", 9)

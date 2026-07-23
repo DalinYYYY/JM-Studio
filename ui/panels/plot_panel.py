@@ -2,12 +2,12 @@
 
 使用 pyqtgraph 提供 4 组联动波形:
 位置、速度、电流、机械角度。
-支持时间窗、暂停、跟随、Y 轴自适应、曲线显隐与鼠标悬停读数。
+支持窗口点数、暂停、跟随、Y 轴自适应、曲线显隐与鼠标悬停读数。
 
 性能优化要点:
 - _SeriesBuffer 使用预分配 numpy 环形缓冲区, 零分配追加, 惰性时间顺序缓存
 - _refresh() 通过脏标记跳过无新数据时的重绘
-- _latest_t 增量更新, 避免每帧扫描全部 buffer
+- _latest_idx 增量更新, 避免每帧扫描全部 buffer
 - Y 轴自适应每 ~300ms 计算一次(10 帧 @ 30ms)
 - interpolate() 复用缓存数组, 避免鼠标悬停时的重复转换
 """
@@ -17,7 +17,7 @@ import math
 
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QGroupBox, QHBoxLayout, QLabel, QMenu, QPushButton, QSpinBox,
     QVBoxLayout, QWidget,
@@ -169,20 +169,20 @@ class _SeriesBuffer:
             self._build_cache()
         return self._cache_ys
 
-    def arrays(self, t_min: float = None):
+    def arrays(self, idx_min: float = None):
         """返回 (ts, ys) 拷贝, 安全用于 pyqtgraph setData."""
         ts = self._ts_view
         ys = self._ys_view
         if len(ts) == 0:
             return ts, ys
-        if t_min is None:
+        if idx_min is None:
             return ts.copy(), ys.copy()
-        i = int(np.searchsorted(ts, t_min, side='left'))
+        i = int(np.searchsorted(ts, idx_min, side='left'))
         if i >= len(ts):
             return np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float32)
         return ts[i:].copy(), ys[i:].copy()
 
-    def arrays_view(self, t_min: float = None):
+    def arrays_view(self, idx_min: float = None):
         """返回 (ts, ys) 视图 (零拷贝), 仅供主线程同步调用且不修改返回数组.
 
         优化策略:
@@ -196,11 +196,11 @@ class _SeriesBuffer:
             return ts, ys
         # 满缓冲时 cache 是独立数组, 未满时是切片 view (不安全, 需 copy)
         need_copy = self._count < self._maxlen
-        if t_min is None:
+        if idx_min is None:
             if need_copy:
                 return ts.copy(), ys.copy()
             return ts, ys
-        i = int(np.searchsorted(ts, t_min, side='left'))
+        i = int(np.searchsorted(ts, idx_min, side='left'))
         if i >= len(ts):
             return np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float32)
         if need_copy:
@@ -237,6 +237,8 @@ class _SeriesBuffer:
 class PlotPanel(QGroupBox):
     """实时曲线面板。"""
 
+    debug_window_toggled = pyqtSignal(bool)  # 调试通道复选框状态变化
+
     # 缓冲区容量: 30 万点/曲线 (30 万 × 9 曲线 × 8B = 21.6 MB, 内存可接受)
     # 以 1kHz 采样可保留 300 秒历史, 以 10kHz 保留 30 秒
     MAX_POINTS = 300_000
@@ -244,9 +246,9 @@ class PlotPanel(QGroupBox):
 
     def __init__(self, parent=None):
         super().__init__("", parent)
-        self._t0 = None
+        self._point_index = 0       # 全局数据点编号计数器
         self._paused = False
-        self._window_seconds = 20
+        self._window_points = 2000  # 窗口显示的数据点数
         self._syncing_x = False
         self._plot_states = {}
         self._buffers = {
@@ -272,7 +274,7 @@ class PlotPanel(QGroupBox):
             'ic': 'Ic',
         }
         self._current_checks = {}
-        self._latest_t = None          # 增量维护的最新时间戳
+        self._latest_idx = None          # 增量维护的最新数据点编号
         self._auto_range_counter = 0
         self._angle_ma = MovingAverageAngle(window=8)   # angle 曲线移动平均, 平滑 0.01rad 编码器噪声
         self._pos_ma = MovingAverage(window=8)          # pos 曲线移动平均, 平滑多圈位置噪声
@@ -313,11 +315,11 @@ class PlotPanel(QGroupBox):
         self._chk_auto_y.setChecked(True)
         bar.addWidget(self._chk_auto_y)
 
-        bar.addWidget(QLabel("窗口(s):"))
+        bar.addWidget(QLabel("窗口(点):"))
         self._spin_window = QSpinBox()
-        self._spin_window.setRange(5, 120)
-        self._spin_window.setValue(self._window_seconds)
-        self._spin_window.setFixedWidth(58)
+        self._spin_window.setRange(100, 50000)
+        self._spin_window.setValue(self._window_points)
+        self._spin_window.setFixedWidth(72)
         self._spin_window.valueChanged.connect(self._on_window_changed)
         bar.addWidget(self._spin_window)
 
@@ -333,6 +335,11 @@ class PlotPanel(QGroupBox):
         self._btn_reset.setFixedHeight(22)
         self._btn_reset.clicked.connect(self._reset_view)
         bar.addWidget(self._btn_reset)
+
+        self._debug_checkbox = QCheckBox("调试通道")
+        self._debug_checkbox.setChecked(False)
+        self._debug_checkbox.toggled.connect(self.debug_window_toggled.emit)
+        bar.addWidget(self._debug_checkbox)
 
         self._btn_clear = QPushButton("清空")
         self._btn_clear.setFixedHeight(22)
@@ -450,7 +457,7 @@ class PlotPanel(QGroupBox):
         plot.layout.setSpacing(0)
         plot.showGrid(x=True, y=True, alpha=0.25)
         plot.setLabel('left', y_label, units=unit)
-        plot.setLabel('bottom', '时间', units='s')
+        plot.setLabel('bottom', '数据点')
         plot.showAxis('bottom', show_bottom)
         plot.showAxis('left', show_left)
         plot.getAxis('left').setWidth(50)
@@ -524,8 +531,8 @@ class PlotPanel(QGroupBox):
         menu = QMenu(self)
         menu.setTitle("图表菜单")
 
-        act_zoom_in_x = menu.addAction("放大时间轴")
-        act_zoom_out_x = menu.addAction("缩小时间轴")
+        act_zoom_in_x = menu.addAction("放大X轴")
+        act_zoom_out_x = menu.addAction("缩小X轴")
         act_zoom_in_y = menu.addAction("放大纵轴")
         act_zoom_out_y = menu.addAction("缩小纵轴")
         menu.addSeparator()
@@ -591,7 +598,7 @@ class PlotPanel(QGroupBox):
             if checked else "")
 
     def _on_window_changed(self, value: int):
-        self._window_seconds = max(5, int(value))
+        self._window_points = max(100, int(value))
 
     def _set_plot_auto_y(self, plot_key: str, enabled: bool):
         cfg = self._plots.get(plot_key)
@@ -616,6 +623,12 @@ class PlotPanel(QGroupBox):
             if curve is not None and chk is not None:
                 curve.setVisible(chk.isChecked())
 
+    def set_debug_checkbox(self, checked: bool):
+        """外部（MainWindow）同步调试通道复选框状态，不触发信号。"""
+        self._debug_checkbox.blockSignals(True)
+        self._debug_checkbox.setChecked(checked)
+        self._debug_checkbox.blockSignals(False)
+
     def _visible_current_series(self):
         return tuple(
             name for name in self._current_series_order
@@ -623,6 +636,8 @@ class PlotPanel(QGroupBox):
         )
 
     def _reset_view(self):
+        if pg is None:
+            return
         self._chk_follow.setChecked(True)
         self._chk_auto_y.setChecked(True)
         if self._paused:
@@ -632,20 +647,18 @@ class PlotPanel(QGroupBox):
     def add_series(self, name: str):
         self._extra_buffers.setdefault(name, _SeriesBuffer(self.MAX_POINTS))
 
-    def append(self, name: str, ts: float, value: float):
-        if self._t0 is None:
-            self._t0 = ts
-        t = ts - self._t0
+    def append(self, name: str, value: float):
+        idx = float(self._point_index)
         if name in self._buffers:
-            self._buffers[name].append(t, value)
+            self._buffers[name].append(idx, value)
         else:
-            self._extra_buffers.setdefault(name, _SeriesBuffer(self.MAX_POINTS)).append(t, value)
-        if self._latest_t is None or t > self._latest_t:
-            self._latest_t = t
+            self._extra_buffers.setdefault(name, _SeriesBuffer(self.MAX_POINTS)).append(idx, value)
+        if self._latest_idx is None or idx > self._latest_idx:
+            self._latest_idx = idx
 
     def clear(self):
-        self._t0 = None
-        self._latest_t = None
+        self._point_index = 0
+        self._latest_idx = None
         self._auto_range_counter = 0
         self._angle_ma.reset()
         self._pos_ma.reset()
@@ -666,14 +679,19 @@ class PlotPanel(QGroupBox):
     # ==================== 配置持久化 ====================
     def get_opts(self) -> dict:
         """收集可持久化的 UI 配置 (关闭时由主窗口调用)."""
+        if pg is None:
+            return {"window_points": int(self._window_points)}
         opts = {
-            "window_seconds": int(self._window_seconds),
+            "window_points": int(self._window_points),
             "follow": self._chk_follow.isChecked(),
             "auto_y": self._chk_auto_y.isChecked(),
             "current_visibility": {
                 name: chk.isChecked() for name, chk in self._current_checks.items()
             },
             "per_plot": {},
+            "debug_window": {
+                "checked": self._debug_checkbox.isChecked(),
+            },
         }
         # 各子图 auto_y / legend 显隐
         for key, cfg in self._plots.items():
@@ -692,10 +710,15 @@ class PlotPanel(QGroupBox):
         if not isinstance(opts, dict):
             return
         try:
-            ws = int(opts.get("window_seconds", self._window_seconds))
-            if 5 <= ws <= 120:
-                self._window_seconds = ws
-                self._spin_window.setValue(ws)
+            wp = int(opts.get("window_points", self._window_points))
+            if 100 <= wp <= 50000:
+                self._window_points = wp
+        except Exception:
+            pass
+        if pg is None:
+            return
+        try:
+            self._spin_window.setValue(self._window_points)
         except Exception:
             pass
         try:
@@ -735,52 +758,56 @@ class PlotPanel(QGroupBox):
                         self._set_plot_legend(key, bool(entry['legend']))
                     except Exception:
                         pass
+        # 调试通道复选框状态
+        dw = opts.get("debug_window")
+        if isinstance(dw, dict):
+            try:
+                self._debug_checkbox.setChecked(bool(dw.get("checked", False)))
+            except Exception:
+                pass
 
-    def feed_feedback(self, ts: float, fb):
-        if self._t0 is None:
-            self._t0 = ts
-        t = ts - self._t0
+    def feed_feedback(self, fb):
+        idx = float(self._point_index)
+        self._point_index += 1
         # pos/vel 移动平均平滑编码器/PLL噪声
         pos_v = float(self._pos_ma.update_batch(
             np.array([getattr(fb, 'pos', 0.0)], dtype=np.float32))[0])
         vel_v = float(self._vel_ma.update_batch(
             np.array([getattr(fb, 'vel', 0.0)], dtype=np.float32))[0])
-        self._buffers['pos'].append(t, pos_v)
-        self._buffers['vel'].append(t, vel_v)
-        self._buffers['id'].append(t, getattr(fb, 'id', 0.0))
-        self._buffers['iq'].append(t, getattr(fb, 'iq', 0.0))
-        self._buffers['ibus'].append(t, getattr(fb, 'ibus', 0.0))
-        self._buffers['ia'].append(t, getattr(fb, 'ia', 0.0))
-        self._buffers['ib'].append(t, getattr(fb, 'ib', 0.0))
-        self._buffers['ic'].append(t, getattr(fb, 'ic', 0.0))
+        self._buffers['pos'].append(idx, pos_v)
+        self._buffers['vel'].append(idx, vel_v)
+        self._buffers['id'].append(idx, getattr(fb, 'id', 0.0))
+        self._buffers['iq'].append(idx, getattr(fb, 'iq', 0.0))
+        self._buffers['ibus'].append(idx, getattr(fb, 'ibus', 0.0))
+        self._buffers['ia'].append(idx, getattr(fb, 'ia', 0.0))
+        self._buffers['ib'].append(idx, getattr(fb, 'ib', 0.0))
+        self._buffers['ic'].append(idx, getattr(fb, 'ic', 0.0))
         # 机械角度: 显示单圈角度 [0, 2π) rad (对应 0~360°), 与电机机械相一致
         # 移动平均(圆形均值)平滑编码器噪声, 避免静止段毛刺
         single = float(getattr(fb, 'single', 0.0))
         single = float(self._angle_ma.update_batch(
             np.array([single], dtype=np.float32))[0])
-        self._buffers['angle'].append(t, single)
-        if self._latest_t is None or t > self._latest_t:
-            self._latest_t = t
+        self._buffers['angle'].append(idx, single)
+        if self._latest_idx is None or idx > self._latest_idx:
+            self._latest_idx = idx
 
     # 字段提取顺序 (与 _buffers 对齐, pos/vel 单独滤波不在此循环)
     _FEEDBACK_FIELDS = (
         'id', 'iq', 'ibus', 'ia', 'ib', 'ic',
     )
 
-    def feed_feedback_batch(self, ts_list, fb_list):
+    def feed_feedback_batch(self, fb_list):
         """批量向量化写入 (P4 优化): 一次构建 numpy 数组, 9 条曲线各一次 append_batch.
 
-        相比逐点 feed_feedback, 在 1000 帧/批下可降低 Python 解释器开销 20~50 倍.
+        X 轴使用数据点编号 (0, 1, 2, ...), 每个数据点等间距, 与下位机采样周期无关.
         """
         n = len(fb_list)
         if n == 0:
             return
-        if self._t0 is None:
-            self._t0 = ts_list[0]
-        # 时间戳数组 (float32, 一次构建, 9 条曲线复用)
-        ts_arr = np.empty(n, dtype=np.float32)
-        for i in range(n):
-            ts_arr[i] = ts_list[i] - self._t0
+        # 数据点编号数组 (float32, 一次构建, 9 条曲线复用)
+        start_idx = self._point_index
+        ts_arr = np.arange(start_idx, start_idx + n, dtype=np.float32)
+        self._point_index += n
         # pos/vel 单独滤波(移动平均平滑编码器/PLL噪声), 其余字段直接写入
         ys_pos = np.empty(n, dtype=np.float32)
         ys_vel = np.empty(n, dtype=np.float32)
@@ -803,10 +830,10 @@ class PlotPanel(QGroupBox):
             ys_angle[i] = getattr(fb_list[i], 'single', 0.0)
         ys_angle = self._angle_ma.update_batch(ys_angle)
         self._buffers['angle'].append_batch(ts_arr, ys_angle)
-        # 增量维护最新时间戳 (避免 _refresh 全扫描)
-        last_t = float(ts_arr[-1])
-        if self._latest_t is None or last_t > self._latest_t:
-            self._latest_t = last_t
+        # 增量维护最新数据点编号 (避免 _refresh 全扫描)
+        last_idx = float(ts_arr[-1])
+        if self._latest_idx is None or last_idx > self._latest_idx:
+            self._latest_idx = last_idx
 
     # ------------------------------------------------------------------
     # 核心刷新
@@ -825,35 +852,35 @@ class PlotPanel(QGroupBox):
         if not self._any_dirty() and not force:
             return
 
-        t_end = self._latest_t
-        if t_end is None:
+        idx_end = self._latest_idx
+        if idx_end is None:
             return
-        t_min = max(0.0, t_end - float(self._window_seconds))
+        idx_min = max(0.0, idx_end - float(self._window_points))
 
         # P2 优化: 曲线级脏标记, 仅重绘有新数据的曲线 (避免全量重绘)
         for name in ('pos', 'vel', 'id', 'iq', 'ibus', 'ia', 'ib', 'ic', 'angle'):
             buf = self._buffers[name]
             if force or buf.dirty:
-                self._update_curve(name, t_min)
+                self._update_curve(name, idx_min)
                 buf.dirty = False
 
         # 额外曲线 (extra_buffers)
         for name, buf in self._extra_buffers.items():
             if force or buf.dirty:
-                self._update_curve(name, t_min)
+                self._update_curve(name, idx_min)
                 buf.dirty = False
 
         if self._chk_follow.isChecked() or force:
-            self._set_all_x_range(t_min, max(t_end, t_min + 0.1))
+            self._set_all_x_range(idx_min, max(idx_end, idx_min + 1.0))
 
         # Y 轴自适应节流: 每 _AUTO_RANGE_EVERY 帧或 force 时执行
         if self._chk_auto_y.isChecked():
             self._auto_range_counter += 1
             if self._auto_range_counter >= self._AUTO_RANGE_EVERY or force:
                 self._auto_range_counter = 0
-                self._auto_range_y(t_min)
+                self._auto_range_y(idx_min)
 
-    def _update_curve(self, name: str, t_min: float):
+    def _update_curve(self, name: str, idx_min: float):
         cfg = self._plots.get('current') if name in self._current_series_order else self._plots.get(name)
         if cfg is None:
             return
@@ -861,7 +888,7 @@ class PlotPanel(QGroupBox):
         if buf is None:
             return
         # P3 优化: 零拷贝读取 (arrays_view), avoidCopy=True 让 pyqtgraph 直接使用该数组
-        ts, ys = buf.arrays_view(t_min)
+        ts, ys = buf.arrays_view(idx_min)
         if len(ts) == 0:
             return
         try:
@@ -870,13 +897,13 @@ class PlotPanel(QGroupBox):
             # 兼容旧版 pyqtgraph (无 avoidCopy 参数)
             cfg['curves'][name].setData(ts, ys)
 
-    def _set_all_x_range(self, t_min: float, t_max: float):
+    def _set_all_x_range(self, idx_min: float, idx_max: float):
         if pg is None:
             return
         self._syncing_x = True
         try:
             for cfg in self._plots.values():
-                cfg['plot'].setXRange(t_min, t_max, padding=0.02)
+                cfg['plot'].setXRange(idx_min, idx_max, padding=0.02)
         finally:
             self._syncing_x = False
 
@@ -900,7 +927,7 @@ class PlotPanel(QGroupBox):
         finally:
             self._syncing_x = False
 
-    def _auto_range_y(self, t_min: float):
+    def _auto_range_y(self, idx_min: float):
         def _range_from(names):
             # P5 优化: 使用 arrays_view (满缓冲时零拷贝) + 增量 min/max
             # 避免 np.concatenate 分配大临时数组 (6 曲线 × 30万点 = 7.2MB)
@@ -908,7 +935,7 @@ class PlotPanel(QGroupBox):
             y1 = None
             for n in names:
                 buf = self._buffers[n]
-                _ts, ys = buf.arrays_view(t_min)
+                _ts, ys = buf.arrays_view(idx_min)
                 if not len(ys):
                     continue
                 cur_min = float(np.min(ys))
@@ -966,7 +993,7 @@ class PlotPanel(QGroupBox):
 
     def _hover_values(self, key: str, x: float, y: float) -> str:
         if key == 'current':
-            parts = [f"<b>t</b> = {x:.2f} s"]
+            parts = [f"<b>点</b> = {int(x) if x == x else 0}"]
             for name in self._current_series_order:
                 chk = self._current_checks.get(name)
                 if chk is not None and not chk.isChecked():
@@ -985,7 +1012,7 @@ class PlotPanel(QGroupBox):
         val_text = "--" if val is None else f"{val:.4f}"
         return (
             "<div style='color:#F5F5F5;'>"
-            f"<b>t</b> = {x:.2f} s<br/>"
+            f"<b>点</b> = {int(x) if x == x else 0}<br/>"
             f"{labels[series_name]} = {val_text} {units[series_name]}"
             "</div>"
         )

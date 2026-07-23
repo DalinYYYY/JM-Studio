@@ -57,6 +57,19 @@
       "peak_current": 5.0,
       "max_speed": 300.0,
       "protect_over_current": 6.5
+    },
+    "RS03": {
+      "label": "RobStride RS03 关节电机 (42极/21极对, 9:1减速器, 反电势17Vrms/krpm)",
+      "pole_pairs": 21,
+      "phase_resistance": 0.1,
+      "phase_inductance_d": 0.0002,
+      "phase_inductance_q": 0.0002,
+      "flux_linkage": 0.00631,
+      "torque_constant": 0.199,
+      "rotor_inertia": 0.0005,
+      "peak_current": 43.0,
+      "max_speed": 184.0,
+      "protect_over_current": 55.9
     }
   }
 }
