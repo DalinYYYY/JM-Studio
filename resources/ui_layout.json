@@ -2,25 +2,29 @@
   "version": 1,
   "settings": {
     "baud": "2000000",
+    "transport_type": "can",
+    "can_bitrate": "1000000",
+    "can_motor_id": 1,
+    "can_channel_name": "PCAN_USBBUS1",
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1737,
-      "height": 1052,
-      "x": 58,
-      "y": 95
+      "width": 1915,
+      "height": 1038,
+      "x": 626,
+      "y": 277
     },
     "right_splitter": [
-      996,
+      982,
       0
     ],
     "main_splitter": [
       330,
-      1381
+      1559
     ],
     "log_splitter_sizes": [
-      341,
-      127
+      710,
+      260
     ],
     "layout_edit": true,
     "telemetry": {
@@ -37,7 +41,12 @@
       "tx": true,
       "rx": true,
       "raw": true,
-      "autoscroll": true
+      "can_raw": true,
+      "autoscroll": true,
+      "lvl_debug": true,
+      "lvl_info": true,
+      "lvl_warn": true,
+      "lvl_error": true
     },
     "virtual_motor_mode": false,
     "csv_paths": {
@@ -89,7 +98,7 @@
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 758,
+        "5": 674,
         "6": 72,
         "7": 72
       }
@@ -101,7 +110,7 @@
         "2": 120,
         "3": 200,
         "4": 125,
-        "5": 726,
+        "5": 642,
         "6": 72,
         "7": 72
       }
@@ -113,7 +122,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 815,
+        "5": 731,
         "6": 72,
         "7": 72
       }
@@ -125,7 +134,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 803,
+        "5": 719,
         "6": 72,
         "7": 72
       }
@@ -144,7 +153,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 815,
+          "5": 731,
           "6": 72,
           "7": 72
         }
@@ -159,7 +168,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 803,
+          "5": 719,
           "6": 72,
           "7": 72
         }
@@ -171,11 +180,11 @@
         "adv_velocity": false,
         "adv_position": false
       },
-      "current_tab": 3
+      "current_tab": 1
     },
     "fault_info": {
       "disable_mask": 0,
-      "current_tab": 0
+      "current_tab": 2
     }
   },
   "theme": "dark",

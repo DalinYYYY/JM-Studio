@@ -2,6 +2,7 @@
 
 import datetime
 import html
+import time
 from collections import deque
 
 from PyQt6.QtCore import QTimer
@@ -17,14 +18,22 @@ from ui.theme import theme
 
 # 配色(深色文本编辑器友好)
 _COLOR = {
-    'tx':   '#2962FF',   # 蓝 - 发送
-    'rx':   '#00897B',   # 青绿 - 接收
-    'raw':  '#9E9E9E',   # 灰 - 原始帧
-    'warn': '#F9A825',   # 琥珀 - 警告
-    'err':  '#E53935',   # 红 - 错误
-    'info': '#616161',   # 深灰 - 普通信息
-    'ts':   '#9E9E9E',   # 灰 - 时间戳
+    'tx':    '#2962FF',   # 蓝 - 发送
+    'rx':    '#00897B',   # 青绿 - 接收
+    'raw':   '#9E9E9E',   # 灰 - 原始帧
+    'warn':  '#F9A825',   # 琥珀 - 警告
+    'err':   '#E53935',   # 红 - 错误
+    'info':  '#616161',   # 深灰 - 普通信息
+    'debug': '#90A4AE',   # 蓝灰 - 调试(细粒度, 默认关闭)
+    'ts':    '#9E9E9E',   # 灰 - 时间戳
 }
+
+# 日志级别: 应用日志(log/log_debug/log_warn/log_err)按级别过滤
+# 通信帧(log_tx/log_rx/log_can_frame)有独立类别开关, 不受级别过滤影响
+LOG_LEVEL_DEBUG = 0
+LOG_LEVEL_INFO  = 1
+LOG_LEVEL_WARN  = 2
+LOG_LEVEL_ERROR = 3
 
 
 class LogPanel(QGroupBox):
@@ -33,9 +42,11 @@ class LogPanel(QGroupBox):
     对外接口:
         log_tx(cmd, payload)  发送帧
         log_rx(cmd, payload)  接收帧(由 raw_frame 驱动)
-        log(msg)              普通信息
+        log(msg)              普通信息(INFO)
+        log_debug(msg)        调试信息(DEBUG, 默认不显示)
         log_warn(msg) / log_err(msg)
     显示由各开关控制: 时间戳 / 显示TX / 显示RX / 原始HEX / 自动滚动。
+    日志级别: DEBUG/INFO/WARN/ERROR 复选框过滤应用日志。
     """
 
     MAX_BLOCKS = 2000
@@ -78,11 +89,31 @@ class LogPanel(QGroupBox):
         self.chk_rx.setChecked(True)
         self.chk_raw = QCheckBox("原始HEX")
         self.chk_raw.setChecked(True)
+        self.chk_can_raw = QCheckBox("CAN原始帧")
+        self.chk_can_raw.setChecked(True)
+        self.chk_can_raw.setToolTip("显示 CAN 物理帧日志(ID/DLC/data), 仅 CAN 模式有效")
         self.chk_autoscroll = QCheckBox("自动滚动")
         self.chk_autoscroll.setChecked(True)
 
         for chk in (self.chk_ts, self.chk_tx, self.chk_rx,
-                    self.chk_raw, self.chk_autoscroll):
+                    self.chk_raw, self.chk_can_raw, self.chk_autoscroll):
+            tool_layout.addWidget(chk)
+
+        # 日志级别过滤: 控制应用日志(log/log_debug/log_warn/log_err)显示
+        # 通信帧(log_tx/log_rx/log_can_frame)有独立类别开关, 不受此过滤影响
+        # DEBUG 默认关闭(细粒度日志量大), INFO/WARN/ERROR 默认开启
+        tool_layout.addSpacing(8)
+        self.chk_lvl_debug = QCheckBox("DEBUG")
+        self.chk_lvl_debug.setChecked(False)
+        self.chk_lvl_debug.setToolTip("显示调试日志(协议交互细节/状态转换等细粒度信息)")
+        self.chk_lvl_info = QCheckBox("INFO")
+        self.chk_lvl_info.setChecked(True)
+        self.chk_lvl_warn = QCheckBox("WARN")
+        self.chk_lvl_warn.setChecked(True)
+        self.chk_lvl_error = QCheckBox("ERROR")
+        self.chk_lvl_error.setChecked(True)
+        for chk in (self.chk_lvl_debug, self.chk_lvl_info,
+                    self.chk_lvl_warn, self.chk_lvl_error):
             tool_layout.addWidget(chk)
 
         self._btn_clear = QPushButton("清空日志")
@@ -109,13 +140,19 @@ class LogPanel(QGroupBox):
 
     # ---------------- 配置 ----------------
     def get_opts(self) -> dict:
-        """五个显示开关状态(供设置持久化)。"""
+        """显示开关状态(供设置持久化)。"""
         return {
             "ts": self.chk_ts.isChecked(),
             "tx": self.chk_tx.isChecked(),
             "rx": self.chk_rx.isChecked(),
             "raw": self.chk_raw.isChecked(),
+            "can_raw": self.chk_can_raw.isChecked(),
             "autoscroll": self.chk_autoscroll.isChecked(),
+            # 日志级别开关
+            "lvl_debug": self.chk_lvl_debug.isChecked(),
+            "lvl_info": self.chk_lvl_info.isChecked(),
+            "lvl_warn": self.chk_lvl_warn.isChecked(),
+            "lvl_error": self.chk_lvl_error.isChecked(),
         }
 
     def set_opts(self, opts: dict):
@@ -123,7 +160,11 @@ class LogPanel(QGroupBox):
         if not isinstance(opts, dict):
             return
         mapping = {"ts": self.chk_ts, "tx": self.chk_tx, "rx": self.chk_rx,
-                   "raw": self.chk_raw, "autoscroll": self.chk_autoscroll}
+                   "raw": self.chk_raw, "can_raw": self.chk_can_raw,
+                   "autoscroll": self.chk_autoscroll,
+                   # 日志级别开关
+                   "lvl_debug": self.chk_lvl_debug, "lvl_info": self.chk_lvl_info,
+                   "lvl_warn": self.chk_lvl_warn, "lvl_error": self.chk_lvl_error}
         for key, chk in mapping.items():
             if key in opts:
                 chk.setChecked(bool(opts[key]))
@@ -223,11 +264,56 @@ class LogPanel(QGroupBox):
             line += f"  {self._hex(payload)}"
         self._queue('rx', line)
 
+    def log_can_frame(self, can_id: int, data: bytes, is_rx: bool, ts: float):
+        """CAN 物理帧日志。ts 为 python-can 提供的硬件时间戳(相对值, 当前用系统时间显示)。"""
+        if not self.chk_can_raw.isChecked():
+            return
+        arrow = "▼ RX" if is_rx else "▲ TX"
+        motor_id = can_id & 0xFF
+        cmd = (can_id >> 8) & 0xFF
+        hex_str = data.hex(' ').upper() if data else "(空)"
+        line = (f"{arrow} CAN ID:0x{can_id:X} DLC:{len(data)} "
+                f"CMD:0x{cmd:02X} MID:{motor_id} "
+                f"{html.escape(hex_str)}")
+        self._queue('raw', line)
+
+    # ---------------- 日志级别过滤 ----------------
+    def _level_enabled(self, level: int) -> bool:
+        """检查指定级别是否启用显示。"""
+        if level == LOG_LEVEL_DEBUG:
+            return self.chk_lvl_debug.isChecked()
+        if level == LOG_LEVEL_INFO:
+            return self.chk_lvl_info.isChecked()
+        if level == LOG_LEVEL_WARN:
+            return self.chk_lvl_warn.isChecked()
+        if level == LOG_LEVEL_ERROR:
+            return self.chk_lvl_error.isChecked()
+        return True
+
     def log(self, msg: str):
-        self._queue('info', html.escape(msg))
+        """普通信息日志(INFO 级别)。"""
+        if not self._level_enabled(LOG_LEVEL_INFO):
+            return
+        self._queue('info', "[I] " + html.escape(msg))
+
+    def log_debug(self, msg: str):
+        """调试日志(DEBUG 级别, 默认不显示)。
+
+        用于协议交互细节、状态转换、重连过程等细粒度信息。
+        开启 DEBUG 复选框后显示, 便于联调排查问题。
+        """
+        if not self._level_enabled(LOG_LEVEL_DEBUG):
+            return
+        self._queue('debug', "[D] " + html.escape(msg))
 
     def log_warn(self, msg: str):
-        self._queue('warn', "⚠ " + html.escape(msg))
+        """警告日志(WARN 级别)。"""
+        if not self._level_enabled(LOG_LEVEL_WARN):
+            return
+        self._queue('warn', "[W] ⚠ " + html.escape(msg))
 
     def log_err(self, msg: str):
-        self._queue('err', "✖ " + html.escape(msg))
+        """错误日志(ERROR 级别)。"""
+        if not self._level_enabled(LOG_LEVEL_ERROR):
+            return
+        self._queue('err', "[E] ✖ " + html.escape(msg))

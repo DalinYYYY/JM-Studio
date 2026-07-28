@@ -1,25 +1,32 @@
 """
-CAN 传输实现(占位, 后续实现)
+CAN 传输实现: 基于 python-can + QThread 异步收发
 
-设计预留(依据固件 jm_proto_can.h):
-- 仲裁 ID(扩展帧29位): ID = (CMD << 8) | motor_id; CMD = (id >> 8) & 0xFF; motor_id = id & 0xFF
-- 数据区直接是命令载荷(不含 CMD), 单帧最多 8 字节
-- >8 字节载荷多帧分包: data[0]=控制字=(末帧标志<<7)|(序号&0x7F), data[1..]=片段(每帧≤7字节)
-  常量: JM_CAN_SEG_LAST=0x80, JM_CAN_SEG_SEQ_MASK=0x7F, JM_CAN_SEG_PAYLOAD=7, JM_CAN_SINGLE_MAX=8
-- MIT(0x13/0x30) 定点压缩进 8 字节: pos16 vel12 kp12 kd12 tff12
-  范围: pos[-12.5,12.5] vel[-65,65] kp[0,500] kd[0,5] tff[-50,50]
-  raw = (value-min)/(max-min)*(2^bits-1)
-- 反馈帧压缩进 8 字节: pos16 vel16 tq16 temp8 err8, temp 线性映射 [-40,215]
-- 广播地址 motor_id=0(不应答)
+与固件 jm_proto_can.h 一致:
+- 仲裁 ID(扩展帧29位): ID = (CMD << 8) | motor_id
+- 数据区直接是命令载荷(不含 CMD), 单帧最多 8 字节; >8 字节多帧分包(data[0]=控制字)
+- MIT(0x13/0x30) 与反馈帧用 8 字节定点压缩
 
-实现时: 用 python-can(或厂商 SDK) 打开通道, 收到 CAN 帧 -> 拆 ID 取 CMD -> 单帧/重组多帧/
-MIT 解压 -> frame_received.emit(cmd, payload); 发送时按 cmd 决定压缩/分包后写 CAN。
+关键约束:
+- 单一 _io_lock 串行化对 self._bus 的所有访问, 避免 Windows 段错误
+- _alive(线程生命周期) 与 _running(总线打开) 双标志分离
+- 多帧重组: 用 cmd 白名单 _MULTI_FRAME_CMDS 判断, 联调时若发现新命令加入即可
+
+依赖: python-can>=4.0.0, PCAN 驱动已安装
 """
 
+import queue
+import struct
+import threading
+import time
+from typing import Optional
+
+import can  # python-can
+
+from jmproto.cmd_def import JmCmd
 from .base import Transport
 
 
-# ---- MIT 定点压缩范围(与 jm_proto_can.h 一致, 实现时使用) ----
+# ---- MIT 定点压缩范围(与 jm_proto_can.h 一致) ----
 MIT_POS_MIN, MIT_POS_MAX = -12.5, 12.5
 MIT_VEL_MIN, MIT_VEL_MAX = -65.0, 65.0
 MIT_KP_MIN, MIT_KP_MAX = 0.0, 500.0
@@ -32,6 +39,12 @@ CAN_SEG_LAST = 0x80
 CAN_SEG_SEQ_MASK = 0x7F
 CAN_SEG_PAYLOAD = 7
 CAN_SINGLE_MAX = 8
+
+# ---- 多帧分包常量 ----
+# 固件协议(jm_proto_can.c can_emit_payload):
+#   载荷≤8B → 单帧, 数据直接是载荷(无控制字)
+#   载荷>8B → 多帧, data[0]=控制字(bit7=末帧, bit6:0=序号), data[1..7]=片段
+# 接收侧不依赖命令白名单, 基于 DLC 和控制字特征智能判断。
 
 
 def can_make_id(cmd: int, motor_id: int) -> int:
@@ -47,30 +60,545 @@ def can_get_motor_id(can_id: int) -> int:
 
 
 class CanTransport(Transport):
-    """CAN 传输(待实现)"""
+    """CAN 传输(python-can 后端, 默认 PCAN 接口)"""
 
     name = "can"
+    _READ_TIMEOUT_S = 0.001
+    _IDLE_WAIT_S = 0.0005
+    _CLOSED_WAIT_S = 0.01
+    _WRITE_TIMEOUT_S = 0.02
+    # python-can 接口名; 未来切换其他硬件改这里或加构造参数
+    _INTERFACE = "pcan"
+    # 发送队列容量(满时丢弃, 计入 tx_dropped_count)
+    _TX_QUEUE_SIZE = 256
+    _TX_THREAD_NAME = "CanTx"
 
     def __init__(self):
         super().__init__()
-        self._open = False
-        self._motor_id = 1
+        self._bus: Optional[can.BusABC] = None
+        self._channel: str = ""
+        self._bitrate: int = 1000000
+        self._motor_id: int = 1
+        self._alive = False      # 线程生命周期
+        self._running = False    # 总线打开标志
+        self._io_lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._wake_event = threading.Event()
+        # 多帧重组缓冲: {can_id: bytearray}
+        self._rx_segments: dict = {}
+        # 多帧缓冲时间戳: {can_id: timestamp}, 超时100ms未完成则回退为单帧
+        self._rx_segments_ts: dict = {}
+        self._tx_seq: int = 0
+        # P2-1 监听模式: 只记物理帧日志, 不解析协议帧
+        self._listen_only = False
+        # P1-1/P1-2 总线状态检查(收循环空闲周期读取, 不阻塞 recv)
+        self._last_bus_state = ""
+        self._bus_state_check_ts = 0.0
+        # 非阻塞发送队列: UI 线程入队, _tx_loop 线程出队写总线
+        self._tx_queue: queue.Queue = queue.Queue(maxsize=self._TX_QUEUE_SIZE)
+        self._tx_thread: Optional[threading.Thread] = None
+        self._tx_stop = threading.Event()
+        self.tx_dropped_count = 0  # 队列满丢弃计数
 
+    # ---------------- 通道枚举 ----------------
+    @staticmethod
+    def list_channels() -> list:
+        """列出可用 PCAN 通道: [(channel_name, description), ...]
+
+        channel_name 形如 'PCAN_USBBUS1', 传给 can.Bus(channel=...) 使用。
+        description 形如 'PCAN-USB Ch.1' 供 UI 显示。
+        无硬件或驱动未装时返回空列表。
+        """
+        try:
+            configs = can.interface.detect_available_configs(CanTransport._INTERFACE)
+        except Exception:
+            return []
+        out = []
+        for cfg in configs:
+            # python-can 4.x 返回 dict: {'interface': 'pcan', 'channel': 'PCAN_USBBUS1', ...}
+            if isinstance(cfg, dict):
+                ch = cfg.get('channel', '')
+            else:
+                # 兼容部分版本返回对象
+                ch = getattr(cfg, 'channel', '')
+            if not ch:
+                continue
+            desc = (cfg.get('description') if isinstance(cfg, dict)
+                    else getattr(cfg, 'description', None)) or ch.replace('PCAN_USBBUS', 'PCAN-USB Ch.')
+            out.append((ch, desc))
+        return out
+
+    # ---------------- 线程生命周期 ----------------
     def start(self):
-        # 线程在实现时启动; 占位阶段空操作
-        pass
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._alive = True
+        self._thread = threading.Thread(target=self._run, name="CanRx", daemon=True)
+        self._thread.start()
 
     def stop(self):
         self.close()
+        self._alive = False
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
 
-    def open(self, channel: str = "", bitrate: int = 1000000, motor_id: int = 1, **_) -> bool:
-        raise NotImplementedError("CAN 传输待实现(见本文件顶部设计预留)")
+    # ---------------- 链路操作 ----------------
+    def open(self, channel: str = "", bitrate: int = 1000000,
+             motor_id: int = 1, fd: bool = False, data_bitrate: int = 0,
+             **_) -> bool:
+        """打开 CAN 总线。fd=True 启用 CAN FD 模式(需 PCAN-USB FD 设备), 打开成功后启动独立发送线程。"""
+        try:
+            # 静默关闭旧连接, 不发 connected(False) 避免状态闪烁
+            if self._bus is not None:
+                self._stop_tx_thread()
+                with self._io_lock:
+                    self._running = False
+                    try:
+                        self._bus.shutdown()
+                    except Exception:
+                        pass
+                self._wake_event.set()
+
+            # PCAN FD 模式: 需要驱动 4.x+ 和 PCAN-USB FD 设备
+            if fd:
+                try:
+                    bus = can.Bus(
+                        interface=self._INTERFACE,
+                        channel=channel,
+                        bitrate=bitrate,
+                        data_bitrate=data_bitrate if data_bitrate > 0 else None,
+                        fd=True,
+                    )
+                except (can.CanInterfaceNotImplementedError, can.CanInitializationError,
+                        Exception) as e:
+                    # FD 不可用: 给出明确的降级提示
+                    self.error_occurred.emit(
+                        f"CAN FD 模式不可用, 请确认:\n"
+                        f"  1. PCAN-USB FD 设备已连接\n"
+                        f"  2. PCAN Driver 版本 >= 4.x (下载: peak-system.com)\n"
+                        f"  3. python-can 版本 >= 4.0\n"
+                        f"原始错误: {e}"
+                    )
+                    return False
+                # 检测实际设备类型: PCAN-USB(经典) 不支持 FD
+                if hasattr(bus, 'channel_info') and bus.channel_info:
+                    info = str(bus.channel_info)
+                    if 'FD' not in info and 'fd' not in info.lower():
+                        try:
+                            bus.shutdown()
+                        except Exception:
+                            pass
+                        self.error_occurred.emit(
+                            f"设备 {info} 不支持 FD, 请使用 PCAN-USB FD"
+                        )
+                        return False
+            else:
+                bus = can.Bus(
+                    interface=self._INTERFACE,
+                    channel=channel,
+                    bitrate=bitrate,
+                )
+
+            with self._io_lock:
+                self._bus = bus
+                self._channel = channel
+                self._bitrate = bitrate
+                self._motor_id = motor_id & 0xFF
+                self._rx_segments.clear()
+                self._rx_segments_ts.clear()
+                self._tx_seq = 0
+                self.reset_stats()
+                self.tx_dropped_count = 0
+                self._running = True
+            self._wake_event.set()
+            # 启动发送线程
+            self._start_tx_thread()
+            self.connected.emit(True)
+            return True
+        except Exception as e:
+            self.error_occurred.emit(f"CAN 打开失败: {e}")
+            return False
 
     def close(self):
-        self._open = False
+        was_running = self._running
+        # 停止发送线程(先停发送, 再关总线, 避免发送线程访问已关闭的 bus)
+        self._stop_tx_thread()
+        with self._io_lock:
+            self._running = False
+            if self._bus is not None:
+                try:
+                    self._bus.shutdown()
+                except Exception:
+                    pass
+                self._bus = None
+            self._rx_segments.clear()
+            self._rx_segments_ts.clear()
+        self._wake_event.set()
+        if was_running:
+            self.connected.emit(False)
 
     def is_open(self) -> bool:
-        return self._open
+        return self._bus is not None and self._running
 
+    # ---------------- 发送 ----------------
     def send(self, cmd: int, payload: bytes = b'') -> bool:
-        raise NotImplementedError("CAN 传输待实现")
+        """非阻塞发送: 入队后立即返回, 实际发送由 _tx_loop 线程完成。
+        返回 True=入队成功; False=总线未开或队列满(丢弃并计数)。"""
+        if not self.is_open():
+            return False
+        try:
+            self._tx_queue.put_nowait((cmd, payload))
+            return True
+        except queue.Full:
+            self.tx_dropped_count += 1
+            return False
+
+    def _start_tx_thread(self):
+        """启动发送线程(open 时调用)。"""
+        self._tx_stop.clear()
+        # 清空残留队列(旧连接可能残留)
+        while not self._tx_queue.empty():
+            try:
+                self._tx_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._tx_thread = threading.Thread(
+            target=self._tx_loop, name=self._TX_THREAD_NAME, daemon=True
+        )
+        self._tx_thread.start()
+
+    def _stop_tx_thread(self):
+        """停止发送线程(close 时调用)。"""
+        self._tx_stop.set()
+        if self._tx_thread is not None:
+            self._tx_thread.join(timeout=1.0)
+            self._tx_thread = None
+
+    def _tx_loop(self):
+        """发送线程主循环: 阻塞取队列 → 组帧 → 写总线。"""
+        while not self._tx_stop.is_set():
+            try:
+                cmd, payload = self._tx_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            # 实际发送(阻塞调用, 不影响 UI 线程)
+            if cmd == JmCmd.MIT or cmd == JmCmd.IMPEDANCE:
+                self._send_mit(cmd, payload)
+            elif len(payload) <= CAN_SINGLE_MAX:
+                self._send_single(cmd, payload)
+            else:
+                self._send_multi(cmd, payload)
+
+    def _send_single(self, cmd: int, payload: bytes) -> bool:
+        """单帧: 数据区直接是载荷(无控制字), 最多 8 字节"""
+        can_id = can_make_id(cmd, self._motor_id)
+        msg = can.Message(
+            arbitration_id=can_id,
+            data=payload,
+            is_extended_id=True,  # 29 位扩展帧
+        )
+        return self._write_msg(msg)
+
+    def _send_multi(self, cmd: int, payload: bytes) -> bool:
+        """多帧分包: 每帧 data[0]=控制字, data[1..]=片段(<=7字节)"""
+        can_id = can_make_id(cmd, self._motor_id)
+        offset = 0
+        seq = 0
+        total = len(payload)
+        ok = True
+        while offset < total:
+            seg = payload[offset:offset + CAN_SEG_PAYLOAD]
+            offset += CAN_SEG_PAYLOAD
+            is_last = offset >= total
+            ctrl = (CAN_SEG_LAST if is_last else 0) | (seq & CAN_SEG_SEQ_MASK)
+            frame_data = bytes([ctrl]) + seg
+            msg = can.Message(
+                arbitration_id=can_id,
+                data=frame_data,
+                is_extended_id=True,
+            )
+            ok = ok and self._write_msg(msg)
+            seq += 1
+        return ok
+
+    def _write_msg(self, msg: can.Message) -> bool:
+        with self._io_lock:
+            try:
+                if not (self._bus is not None and self._running):
+                    return False
+                self._bus.send(msg, timeout=self._WRITE_TIMEOUT_S)
+                self.tx_bytes += msg.dlc
+                self.tx_frames += 1
+                # 物理帧日志(TX)
+                self.raw_can_frame.emit(int(msg.arbitration_id), bytes(msg.data[:msg.dlc]), False, 0.0)
+                return True
+            except Exception as e:
+                # P0-4: 发送失败告警
+                self.error_occurred.emit(f"CAN 发送失败: {e}")
+                return False
+
+    # ---------------- MIT 压缩 ----------------
+    @staticmethod
+    def _float_to_raw(value: float, min_val: float, max_val: float, bits: int) -> int:
+        """定点量化: raw = (value-min)/(max-min) * (2^bits - 1), 饱和到 [0, 2^bits-1]"""
+        span = max_val - min_val
+        if span <= 0:
+            return 0
+        raw = int((value - min_val) / span * ((1 << bits) - 1) + 0.5)
+        return max(0, min((1 << bits) - 1, raw))
+
+    @staticmethod
+    def _raw_to_float(raw: int, min_val: float, max_val: float, bits: int) -> float:
+        span = max_val - min_val
+        return min_val + raw / ((1 << bits) - 1) * span
+
+    def _pack_mit(self, pos: float, vel: float, kp: float, kd: float, tff: float) -> bytes:
+        """MIT 命令 8 字节压缩: pos16 vel12 kp12 kd12 tff12 (大端)"""
+        p = self._float_to_raw(pos, MIT_POS_MIN, MIT_POS_MAX, 16)
+        v = self._float_to_raw(vel, MIT_VEL_MIN, MIT_VEL_MAX, 12)
+        kp = self._float_to_raw(kp, MIT_KP_MIN, MIT_KP_MAX, 12)
+        kd = self._float_to_raw(kd, MIT_KD_MIN, MIT_KD_MAX, 12)
+        tf = self._float_to_raw(tff, MIT_TFF_MIN, MIT_TFF_MAX, 12)
+        val = (p << 48) | (v << 36) | (kp << 24) | (kd << 12) | tf
+        return val.to_bytes(8, 'big')
+
+    def _unpack_mit(self, data: bytes) -> tuple:
+        """反向解压 MIT 命令 8 字节 → (pos, vel, kp, kd, tff)"""
+        val = int.from_bytes(data[:8], 'big')
+        p = (val >> 48) & 0xFFFF
+        v = (val >> 36) & 0xFFF
+        kp = (val >> 24) & 0xFFF
+        kd = (val >> 12) & 0xFFF
+        tf = val & 0xFFF
+        return (
+            self._raw_to_float(p, MIT_POS_MIN, MIT_POS_MAX, 16),
+            self._raw_to_float(v, MIT_VEL_MIN, MIT_VEL_MAX, 12),
+            self._raw_to_float(kp, MIT_KP_MIN, MIT_KP_MAX, 12),
+            self._raw_to_float(kd, MIT_KD_MIN, MIT_KD_MAX, 12),
+            self._raw_to_float(tf, MIT_TFF_MIN, MIT_TFF_MAX, 12),
+        )
+
+    def _unpack_mit_feedback(self, data: bytes) -> bytes:
+        """反馈帧 8 字节: pos16 vel16 tq16 temp8 err8 → 还原为 READ_FEEDBACK 兼容载荷
+
+        READ_FEEDBACK(0xC0) 串口帧载荷 22 字节(见 jmproto.feedback):
+            pos(f32) + vel(f32) + torque(f32) + temp_motor(f32) + vbus(f32) + fault_mask(u16)
+        CAN 压缩反馈帧无 vbus 字段, vbus 填 0.0; fault_mask 用 err 字节扩展。
+        """
+        val = int.from_bytes(data[:8], 'big')
+        p = (val >> 48) & 0xFFFF
+        v = (val >> 32) & 0xFFFF
+        tq = (val >> 16) & 0xFFFF
+        temp = (val >> 8) & 0xFF
+        err = val & 0xFF
+        pos = self._raw_to_float(p, MIT_POS_MIN, MIT_POS_MAX, 16)
+        vel = self._raw_to_float(v, MIT_VEL_MIN, MIT_VEL_MAX, 16)
+        torque = self._raw_to_float(tq, MIT_TFF_MIN, MIT_TFF_MAX, 16)
+        temp_motor = self._raw_to_float(temp, FB_TEMP_MIN, FB_TEMP_MAX, 8)
+        # 小端打包: <5fH (5 个 float32 + 1 个 uint16) = 22 字节
+        return struct.pack('<5fH', pos, vel, torque, temp_motor, 0.0, err)
+
+    def _send_mit(self, cmd: int, payload: bytes) -> bool:
+        """MIT/IMPEDANCE 命令: 把 payload 解析为 5 个 float, 压缩成 8 字节发送
+
+        payload 假设为 5 个 float32 (pos, vel, kp, kd, tff), 共 20 字节。
+        实际字段顺序/类型由 registry CommandSpec 决定, 联调时按 MIT 命令定义校准。
+        """
+        if len(payload) >= 20:
+            pos, vel, kp, kd, tff = struct.unpack('<5f', payload[:20])
+        else:
+            pos = vel = kp = kd = tff = 0.0
+        data = self._pack_mit(pos, vel, kp, kd, tff)
+        return self._send_single(cmd, data)
+
+    # ---------------- 后台收循环 ----------------
+    def _run(self):
+        while self._alive:
+            try:
+                if self._running and self._bus is not None:
+                    # 持锁内只做最小句柄访问(recv), 解帧/emit 放锁外
+                    with self._io_lock:
+                        if self._bus is None or not self._running:
+                            continue
+                        msg = self._bus.recv(timeout=self._READ_TIMEOUT_S)
+                    if msg is not None:
+                        # 错误帧/远程帧不再静默丢弃
+                        if msg.is_error_frame:
+                            self.error_occurred.emit(
+                                f"CAN 错误帧 ID:0x{msg.arbitration_id:X} DLC:{msg.dlc}")
+                            self.rx_frames += 1
+                            continue
+                        if msg.is_remote_frame:
+                            self.raw_can_frame.emit(
+                                int(msg.arbitration_id), b'', True, msg.timestamp or 0.0)
+                            self.rx_frames += 1
+                            continue
+                        self.rx_bytes += msg.dlc
+                        self._handle_rx_msg(msg)
+                    else:
+                        # 空闲时周期检查总线状态(每 500ms) + 清理超时多帧缓冲
+                        now = time.time()
+                        if now - self._bus_state_check_ts > 0.5:
+                            self._bus_state_check_ts = now
+                            self._check_bus_state()
+                        self._cleanup_stale_segments()
+                        self._wake_event.wait(self._IDLE_WAIT_S)
+                        self._wake_event.clear()
+                else:
+                    self._wake_event.wait(self._CLOSED_WAIT_S)
+                    self._wake_event.clear()
+            except can.CanError as e:
+                self.error_occurred.emit(f"CAN 异常: {e}")
+                self.close()
+                self._wake_event.wait(self._CLOSED_WAIT_S)
+                self._wake_event.clear()
+            except Exception as e:
+                self.error_occurred.emit(f"CAN 未知错误: {e}")
+                self._wake_event.wait(self._CLOSED_WAIT_S)
+                self._wake_event.clear()
+
+    def _handle_rx_msg(self, msg: can.Message):
+        """收到一个 CAN 物理帧 → 拆 ID → 单帧/重组多帧/MIT解压 → emit 逻辑帧
+
+        单帧/多帧判断(与固件 jm_proto_can.c can_emit_payload 一致):
+        - 载荷≤8B: 单帧, 数据直接是载荷(无控制字)
+        - 载荷>8B: 多帧, data[0]=控制字(bit7=末帧, bit6:0=序号), data[1..]=片段
+        接收侧不依赖命令白名单, 基于 DLC 和控制字特征智能判断。
+        """
+        can_id = int(msg.arbitration_id)
+        cmd = can_get_cmd(can_id)
+        data = bytes(msg.data[:msg.dlc])
+
+        # 物理帧日志(在过滤前发射, 让所有帧都进日志)
+        self.raw_can_frame.emit(can_id, data, True, msg.timestamp or 0.0)
+
+        # 监听模式 — 只记物理帧日志, 不解析协议帧
+        if self._listen_only:
+            return
+
+        # motor_id 过滤(非本机非广播不解析, 但物理帧日志已发射)
+        rx_motor_id = can_get_motor_id(can_id)
+        if rx_motor_id != 0 and rx_motor_id != self._motor_id:
+            return
+
+        # MIT/IMPEDANCE/READ_FEEDBACK 压缩反馈帧: 8 字节压缩 → 解压为 22 字节兼容载荷
+        if (cmd in (JmCmd.MIT, JmCmd.IMPEDANCE, JmCmd.READ_FEEDBACK)
+                and len(data) == 8):
+            payload = self._unpack_mit_feedback(data)
+            self.rx_frames += 1
+            self.frame_received.emit(JmCmd.READ_FEEDBACK, payload)
+            return
+
+        # 多帧重组: 基于控制字和 DLC 智能判断(不依赖命令白名单)
+        if self._handle_multi_frame(can_id, cmd, data):
+            return
+
+        # 单帧: data 即为载荷(不含 CMD, CMD 走仲裁 ID)
+        self.rx_frames += 1
+        self.frame_received.emit(cmd, data)
+
+    def _handle_multi_frame(self, can_id: int, cmd: int, data: bytes) -> bool:
+        """多帧重组状态机, 返回 True=已处理, False=单帧。
+
+        多帧格式: data[0]=控制字(bit7=末帧, bit6:0=序号), data[1..7]=片段
+        - 多帧第一帧: DLC=8, ctrl=0x00(seq=0, 非末帧)
+        - 多帧中间帧: DLC=8, ctrl=seq(非末帧)
+        - 多帧末帧: DLC=任意, ctrl=0x80|seq
+        """
+        if len(data) == 0:
+            return False
+
+        ctrl = data[0]
+        is_last = bool(ctrl & CAN_SEG_LAST)
+        seq = ctrl & CAN_SEG_SEQ_MASK
+        seg = data[1:1 + CAN_SEG_PAYLOAD]
+
+        # 有正在重组的缓冲 → 检查是否为末帧或下一帧
+        if can_id in self._rx_segments:
+            if is_last:
+                buf = self._rx_segments.pop(can_id, bytearray())
+                self._rx_segments_ts.pop(can_id, None)
+                buf.extend(seg)
+                self.rx_frames += 1
+                self.frame_received.emit(cmd, bytes(buf))
+                return True
+            else:
+                self._rx_segments[can_id].extend(seg)
+                self._rx_segments_ts[can_id] = time.time()
+                return True
+
+        # 无缓冲: 判断是否为多帧第一帧(DLC=8, ctrl=0x00)
+        # 风险: DLC=8 且 data[0]=0x00 的单帧会误判, 由 _cleanup_stale_segments 超时回退兜底
+        if len(data) == 8 and not is_last and seq == 0:
+            self._rx_segments[can_id] = bytearray(seg)
+            self._rx_segments_ts[can_id] = time.time()
+            return True
+
+        return False
+
+    def _cleanup_stale_segments(self):
+        """清理超时的多帧缓冲(100ms未完成则回退为单帧emit)。
+
+        防止误判为多帧第一帧导致数据永久滞留。
+        超时后把缓冲内容作为单帧载荷 emit(补偿 data[0]=0x00 + fragment)。
+        """
+        if not self._rx_segments_ts:
+            return
+        now = time.time()
+        stale_cids = [cid for cid, ts in self._rx_segments_ts.items()
+                      if now - ts > 0.1]
+        for cid in stale_cids:
+            buf = self._rx_segments.pop(cid, bytearray())
+            self._rx_segments_ts.pop(cid, None)
+            if buf:
+                cmd = can_get_cmd(cid)
+                self.rx_frames += 1
+                self.frame_received.emit(cmd, bytes([0x00]) + bytes(buf))
+
+    # ---------------- 总线状态(P1-1/P1-2) ----------------
+    def _check_bus_state(self):
+        """收循环空闲时读取总线状态, 变化时 emit。不阻塞 recv。"""
+        try:
+            with self._io_lock:
+                if self._bus is None or not self._running:
+                    return
+                state = self._bus.state  # BusState 枚举
+                stats = None
+                try:
+                    stats = self._bus.get_stats(timeout=0)
+                except Exception:
+                    pass  # 不支持 get_stats 的接口回退到只显示 state
+            state_str = str(state).split('.')[-1] if state else "UNKNOWN"
+            tec = getattr(stats, 'tec', 0) if stats else 0
+            rec = getattr(stats, 'rec', 0) if stats else 0
+            if state_str != self._last_bus_state:
+                self._last_bus_state = state_str
+                if state_str == "BUSOFF":
+                    self.error_occurred.emit("CAN 总线 BUS_OFF")
+                self.bus_state_changed.emit(state_str, tec, rec)
+        except Exception:
+            pass
+
+    def get_bus_state(self) -> tuple:
+        """供 UI 主动查询当前总线状态 (state_str, tec, rec)"""
+        return (self._last_bus_state, 0, 0)
+
+    # ---------------- 调试辅助(P2-1/P2-2) ----------------
+    def set_listen_only(self, enabled: bool):
+        """P2-1 监听模式: True=只记物理帧日志, 不解析协议帧"""
+        self._listen_only = enabled
+
+    @property
+    def bitrate(self) -> int:
+        """P1-3 暴露当前比特率, 供 UI 算总线占用率"""
+        return self._bitrate
+
+    def send_raw(self, can_id: int, data: bytes, extended: bool = True) -> bool:
+        """P2-2 手动发送原始 CAN 帧(调试用), 不走协议组帧"""
+        msg = can.Message(
+            arbitration_id=can_id,
+            data=bytearray(data[:8]),
+            is_extended_id=extended,
+        )
+        return self._write_msg(msg)

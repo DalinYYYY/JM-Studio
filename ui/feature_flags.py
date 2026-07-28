@@ -23,6 +23,7 @@ _DEFAULTS = {
     "fault_info": True,
     "virtual_twin": True,
     "log_panel": True,
+    "can_transport": True,
 }
 
 _cache = None

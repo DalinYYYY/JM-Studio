@@ -22,7 +22,7 @@ import jmproto as jp
 from jmproto import JmCmd, cmd_name, err_name, err_name_cn, fault_mask_to_str
 from transport.serial_transport import SerialTransport
 from transport.virtual_engine import VirtualTransport
-from core.motor_client import JmClient
+from core.motor_client import JmClient, DANGER_CMDS
 
 from ui.panels.connection_panel import ConnectionPanel
 from ui.panels.control_panel import ControlPanel
@@ -78,6 +78,8 @@ class MainWindow(QMainWindow):
         self._stats_period = 500   # ms
         self._last_tx_bytes = 0
         self._last_rx_bytes = 0
+        # P1-3: CAN 总线占用率估算(本次周期增量帧数)
+        self._last_total_frames = 0
 
         # 高频遥测进入 UI 前先做有界缓存, 显示/绘图按固定频率刷新。
         self._display_period_ms = 50
@@ -101,6 +103,15 @@ class MainWindow(QMainWindow):
         self._cmd_watchdog.setSingleShot(True)
         self._cmd_watchdog.setInterval(1000)  # 1s 超时
         self._cmd_watchdog.timeout.connect(self._on_cmd_timeout)
+        # 自动重连: 链路异常断开时周期尝试重连, 用户主动断开不触发
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setSingleShot(False)
+        self._reconnect_timer.setInterval(2000)  # 2s 重试间隔
+        self._reconnect_timer.timeout.connect(self._on_reconnect_tick)
+        self._reconnect_attempts = 0
+        self._reconnect_max_attempts = 10  # 最多重试 10 次 (~20s), 超过则放弃
+        self._user_disconnected = False    # True=用户主动断开, 不自动重连
+        self._last_connect_params: dict | None = None  # 上次成功连接参数
 
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setMinimumSize(1200, 800)
@@ -405,7 +416,7 @@ class MainWindow(QMainWindow):
         btn.setStyleSheet("QPushButton { font-weight: bold; }")
 
     def _build_statusbar(self):
-        """底部状态栏: 连接状态 + TX/RX 速率与累计总量"""
+        """底部状态栏: 连接状态 + CAN 总线状态 + TX/RX 速率与累计总量 + 占用率"""
         sb = self.statusBar()
 
         def _mk(text):
@@ -416,11 +427,16 @@ class MainWindow(QMainWindow):
         self._sb_link = _mk("● 未连接")
         self._sb_link.setStyleSheet(
             "font-family: Consolas; padding: 0 8px; color: #999;")
+        # P1-1/P1-2: CAN 总线状态(ERROR_ACTIVE/PASSIVE/BUS_OFF + TEC/REC), 串口模式为空
+        self._sb_bus_state = _mk("")
         self._sb_tx = _mk("TX 0 B/s  Σ0 B")
         self._sb_rx = _mk("RX 0 B/s  Σ0 B")
         self._sb_frames = _mk("帧 TX:0 RX:0")
+        # P1-3: CAN 总线占用率估算, 串口模式为空
+        self._sb_load = _mk("")
 
-        for w in (self._sb_link, self._sb_tx, self._sb_rx, self._sb_frames):
+        for w in (self._sb_link, self._sb_bus_state, self._sb_tx,
+                  self._sb_rx, self._sb_frames, self._sb_load):
             sb.addPermanentWidget(w)
 
     def _open_display_settings(self):
@@ -477,6 +493,10 @@ class MainWindow(QMainWindow):
         """收集需持久化的用户设置(关窗时写入 ui_layout.json 的 settings 节)。"""
         s = {
             "baud": self._conn_panel.get_baud(),
+            "transport_type": self._conn_panel.get_transport_type(),
+            "can_bitrate": self._conn_panel.get_can_bitrate(),
+            "can_motor_id": self._conn_panel.get_can_motor_id(),
+            "can_channel_name": self._conn_panel.get_can_channel_name(),
             "display_period_ms": self._display_period_ms,
             "display_buffer_max": self._display_buffer_max,
             "main_window": {
@@ -553,6 +573,20 @@ class MainWindow(QMainWindow):
         baud = d.get("baud")
         if baud:
             self._conn_panel.set_baud(baud)
+        # 传输类型恢复 (先恢复类型, 再恢复对应配置项)
+        tt = d.get("transport_type")
+        if isinstance(tt, str) and tt:
+            self._conn_panel.set_transport_type(tt)
+        can_br = d.get("can_bitrate")
+        if isinstance(can_br, str) and can_br:
+            self._conn_panel.set_can_bitrate(can_br)
+        can_mid = d.get("can_motor_id")
+        if isinstance(can_mid, int):
+            self._conn_panel.set_can_motor_id(can_mid)
+        # CAN 通道名恢复: 启动时通道列表可能尚未刷新, 延迟套用
+        can_ch = d.get("can_channel_name")
+        if isinstance(can_ch, str) and can_ch:
+            QTimer.singleShot(100, lambda: self._conn_panel.set_can_channel_name(can_ch))
         if "display_period_ms" in d or "display_buffer_max" in d:
             self._apply_display_settings(
                 d.get("display_period_ms", self._display_period_ms),
@@ -678,6 +712,38 @@ class MainWindow(QMainWindow):
         self._sb_tx.setText(f"TX {self._fmt_rate(tx_rate)}  Σ{self._fmt_bytes(tp.tx_bytes)}")
         self._sb_rx.setText(f"RX {self._fmt_rate(rx_rate)}  Σ{self._fmt_bytes(tp.rx_bytes)}")
         self._sb_frames.setText(f"帧 TX:{tp.tx_frames} RX:{tp.rx_frames}")
+        # P1-3: CAN 模式下估算总线占用率; 串口模式清空 BUS/LOAD 标签
+        if tp.name == "can":
+            total_frames = tp.tx_frames + tp.rx_frames
+            delta_frames = total_frames - self._last_total_frames
+            self._last_total_frames = total_frames
+            # 每帧约 47(SOF+仲裁+控制+CRC+ACK+EOF) + 8*DLC + 15(ITF) bits; DLC 平均按 8
+            est_bits = delta_frames * (47 + 8 * 8 + 15)
+            bitrate = getattr(tp, 'bitrate', 1000000) or 1000000
+            load_pct = est_bits / (bitrate * dt) * 100 if bitrate > 0 else 0.0
+            self._sb_load.setText(f"LOAD: {load_pct:.1f}%")
+            color = ("#E53935" if load_pct > 70
+                     else "#F9A825" if load_pct > 40
+                     else theme.hex('muted'))
+            self._sb_load.setStyleSheet(
+                f"font-family: Consolas; padding: 0 8px; color: {color};")
+        else:
+            self._sb_load.setText("")
+            self._sb_bus_state.setText("")
+            self._last_total_frames = 0
+
+    def _on_bus_state_changed(self, state: str, tec: int, rec: int):
+        """P1-1/P1-2: CAN 总线状态变化 → 状态栏 BUS 标签着色显示。
+
+        state 取值: ERRORACTIVE / PASSIVE / BUSOFF (python-can BusState 枚举名)。
+        """
+        color_map = {"ERRORACTIVE": theme.hex('ok'),
+                     "PASSIVE": "#F9A825",
+                     "BUSOFF": "#E53935"}
+        color = color_map.get(state, theme.hex('muted'))
+        self._sb_bus_state.setText(f"BUS:{state} TEC:{tec} REC:{rec}")
+        self._sb_bus_state.setStyleSheet(
+            f"font-family: Consolas; padding: 0 8px; color: {color};")
 
     def _create_dev_info_group(self) -> QGroupBox:
         grp = QGroupBox("设备信息")
@@ -736,6 +802,19 @@ class MainWindow(QMainWindow):
         btn_load_csv.clicked.connect(self._open_csv_load_dialog)
         self._apply_menu_button_style(btn_load_csv)
         layout.addWidget(btn_load_csv, 3, 0, 1, 2)
+        # P2-2: CAN 手动发帧 — 调试工具, 直接发送原始 CAN 物理帧(不走协议组帧)
+        # 仅 CAN 连接时可用, 由 _on_connected 切换 enabled
+        self._btn_can_send = QPushButton("CAN 手动发帧")
+        self._btn_can_send.setToolTip(
+            "手动发送原始 CAN 物理帧 (调试用, 不走协议组帧)\n"
+            "仅在 CAN 模式下可用\n"
+            "快捷键: Ctrl+Shift+S")
+        self._btn_can_send.setStatusTip("手动发送原始 CAN 物理帧 (仅 CAN 模式)")
+        self._btn_can_send.clicked.connect(self._on_can_send)
+        self._btn_can_send.setShortcut("Ctrl+Shift+S")
+        self._btn_can_send.setEnabled(False)
+        self._apply_menu_button_style(self._btn_can_send)
+        layout.addWidget(self._btn_can_send, 4, 0, 1, 2)
         # 注: 标定操作历史开关已移到标定结果保存按钮同行最右 (CalibrationPanel 内部)
         return grp
 
@@ -873,6 +952,7 @@ class MainWindow(QMainWindow):
 
         # 面板 -> 客户端
         self._conn_panel.connect_requested.connect(self._on_connect)
+        self._conn_panel.connect_can_requested.connect(self._on_connect_can)
         self._conn_panel.disconnect_requested.connect(self._on_disconnect)
         self._plot_panel.debug_window_toggled.connect(self._on_debug_window_toggled)
         self._control_panel.command.connect(self._on_control_command)
@@ -938,15 +1018,135 @@ class MainWindow(QMainWindow):
             lambda writes, panel=self._config_panel: self._on_param_write_many(panel, writes))
         self._config_panel.save_all.connect(self._on_config_save)
 
+        # P0-1/P1-1: CAN 专用信号(传输切换时需重连, 串口发射这些信号无害)
+        self._reconnect_can_signals()
+        # P2-1/P2-4: connection_panel CAN 增强信号
+        self._conn_panel.bitrate_changed.connect(self._on_can_bitrate_changed)
+        self._conn_panel.listen_only_changed.connect(self._on_listen_only_changed)
+        # 危险命令二次确认: 注入回调, _send 命中 DANGER_CMDS 时同步询问用户
+        c.set_confirm_callback(self._on_confirm_danger_cmd)
+
+    def _reconnect_can_signals(self):
+        """传输切换后重连 CAN 专用信号(raw_can_frame / bus_state_changed)。
+
+        SerialTransport 不发射这两个信号, 连接无害; CanTransport 发射时由
+        log_panel / _on_bus_state_changed 接收。set_transport 只重连 3 个核心
+        信号, 新增的 CAN 信号在这里统一处理, 避免切换后日志丢失。
+        """
+        tp = self._client.transport
+        try:
+            tp.raw_can_frame.disconnect()
+        except TypeError:
+            pass  # 未连接任何槽
+        try:
+            tp.bus_state_changed.disconnect()
+        except TypeError:
+            pass
+        tp.raw_can_frame.connect(self._log_panel.log_can_frame)
+        tp.bus_state_changed.connect(self._on_bus_state_changed)
+
+    def _switch_transport(self, transport, desc: str):
+        """切换传输通道并记录主控切换日志。
+        封装 set_transport + _reconnect_can_signals + 日志记录, 避免3处连接入口重复代码。"""
+        self._client.set_transport(transport)
+        self._reconnect_can_signals()
+        self._log_panel.log(f"[主控] 通道切换: → {desc}")
+
+    # ==================== 危险命令二次确认 ====================
+    def _on_confirm_danger_cmd(self, cmd: int, payload: bytes) -> bool:
+        """危险命令发送前 UI 二次确认。由 JmClient._send 在命中 DANGER_CMDS 时同步调用, 返回 True=确认, False=取消。"""
+        desc = DANGER_CMDS.get(cmd, f"cmd=0x{cmd:02X}")
+        name = cmd_name(cmd)  # 未知命令返回 "0xXX", 永远非空
+        # 载荷 hex 截断显示, 避免长载荷撑爆对话框
+        payload_hex = payload.hex(' ').upper() if payload else "(无)"
+        if len(payload_hex) > 96:
+            payload_hex = payload_hex[:96] + " ..."
+        # 风险等级与额外提示
+        if cmd in (JmCmd.FACTORY_RESET, JmCmd.MOTOR_INFO_RESET):
+            risk = "极高"
+            extra = "此操作将清除所有用户配置和标定数据, 不可恢复!"
+        elif cmd in (JmCmd.PARAM_SAVE, JmCmd.MOTOR_INFO_SAVE):
+            risk = "高"
+            extra = "此操作将写入 Flash, 频繁擦写会降低 Flash 寿命。"
+        elif cmd in (JmCmd.CALIB_LEVEL1, JmCmd.CALIB_LEVEL2, JmCmd.CALIB_LEVEL3,
+                     JmCmd.CALIB_LEVEL4, JmCmd.CALIB_LEVEL5, JmCmd.CALIB_LEVEL6,
+                     JmCmd.CALIB_LEVEL7):
+            risk = "高"
+            extra = "标定过程电机会运动并通大电流, 请确保机械结构安全且无阻挡。"
+        elif cmd == JmCmd.CLEAR_FAULT:
+            risk = "中"
+            extra = "清除故障后若根因未排除, 故障会再次触发。"
+        elif cmd == JmCmd.MOTOR_INFO_RECALIB_RESET:
+            risk = "中"
+            extra = "清除标定状态后需重新标定编码器零点, 电机才能正常工作。"
+        else:
+            risk = "中"
+            extra = "此操作可能修改设备配置, 请确认无误后继续。"
+
+        title = f"危险操作确认 - {name}"
+        text = (
+            f"<b>即将执行危险操作</b><br><br>"
+            f"<b>命令:</b> {name} ({desc})<br>"
+            f"<b>风险等级:</b> <span style='color:#E53935'><b>{risk}</b></span><br>"
+            f"<b>载荷(hex):</b> <code>{payload_hex}</code><br><br>"
+            f"<span style='color:#FF9800'>{extra}</span><br><br>"
+            f"确认要继续执行吗?"
+        )
+        btn = QMessageBox.warning(
+            self, title, text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel  # 默认聚焦取消, 防误触
+        )
+        return btn == QMessageBox.StandardButton.Yes
+
+    # ==================== CAN 调试槽 (P2-1/P2-2/P2-4) ====================
+    def _on_can_send(self):
+        """P2-2: 打开 CAN 手动发帧对话框, 用户确认后调用 transport.send_raw。"""
+        if self._client.transport.name != "can" or not self._client.is_open():
+            QMessageBox.information(self, "提示", "请先连接 CAN 设备")
+            return
+        from ui.panels.can_send_dialog import CanSendDialog
+        dlg = CanSendDialog(self)
+        dlg.send_requested.connect(
+            lambda cid, data, ext: self._client.transport.send_raw(cid, data, ext))
+        dlg.exec()
+
+    def _on_can_bitrate_changed(self, bitrate: int):
+        """P2-4: CAN 已连接时改比特率 → 断开并以新比特率重连。
+
+        重连期间正在传输的帧会丢失(调试场景可接受)。
+        通道/电机 ID 沿用连接面板当前值。
+        """
+        if self._client.transport.name != "can" or not self._client.is_open():
+            return
+        channel = self._conn_panel.get_can_channel_name()
+        motor_id = self._conn_panel.get_can_motor_id()
+        self._log_panel.log(f"[CAN] 比特率热切换: {bitrate}, 重连中...")
+        self._client.close()
+        if self._client.open(channel=channel, bitrate=bitrate, motor_id=motor_id):
+            self.statusBar().showMessage(f"已重连 {channel} @{bitrate}", 2000)
+        else:
+            self._log_panel.log_warn("[CAN] 比特率热切换重连失败")
+
+    def _on_listen_only_changed(self, enabled: bool):
+        """P2-1: 监听模式开关 — 只记 CAN 物理帧日志, 不解析协议帧。"""
+        if self._client.transport.name == "can":
+            self._client.transport.set_listen_only(enabled)
+            mode = "开启" if enabled else "关闭"
+            self.statusBar().showMessage(f"CAN 监听模式已{mode}", 2000)
+
     # ==================== 连接管理 ====================
     def _on_connect(self, port: str, baud: int):
         # 选择虚拟数据引擎: 切换到 VirtualTransport, 无需真实串口
         if port == "VIRTUAL":
             if not isinstance(self._client.transport, VirtualTransport):
-                self._client.set_transport(VirtualTransport())
+                self._switch_transport(VirtualTransport(), "虚拟数据引擎(SIM)")
             if self._client.open():
                 self.statusBar().showMessage("已连接 虚拟数据引擎 (演示)")
                 self._cur_port = "VIRTUAL"
+                # 虚拟引擎不自动重连(本地仿真不会异常断开), 仅标记类型
+                self._last_connect_params = {"type": "virtual"}
+                self._user_disconnected = False
                 self._log_panel.log("[SIM] 虚拟数据引擎已启动, 所有数据由本地仿真生成")
                 # 把孪生引擎句柄传给孪生参数面板
                 self._twin_param_panel.set_engine(self._client.transport.get_engine())
@@ -959,13 +1159,36 @@ class MainWindow(QMainWindow):
                     self._btn_virtual_mode.setChecked(True)
                 self._pending_virtual_mode = False
             return
-        # 真实串口: 若当前是虚拟传输, 换回串口传输
-        if not isinstance(self._client.transport, SerialTransport):
-            self._client.set_transport(SerialTransport())
+        # 真实串口: 若当前是虚拟/CAN 传输, 换回串口传输
+        if self._client.transport.name != "serial":
+            self._switch_transport(SerialTransport(), "串口(UART)")
         if self._client.open(port=port, baudrate=baud):
             self.statusBar().showMessage(f"已连接 {port} @{baud}")
             self._cur_port = port
+            # 记录连接参数供自动重连使用
+            self._last_connect_params = {"type": "serial", "port": port, "baud": baud}
+            self._user_disconnected = False
             # 连接真机: 虚拟电机模式开关必须关闭并禁用
+            self._force_disable_virtual_mode()
+
+    def _on_connect_can(self, channel: str, bitrate: int, motor_id: int):
+        """CAN 连接: 懒导入 CanTransport, 热切换后打开链路。"""
+        try:
+            from transport.can_transport import CanTransport
+        except ImportError:
+            QMessageBox.warning(self, "提示", "python-can 未安装, 无法使用 CAN 传输")
+            return
+        if self._client.transport.name != "can":
+            self._switch_transport(CanTransport(), "CAN 总线")
+        if self._client.open(channel=channel, bitrate=bitrate, motor_id=motor_id):
+            self.statusBar().showMessage(f"已连接 {channel} @{bitrate} ID={motor_id}")
+            self._cur_port = channel
+            # 记录连接参数供自动重连使用
+            self._last_connect_params = {
+                "type": "can", "channel": channel,
+                "bitrate": bitrate, "motor_id": motor_id}
+            self._user_disconnected = False
+            # CAN 连接真机: 虚拟电机模式开关必须关闭并禁用
             self._force_disable_virtual_mode()
 
     def _force_disable_virtual_mode(self):
@@ -979,6 +1202,10 @@ class MainWindow(QMainWindow):
             self._on_virtual_mode_toggled(False)
 
     def _on_disconnect(self):
+        # 标记用户主动断开, 阻止 _on_connected(False) 启动自动重连
+        self._user_disconnected = True
+        self._reconnect_timer.stop()
+        self._reconnect_attempts = 0
         # 断开前若仍在周期上报, 通知下位机停止, 并复位面板开关
         if self._client.is_open():
             self._client.set_telemetry(False, 0, 0)
@@ -1036,21 +1263,96 @@ class MainWindow(QMainWindow):
         self._calib_panel.set_link_active(connected)
         self._pid_panel.set_link_active(connected)
         self._link_connected = connected
+        is_can = (self._client.transport.name == "can")
         if not connected:
             self._telemetry_panel.set_running(False)
+            # P2-5: 断开时隐藏 CAN 提示; P1-1/P1-3: 清空状态栏 CAN 标签
+            self._feedback_panel.set_can_mode(False)
+            self._sb_bus_state.setText("")
+            self._sb_load.setText("")
+            # 自动重连: 非用户主动断开 + 有上次连接参数 → 启动重连定时器
+            # 虚拟引擎不自动重连(本地仿真不会异常断开, 重连无意义)
+            if (not self._user_disconnected
+                    and self._last_connect_params is not None
+                    and self._last_connect_params.get("type") != "virtual"
+                    and not self._reconnect_timer.isActive()):
+                self._reconnect_attempts = 0
+                self._reconnect_timer.start()
+                self._log_panel.log(
+                    f"[重连] 链路异常断开, 启动自动重连 "
+                    f"(最多 {self._reconnect_max_attempts} 次, 间隔 2s)")
         else:
+            # 重连成功: 停止定时器, 重置计数
+            if self._reconnect_timer.isActive():
+                self._reconnect_timer.stop()
+                self._log_panel.log("[重连] 自动重连成功")
+            self._reconnect_attempts = 0
+            self._user_disconnected = False
             # 连接建立后主动查询三环 PID 来源 (0xA2), 回填面板徽章
             try:
                 self._client.pid_source_get()
             except Exception:
                 pass
+            # P0-7: CAN 模式看门狗策略 — 保守延长到 5s
+            # (固件 CAN 侧是否回应用层 ACK 待联调确认; 串口维持 1s)
+            self._cmd_watchdog.setInterval(5000 if is_can else 1000)
+            # P2-5: 反馈面板 CAN 模式提示
+            self._feedback_panel.set_can_mode(is_can)
+        # P2-2: CAN 手动发帧按钮仅在 CAN 连接时可用
+        self._btn_can_send.setEnabled(connected and is_can)
         self._refresh_statusbar_theme()
 
+    # ==================== 自动重连 ====================
+    def _on_reconnect_tick(self):
+        """自动重连定时器槽: 用上次连接参数尝试重连。失败计数 +1, 超过最大次数则放弃。"""
+        if self._last_connect_params is None:
+            self._reconnect_timer.stop()
+            return
+        if self._client.is_open():
+            # 已连接(可能用户手动重连成功), 停止定时器
+            self._reconnect_timer.stop()
+            self._reconnect_attempts = 0
+            return
+        self._reconnect_attempts += 1
+        if self._reconnect_attempts > self._reconnect_max_attempts:
+            self._reconnect_timer.stop()
+            self._log_panel.log_err(
+                f"[重连] 已尝试 {self._reconnect_max_attempts} 次仍失败, "
+                f"停止自动重连, 请手动检查设备后重连")
+            self.statusBar().showMessage("自动重连失败, 请手动重连")
+            return
+        p = self._last_connect_params
+        try:
+            if p["type"] == "serial":
+                ok = self._client.open(port=p["port"], baudrate=p["baud"])
+            elif p["type"] == "can":
+                ok = self._client.open(channel=p["channel"], bitrate=p["bitrate"],
+                                       motor_id=p["motor_id"])
+            else:
+                ok = False
+        except Exception as e:
+            ok = False
+            self._log_panel.log_warn(f"[重连] 第 {self._reconnect_attempts} 次异常: {e}")
+        if ok:
+            # 成功后 _on_connected(True) 会处理后续逻辑并停止定时器
+            self._log_panel.log(f"[重连] 第 {self._reconnect_attempts} 次重连成功")
+        else:
+            self.statusBar().showMessage(
+                f"重连中... ({self._reconnect_attempts}/{self._reconnect_max_attempts})")
+
     def _refresh_statusbar_theme(self):
-        """按连接状态 + 当前主题重设状态栏连接标签颜色。"""
+        """按连接状态 + 当前主题重设状态栏连接标签颜色, 前缀显示通道类型(UART/CAN/SIM)。"""
         connected = getattr(self, "_link_connected", False)
         if connected:
-            self._sb_link.setText(f"● {getattr(self, '_cur_port', '')}")
+            # 通道类型前缀: serial→UART, can→CAN, virtual→SIM
+            tp_name = self._client.transport.name
+            if tp_name == "can":
+                ch_prefix = "[CAN] "
+            elif tp_name == "virtual":
+                ch_prefix = "[SIM] "
+            else:
+                ch_prefix = "[UART] "
+            self._sb_link.setText(f"● {ch_prefix}{getattr(self, '_cur_port', '')}")
             self._sb_link.setStyleSheet(
                 f"font-family: Consolas; padding: 0 8px; color: {theme.hex('ok')}; font-weight: bold;")
         else:
@@ -1907,6 +2209,8 @@ class MainWindow(QMainWindow):
             self._client.set_telemetry(False, 0, 0)
         self._stats_timer.stop()
         self._ui_timer.stop()
+        # 停止自动重连定时器, 避免退出后残留触发
+        self._reconnect_timer.stop()
         self._log_panel.flush()
         self._client.stop()
         event.accept()

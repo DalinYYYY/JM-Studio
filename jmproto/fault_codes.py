@@ -157,17 +157,27 @@ def fault_mask_to_str(mask: int) -> str:
 
 # ==================== JmErr 协议错误码中文描述 ====================
 _JMERR_CN = {
-    JmErr.OK:           '成功',
-    JmErr.UNSUPPORTED:  '命令不支持',
-    JmErr.OUT_OF_RANGE: '参数超出范围',
-    JmErr.STATE_DENY:   '状态拒绝(当前状态不允许此操作)',
-    JmErr.BAD_PARAM_ID: '参数ID无效',
-    JmErr.CRC:          'CRC校验失败',
-    JmErr.LENGTH:       '载荷长度错误',
-    JmErr.READ_ONLY:    '参数只读',
-    JmErr.FLASH:        'FLASH读写错误',
-    JmErr.FAULT_STATE:  '故障状态(需先清除故障)',
-    JmErr.CALIB_BUSY:   '标定忙(标定进行中)',
+    JmErr.OK:            '成功',
+    JmErr.UNSUPPORTED:   '命令不支持',
+    JmErr.OUT_OF_RANGE:  '参数超出范围',
+    JmErr.STATE_DENY:    '状态拒绝(当前状态不允许此操作)',
+    JmErr.BAD_PARAM_ID:  '参数ID无效',
+    JmErr.CRC:           'CRC校验失败',
+    JmErr.LENGTH:        '载荷长度错误',
+    JmErr.READ_ONLY:     '参数只读',
+    JmErr.FLASH:         'FLASH读写错误',
+    JmErr.FAULT_STATE:   '故障状态(需先清除故障)',
+    JmErr.CALIB_BUSY:    '标定忙(标定进行中)',
+    # 新增 0x0B~0x13
+    JmErr.PENDING:       '异步已排队',
+    JmErr.BUSY:          '忙(双通道主控被占用)',
+    JmErr.UNAUTHORIZED:  '鉴权失败(令牌不匹配)',
+    JmErr.RATE_LIMIT:    '速率限制(命令频率超限)',
+    JmErr.NOT_FOUND:     '未找到(资源/文件/记录不存在)',
+    JmErr.FLASH_ERASE:   'Flash擦除失败',
+    JmErr.FLASH_WRITE:   'Flash写入失败',
+    JmErr.FLASH_VERIFY:  'Flash校验失败(读回不匹配)',
+    JmErr.NOT_SUPPORTED: '命令未实现(预留命令如OTA/SYNC)',
 }
 
 

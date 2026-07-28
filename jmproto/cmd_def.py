@@ -63,7 +63,7 @@ class JmCmd(IntEnum):
     ELECTRONIC_GEAR = 0x5C
     ELECTRONIC_CAM = 0x5D
 
-    # 特殊应用与测试 0x70~0x8F
+    # 特殊应用与测试 0x70~0x7F
     STEP_DIR = 0x70
     ANALOG_INPUT = 0x71
     PWM_INPUT = 0x72
@@ -76,6 +76,14 @@ class JmCmd(IntEnum):
     TEST_INERTIA = 0x79
     TEST_CURRENT_LOOP = 0x7A
     TEST_VELOCITY_LOOP = 0x7B
+
+    # 多电机同步触发预留 0x80~0x8F (仅定义命令码, 不实现, 回 NACK(NOT_SUPPORTED))
+    #   0x80 SYNC: CANopen-style 周期同步帧
+    #   0x81 PRESET_AND_TRIGGER: 预存指令不执行
+    #   0x82 TRIGGER: 广播触发同步执行
+    SYNC = 0x80                # 预留: 周期同步帧
+    PRESET_AND_TRIGGER = 0x81  # 预留: 预存指令不执行
+    TRIGGER = 0x82             # 预留: 广播触发同步执行
 
     # 校准 0x90~0xAF: 类别命令+子命令模式
     # 0x90-0x96: payload[0]=子模式ID, 进入CALIB态并启动标定
@@ -127,6 +135,11 @@ class JmCmd(IntEnum):
     READ_DEBUG = 0xC9
     TELEMETRY = 0xCA
     SET_TELEMETRY = 0xCB
+    # OTA 预留 0xCC~0xCF (仅定义命令码, 不实现, 回 NACK(NOT_SUPPORTED))
+    OTA_START = 0xCC   # 预留: 固件升级启动
+    OTA_DATA = 0xCD    # 预留: 固件数据分块
+    OTA_END = 0xCE     # 预留: 固件升级结束
+    OTA_RESUME = 0xCF  # 预留: 断点续传查询
 
     # 设备信息 0xD0~0xDF
     READ_DEV_INFO = 0xD0
@@ -158,7 +171,8 @@ class JmCmd(IntEnum):
 
 
 class JmErr(IntEnum):
-    """错误码(NACK 0xFE 的 err_code)"""
+    """错误码(NACK 0xFE 的 err_code)。
+    0x01 UNSUPPORTED: 命令码不识别; 0x13 NOT_SUPPORTED: 命令码已定义但未实现(预留命令)。"""
     OK = 0x00
     UNSUPPORTED = 0x01
     OUT_OF_RANGE = 0x02
@@ -170,6 +184,18 @@ class JmErr(IntEnum):
     FLASH = 0x08
     FAULT_STATE = 0x09
     CALIB_BUSY = 0x0A
+    # 新增 0x0B~0x0F
+    PENDING = 0x0B         # 异步已排队(即时 NACK 携带 seq)
+    BUSY = 0x0C            # 忙(双通道主控被占用)
+    UNAUTHORIZED = 0x0D    # 鉴权失败(令牌不匹配)
+    RATE_LIMIT = 0x0E      # 速率限制(命令频率超限)
+    NOT_FOUND = 0x0F       # 未找到(资源/文件/记录不存在)
+    # 新增 0x10~0x12 (Flash 详细错误码)
+    FLASH_ERASE = 0x10     # Flash 擦除失败
+    FLASH_WRITE = 0x11     # Flash 写入失败
+    FLASH_VERIFY = 0x12    # Flash 校验失败(读回不匹配)
+    # 新增 0x13 (预留命令专用)
+    NOT_SUPPORTED = 0x13   # 命令码已定义但当前固件未实现(预留命令如 OTA/SYNC)
 
 
 class CalibState(IntEnum):

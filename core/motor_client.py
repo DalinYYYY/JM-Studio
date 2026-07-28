@@ -14,6 +14,28 @@ import jmproto as jp
 from jmproto import JmCmd, JmErr, codec
 from transport.base import Transport
 
+# 危险操作命令集合: 发送前需 UI 二次确认
+# 标定启动 / Flash 保存 / 恢复出厂 / 清除故障 / 配置重置等不可逆或高风险操作
+DANGER_CMDS = {
+    JmCmd.CALIB_LEVEL1: "L1 标定启动",
+    JmCmd.CALIB_LEVEL2: "L2 标定启动",
+    JmCmd.CALIB_LEVEL3: "L3 标定启动",
+    JmCmd.CALIB_LEVEL4: "L4 标定启动",
+    JmCmd.CALIB_LEVEL5: "L5 标定启动",
+    JmCmd.CALIB_LEVEL6: "L6 标定启动",
+    JmCmd.CALIB_LEVEL7: "L7 标定启动",
+    JmCmd.CLEAR_FAULT: "故障清除",
+    JmCmd.FACTORY_RESET: "恢复出厂设置",
+    JmCmd.PARAM_SAVE: "参数保存到 Flash",
+    JmCmd.PARAM_RESET: "参数重置",
+    JmCmd.MOTOR_INFO_WRITE: "电机配置写入",
+    JmCmd.MOTOR_INFO_WRITE_BULK: "电机配置批量写入",
+    JmCmd.MOTOR_INFO_SAVE: "电机配置保存到 Flash",
+    JmCmd.MOTOR_INFO_RESET: "电机配置恢复默认",
+    JmCmd.MOTOR_INFO_RECALIB_RESET: "清除标定状态",
+    JmCmd.SET_CAN_ID: "设置 CAN 地址(重启生效)",
+}
+
 
 class JmClient(QObject):
     """关节电机高层通信客户端"""
@@ -48,6 +70,9 @@ class JmClient(QObject):
         # 合并反馈状态: 各 READ_*/TELEMETRY 帧按 filled_fields 增量合并,
         # 让 UI 拿到的是累积完整的 FeedbackData (避免部分帧字段覆盖为默认0)
         self._last_feedback = jp.FeedbackData()
+        # 危险命令二次确认回调: UI 层注入, 签名 (cmd, payload) -> bool
+        # None 表示无 UI 注入, 直接发送(用于脚本/无 GUI 场景)
+        self._confirm_cb = None
 
     @property
     def registry(self):
@@ -57,10 +82,13 @@ class JmClient(QObject):
     def transport(self):
         return self._tp
 
-    def set_transport(self, transport: Transport):
-        """切换底层传输(如 串口<->虚拟引擎)。会断开旧传输信号并启动新传输。
+    def set_confirm_callback(self, cb):
+        """注入危险命令二次确认回调, 签名: cb(cmd: int, payload: bytes) -> bool。
+        传 None 可清除回调(用于脚本/无 GUI 场景)。"""
+        self._confirm_cb = cb
 
-        UI 只连接 JmClient 的高层信号, 故切换传输对 UI 透明。"""
+    def set_transport(self, transport: Transport):
+        """切换底层传输(如 串口<->虚拟引擎), 切换对 UI 透明。"""
         if transport is self._tp:
             return
         old = self._tp
@@ -101,6 +129,17 @@ class JmClient(QObject):
 
     # ---------------- 统一发送(含 TX 日志) ----------------
     def _send(self, cmd: int, payload: bytes = b'') -> bool:
+        # 危险命令二次确认: DANGER_CMDS 中的命令发送前需 UI 确认
+        # 无 _confirm_cb 时直接发送(脚本/无 GUI 场景), 保持向后兼容
+        if cmd in DANGER_CMDS and self._confirm_cb is not None:
+            try:
+                if not self._confirm_cb(cmd, payload):
+                    desc = DANGER_CMDS.get(cmd, f"cmd=0x{cmd:02X}")
+                    self.error_occurred.emit(f"已取消危险操作: {desc}")
+                    return False
+            except Exception as e:
+                # 回调异常不阻塞发送, 仅记录日志
+                self.error_occurred.emit(f"确认回调异常(忽略, 继续发送): {e}")
         ok = self._tp.send(cmd, payload)
         if ok:
             self.tx_frame.emit(cmd, payload)
@@ -190,71 +229,57 @@ class JmClient(QObject):
         return self._send(JmCmd.MOTOR_INFO_RESET, codec.wr_u16(param_id))
 
     def motor_info_recalib_reset(self):
-        """清除标定状态以便重新标定(0xEC): 保留电机本体参数。
-        
-        清除 is_calibrated + 编码器字段(enc_offset/elec_angle_bias/enc_direction)，
-        保留电气字段(R/Ld/Lq/flux/pole_pairs/Kt/inertia)和限幅字段(peak_current/max_speed)。
-        仅清 RAM，需随后调用 motor_info_save() 固化到 Flash。
-        ACK 走通用 ack_received/nack_received 通道。"""
+        """清除标定状态以便重新标定(0xEC): 保留电机本体参数, 仅清 RAM, 需随后 motor_info_save() 固化。"""
         return self._send(JmCmd.MOTOR_INFO_RECALIB_RESET)
 
     # ---- PID 管理 0xA0~0xA6 ----
     def pid_autotune(self, ring_select: int, cur_bw_hz: float = 0.0,
                      vel_bw_hz: float = 0.0, pos_bw_hz: float = 0.0):
         """PID 理论估计(0xA0): 基于辨识参数零极点对消法计算三环PID。
-        ring_select: 位掩码 bit0=电流环 bit1=速度环 bit2=位置环 (可组合, 如 0x05=电流+位置)
-        cur/vel/pos_bw_hz: 各环带宽Hz, <=0 使用固件默认(电流1000/速度100/位置20Hz)
-        应答走 pid_autotune_result_received 信号(8字节ACK, 含status/fail_reason)。
-        仅 IDLE 态可执行, 不自动存 Flash(需调 motor_info_save 固化)。"""
+        ring_select: 位掩码 bit0=电流环 bit1=速度环 bit2=位置环; bw<=0 使用固件默认。
+        应答走 pid_autotune_result_received 信号, 仅 IDLE 态可执行。"""
         payload = struct.pack('<Bfff', ring_select & 0xFF, cur_bw_hz, vel_bw_hz, pos_bw_hz)
         return self._send(JmCmd.PID_AUTOTUNE, payload)
 
     def pid_source_set(self, ring_select: int, source: int):
-        """PID 来源切换(0xA1): 独立设置某环参数来源, 立即 reload。
-        ring_select: 0=电流环 1=速度环 2=位置环
-        source: 0=默认 1=Flash工程值 2=理论估计 3=调试
-        应答走通用 ack_received/nack_received 通道。仅 IDLE 态可执行。
-        source=3(调试)不持久化, 重启自动消失。"""
+        """PID 来源切换(0xA1): ring_select 0/1/2=电流/速度/位置, source 0=默认 1=Flash 2=理论 3=调试。"""
         payload = struct.pack('<BB', ring_select & 0xFF, source & 0xFF)
         return self._send(JmCmd.PID_SOURCE_SET, payload)
 
     def pid_source_get(self):
-        """读取三环当前 PID 参数来源(0xA2)。
-        应答走 pid_source_received 信号(3字节: cur/vel/pos)。"""
+        """读取三环当前 PID 参数来源(0xA2), 应答走 pid_source_received 信号(3字节)。"""
         return self._send(JmCmd.PID_SOURCE_GET)
 
     def pid_param_set(self, ring: int, param_type: int, value: float):
-        """实时写单个PID参数(0xA5): 仅对应环 source=3(调试)时允许写。
-        ring: 0=D轴 1=Q轴 2=速度 3=位置
-        param_type: 1=kp 2=ki 3=kd 4=output_limit 5=integral_limit 6=output_filter_alpha
-        value: float 参数值(param_type=7 flags 时传 uint32 整数转 float)
-        应答走通用 ack_received/nack_received 通道。无 top_fsm 限制, 允许运行时整定。"""
+        """实时写单个PID参数(0xA5): 仅 source=3(调试)时允许写, 允许运行时整定。
+        ring: 0=D轴 1=Q轴 2=速度 3=位置; param_type: 1=kp 2=ki 3=kd 4=output_limit 5=integral_limit 6=output_filter_alpha"""
         payload = struct.pack('<BBf', ring & 0xFF, param_type & 0xFF, float(value))
         return self._send(JmCmd.PID_PARAM_SET, payload)
 
     def pid_param_get(self, ring: int, param_type: int):
-        """实时读单个PID参数(0xA6): 随时可读。
-        ring/param_type 同 pid_param_set。
-        应答走 pid_param_received 信号(ring, param_type, value4_bytes)。"""
+        """实时读单个PID参数(0xA6), 应答走 pid_param_received 信号。"""
         payload = struct.pack('<BB', ring & 0xFF, param_type & 0xFF)
         return self._send(JmCmd.PID_PARAM_GET, payload)
 
     # ---- 遥测订阅 / 遥控开关 ----
     def set_telemetry(self, enable: bool, mask: int, period_ms: int = 0):
         """遥控模式开关: enable=True 启动周期上报, False 停止。
-        载荷 = enable(u8) + mask(u16) + period_ms(u16), 与固件 0xCB 解析一致。
-        下位机按 mask 周期主动推送 0xCA 数据帧, 不要求逐帧应答; 0xCB 本身回单次 ACK。"""
+        载荷 = enable(u8) + mask(u16) + period_ms(u16), 与固件 0xCB 解析一致。"""
         payload = struct.pack('<BHH', 1 if enable else 0, mask & 0xFFFF, period_ms & 0xFFFF)
         return self._send(JmCmd.SET_TELEMETRY, payload)
 
+    # ---- CAN 管理 0xF0~0xF2 ----
+    def cmd_set_can_id(self, new_id: int):
+        """设置本机 CAN 地址(0xF0): 仅写 RAM 生效, 需随后 param_save()(0xE4) 固化, 重启后 CAN 滤波生效。
+        new_id 范围 1~127, 越界由固件 dispatch 层拦截返回 NACK(OUT_OF_RANGE)。"""
+        if not 1 <= new_id <= 127:
+            self.error_occurred.emit(f"CAN ID 越界: {new_id}, 应在 1~127 范围内")
+            return False
+        return self._send(JmCmd.SET_CAN_ID, struct.pack('<B', new_id & 0xFF))
+
     # ---------------- 帧分发(主线程槽) ----------------
     def _merge_and_emit_feedback(self, fb):
-        """把部分字段帧合并到 _last_feedback, 再 emit 合并后的完整 fb.
-
-        各 READ_*/TELEMETRY 帧只填充本帧涉及的字段(filled_fields), 其余保持默认 0.
-        若直接 emit, UI 会把未涉及字段当作 0 显示 (如 READ_PHASE_CURRENT 帧的 pos=0
-        会覆盖曲线). 这里按 filled_fields 增量合并到累积状态, 保证 UI 拿到完整数据.
-        """
+        """把部分字段帧合并到 _last_feedback, 再 emit 合并后的完整 fb。"""
         merged = self._last_feedback
         for field in getattr(fb, 'filled_fields', ()):
             try:

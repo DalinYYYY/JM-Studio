@@ -9,9 +9,13 @@
 
 import sys
 import os
+import warnings
 
 # 确保当前目录在搜索路径中, 方便导入同目录模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# 屏蔽 python-can 的 uptime 库警告(不影响功能, 仅时间戳基准差异)
+warnings.filterwarnings("ignore", message=".*uptime library not available.*")
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt

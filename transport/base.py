@@ -18,6 +18,10 @@ class Transport(QObject):
     connected = pyqtSignal(bool)
     # 错误信息(字符串)
     error_occurred = pyqtSignal(str)
+    # CAN 物理帧日志 (can_id, data, is_rx, timestamp); 仅 CanTransport 发射
+    raw_can_frame = pyqtSignal(int, bytes, bool, float)
+    # CAN 总线状态变化 (state_str, tec, rec); 仅 CanTransport 发射
+    bus_state_changed = pyqtSignal(str, int, int)
 
     # 传输类型标识(子类覆盖)
     name = "base"

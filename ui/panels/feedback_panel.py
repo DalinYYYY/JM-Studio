@@ -1017,6 +1017,13 @@ class FeedbackPanel(QWidget):
 
         lay.addStretch()
 
+        # P2-5: CAN 模式提示(默认隐藏, 主窗口连接 CAN 后显示)
+        self._lbl_can_hint = QLabel("CAN 模式: 电机可能主动推送反馈, 轮询可关闭")
+        self._lbl_can_hint.setStyleSheet(
+            "color: #F9A825; font-size: 11px; border: none;")
+        self._lbl_can_hint.setVisible(False)
+        lay.addWidget(self._lbl_can_hint)
+
         self._chk_poll = QCheckBox("周期请求状态")
         self._chk_poll.setStyleSheet("border:none;")
         self._chk_poll.setChecked(True)
@@ -1244,6 +1251,14 @@ class FeedbackPanel(QWidget):
             self._disp_multiturn = 0
             self._motor.set_enabled(False)
             self._refresh_state_styles()
+
+    def set_can_mode(self, enabled: bool):
+        """P2-5: CAN 模式提示显隐。
+
+        CAN 模式下电机可能主动推送反馈帧(MIT/READ_FEEDBACK), 无需主窗口周期轮询;
+        串口模式下反馈需主窗口主动 READ_FEEDBACK 拉取。提示用户可关闭轮询。
+        """
+        self._lbl_can_hint.setVisible(enabled)
 
     def _apply_poll_settings(self):
         self._spin_period.setEnabled(not self._chk_poll.isChecked())
