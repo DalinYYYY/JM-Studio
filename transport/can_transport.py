@@ -3,13 +3,20 @@ CAN 传输实现: 基于 python-can + QThread 异步收发
 
 与固件 jm_proto_can.h 一致:
 - 仲裁 ID(扩展帧29位): ID = (CMD << 8) | motor_id
-- 数据区直接是命令载荷(不含 CMD), 单帧最多 8 字节; >8 字节多帧分包(data[0]=控制字)
+- 数据区直接是命令载荷(不含 CMD); 经典模式单帧最多 8 字节, FD 模式单帧最多 64 字节
+- >single_max 字节多帧分包(data[0]=控制字, 末帧追加 CRC16)
 - MIT(0x13/0x30) 与反馈帧用 8 字节定点压缩
+
+运行期 CAN FD 模式切换(0xF3 SET_FD_MODE):
+- 上电默认经典模式(兼容所有上位机硬件)
+- 上位机检测自身 FD 能力后, 发 0xF3 enable=1 切换下位机到 FD 长帧模式
+- 切换为纯软件操作, 不重新初始化 FDCAN 外设
+- FD 模式下: 单帧最大 64B, 多帧片段 63B; 经典模式: 单帧 8B, 多帧片段 7B
 
 关键约束:
 - 单一 _io_lock 串行化对 self._bus 的所有访问, 避免 Windows 段错误
 - _alive(线程生命周期) 与 _running(总线打开) 双标志分离
-- 多帧重组: 用 cmd 白名单 _MULTI_FRAME_CMDS 判断, 联调时若发现新命令加入即可
+- 多帧重组: 基于控制字和 DLC 智能判断, 末帧 CRC16 校验
 
 依赖: python-can>=4.0.0, PCAN 驱动已安装
 """
@@ -23,6 +30,7 @@ from typing import Optional
 import can  # python-can
 
 from jmproto.cmd_def import JmCmd
+from jmproto.crc16 import crc16_calc
 from .base import Transport
 
 
@@ -34,16 +42,25 @@ MIT_KD_MIN, MIT_KD_MAX = 0.0, 5.0
 MIT_TFF_MIN, MIT_TFF_MAX = -50.0, 50.0
 FB_TEMP_MIN, FB_TEMP_MAX = -40.0, 215.0
 
-# ---- 多帧分包常量 ----
+# ---- 多帧分包常量(与固件 jm_proto_can.h 一致) ----
 CAN_SEG_LAST = 0x80
 CAN_SEG_SEQ_MASK = 0x7F
-CAN_SEG_PAYLOAD = 7
-CAN_SINGLE_MAX = 8
+# 经典模式
+CAN_SEG_PAYLOAD_CLS = 7
+CAN_SINGLE_MAX_CLS = 8
+# FD 模式
+CAN_SEG_PAYLOAD_FD = 63
+CAN_SINGLE_MAX_FD = 64
+# 多帧重组超时(ms)
+CAN_MULTI_TIMEOUT_MS = 200
+# 0xF3 SET_FD_MODE 同步等待 ACK 超时
+SWITCH_FD_ACK_TIMEOUT_S = 0.3
 
 # ---- 多帧分包常量 ----
 # 固件协议(jm_proto_can.c can_emit_payload):
-#   载荷≤8B → 单帧, 数据直接是载荷(无控制字)
-#   载荷>8B → 多帧, data[0]=控制字(bit7=末帧, bit6:0=序号), data[1..7]=片段
+#   载荷≤single_max → 单帧, 数据直接是载荷(无控制字)
+#   载荷>single_max → 多帧, data[0]=控制字(bit7=末帧, bit6:0=序号), data[1..]=片段
+#   末帧末尾追加 2 字节 CRC16(小端, 覆盖整个载荷)
 # 接收侧不依赖命令白名单, 基于 DLC 和控制字特征智能判断。
 
 
@@ -88,6 +105,8 @@ class CanTransport(Transport):
         self._rx_segments: dict = {}
         # 多帧缓冲时间戳: {can_id: timestamp}, 超时100ms未完成则回退为单帧
         self._rx_segments_ts: dict = {}
+        # 多帧期望序号: {can_id: expected_seq}, 用于 seq 连续性检查
+        self._rx_expected_seq: dict = {}
         self._tx_seq: int = 0
         # P2-1 监听模式: 只记物理帧日志, 不解析协议帧
         self._listen_only = False
@@ -99,6 +118,18 @@ class CanTransport(Transport):
         self._tx_thread: Optional[threading.Thread] = None
         self._tx_stop = threading.Event()
         self.tx_dropped_count = 0  # 队列满丢弃计数
+        # 运行期 FD 模式(与下位机同步): False=经典(默认), True=FD长帧
+        self._fd_mode: bool = False
+        # 上位机硬件 FD 能力(open 时由 fd 参数决定)
+        self._fd_capable: bool = False
+        # 0xF3 SET_FD_MODE 同步等待 ACK 的事件与结果
+        self._fd_ack_event = threading.Event()       # rx 线程 set, tx 线程 wait
+        self._fd_switch_done = threading.Event()     # tx 线程 set, UI 线程 wait
+        self._fd_ack_result: Optional[tuple] = None  # (ack_enable, cap) 或 None(超时)
+        # 多帧 CRC 校验失败统计
+        self.rx_crc_errors: int = 0
+        # 多帧 seq 不连续统计(帧丢失或乱序)
+        self.rx_seq_errors: int = 0
 
     # ---------------- 通道枚举 ----------------
     @staticmethod
@@ -207,9 +238,17 @@ class CanTransport(Transport):
                 self._motor_id = motor_id & 0xFF
                 self._rx_segments.clear()
                 self._rx_segments_ts.clear()
+                self._rx_expected_seq.clear()
                 self._tx_seq = 0
                 self.reset_stats()
                 self.tx_dropped_count = 0
+                self._fd_capable = bool(fd)  # 硬件 FD 能力(由 UI 勾选决定)
+                self._fd_mode = False        # 上电默认经典模式(与下位机一致)
+                self._fd_ack_event.clear()
+                self._fd_switch_done.clear()
+                self._fd_ack_result = None
+                self.rx_crc_errors = 0
+                self.rx_seq_errors = 0
                 self._running = True
             self._wake_event.set()
             # 启动发送线程
@@ -282,42 +321,117 @@ class CanTransport(Transport):
                 cmd, payload = self._tx_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
+            # 0xF3 SET_FD_MODE 走同步发送(等待 ACK), 不走队列
+            if cmd == JmCmd.SET_FD_MODE:
+                self._send_fd_mode_sync(payload)
+                continue
             # 实际发送(阻塞调用, 不影响 UI 线程)
             if cmd == JmCmd.MIT or cmd == JmCmd.IMPEDANCE:
                 self._send_mit(cmd, payload)
-            elif len(payload) <= CAN_SINGLE_MAX:
-                self._send_single(cmd, payload)
             else:
-                self._send_multi(cmd, payload)
+                single_max = self._single_max()
+                if len(payload) <= single_max:
+                    self._send_single(cmd, payload)
+                else:
+                    self._send_multi(cmd, payload)
+
+    @property
+    def fd_mode(self) -> bool:
+        """当前运行期 FD 模式(与下位机同步)"""
+        return self._fd_mode
+
+    @property
+    def fd_capable(self) -> bool:
+        """上位机硬件 FD 能力"""
+        return self._fd_capable
+
+    def _single_max(self) -> int:
+        return CAN_SINGLE_MAX_FD if self._fd_mode else CAN_SINGLE_MAX_CLS
+
+    def _seg_payload(self) -> int:
+        return CAN_SEG_PAYLOAD_FD if self._fd_mode else CAN_SEG_PAYLOAD_CLS
+
+    def _make_fd_msg(self, can_id: int, data: bytes) -> can.Message:
+        """根据当前 FD 模式构造 CAN 帧"""
+        return can.Message(
+            arbitration_id=can_id,
+            data=data,
+            is_extended_id=True,        # 29 位扩展帧
+            is_fd=self._fd_mode,        # FD 模式下启用 FD 帧
+            bitrate_switch=self._fd_mode,  # FD 模式下启用比特率切换
+        )
+
+    def switch_fd_mode(self, enable: bool) -> bool:
+        """切换上下位机 FD 模式(同步等待 ACK)。
+        返回 True=切换成功(上下位机均已切换), False=失败(超时或硬件不支持)。
+        切换流程:
+          1. UI 线程入队 (SET_FD_MODE, enable)
+          2. _tx_loop 调用 _send_fd_mode_sync: 用当前模式发帧, 等待 ACK
+          3. _handle_rx_msg 收到 0xF3 ACK 后 set _fd_ack_event
+          4. _send_fd_mode_sync 读取 ACK, 切换自身 _fd_mode, set _fd_switch_done
+          5. switch_fd_mode 返回最终结果
+        注: ACK 用旧模式发出(下位机在 ACK 后才切换), 上位机收到 ACK 后切换。"""
+        if not self.is_open():
+            return False
+        if enable and not self._fd_capable:
+            return False
+        # 清空完成事件, 入队由 _tx_loop 处理
+        self._fd_switch_done.clear()
+        try:
+            self._tx_queue.put_nowait((JmCmd.SET_FD_MODE, bytes([1 if enable else 0])))
+        except queue.Full:
+            self.tx_dropped_count += 1
+            return False
+        # 等待 _tx_loop 完成切换(发帧 + 等 ACK + 切换模式)
+        ok = self._fd_switch_done.wait(timeout=SWITCH_FD_ACK_TIMEOUT_S + 0.1)
+        self._fd_switch_done.clear()
+        if not ok or self._fd_ack_result is None:
+            return False
+        ack_enable, cap = self._fd_ack_result
+        return ack_enable == (1 if enable else 0) and (cap == 1 if enable else True)
+
+    def _send_fd_mode_sync(self, payload: bytes) -> None:
+        """同步发送 0xF3 SET_FD_MODE 并等待 ACK(在 _tx_loop 中调用)。
+        ACK 由 _handle_rx_msg 捕获并 set _fd_ack_event。
+        完成后切换自身 _fd_mode 并 set _fd_switch_done 通知 UI 线程。"""
+        # 清空旧结果, 准备等待新 ACK
+        self._fd_ack_result = None
+        self._fd_ack_event.clear()
+        # 用当前模式发帧(切换前)
+        self._send_single(JmCmd.SET_FD_MODE, payload)
+        # 等待 ACK(由 _handle_rx_msg 捕获 0xF3 应答后 set 事件)
+        ok = self._fd_ack_event.wait(timeout=SWITCH_FD_ACK_TIMEOUT_S)
+        if ok and self._fd_ack_result is not None:
+            ack_enable, _cap = self._fd_ack_result
+            # 切换自身模式(与下位机 ack_enable 同步)
+            self._fd_mode = bool(ack_enable)
+        # 通知 UI 线程切换完成
+        self._fd_switch_done.set()
 
     def _send_single(self, cmd: int, payload: bytes) -> bool:
-        """单帧: 数据区直接是载荷(无控制字), 最多 8 字节"""
+        """单帧: 数据区直接是载荷(无控制字), 经典≤8B, FD≤64B"""
         can_id = can_make_id(cmd, self._motor_id)
-        msg = can.Message(
-            arbitration_id=can_id,
-            data=payload,
-            is_extended_id=True,  # 29 位扩展帧
-        )
+        msg = self._make_fd_msg(can_id, payload)
         return self._write_msg(msg)
 
     def _send_multi(self, cmd: int, payload: bytes) -> bool:
-        """多帧分包: 每帧 data[0]=控制字, data[1..]=片段(<=7字节)"""
+        """多帧分包: 每帧 data[0]=控制字, data[1..]=片段(经典7B/FD63B);
+        末帧末尾追加 2 字节 CRC16(小端, 覆盖整个载荷)"""
         can_id = can_make_id(cmd, self._motor_id)
+        seg_payload = self._seg_payload()
+        crc = crc16_calc(payload)
+        payload_with_crc = payload + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
         offset = 0
         seq = 0
-        total = len(payload)
+        total = len(payload_with_crc)
         ok = True
         while offset < total:
-            seg = payload[offset:offset + CAN_SEG_PAYLOAD]
-            offset += CAN_SEG_PAYLOAD
+            seg = payload_with_crc[offset:offset + seg_payload]
+            offset += seg_payload
             is_last = offset >= total
             ctrl = (CAN_SEG_LAST if is_last else 0) | (seq & CAN_SEG_SEQ_MASK)
             frame_data = bytes([ctrl]) + seg
-            msg = can.Message(
-                arbitration_id=can_id,
-                data=frame_data,
-                is_extended_id=True,
-            )
+            msg = self._make_fd_msg(can_id, frame_data)
             ok = ok and self._write_msg(msg)
             seq += 1
         return ok
@@ -462,8 +576,8 @@ class CanTransport(Transport):
         """收到一个 CAN 物理帧 → 拆 ID → 单帧/重组多帧/MIT解压 → emit 逻辑帧
 
         单帧/多帧判断(与固件 jm_proto_can.c can_emit_payload 一致):
-        - 载荷≤8B: 单帧, 数据直接是载荷(无控制字)
-        - 载荷>8B: 多帧, data[0]=控制字(bit7=末帧, bit6:0=序号), data[1..]=片段
+        - 载荷≤single_max: 单帧, 数据直接是载荷(无控制字)
+        - 载荷>single_max: 多帧, data[0]=控制字(bit7=末帧, bit6:0=序号), data[1..]=片段
         接收侧不依赖命令白名单, 基于 DLC 和控制字特征智能判断。
         """
         can_id = int(msg.arbitration_id)
@@ -480,6 +594,14 @@ class CanTransport(Transport):
         # motor_id 过滤(非本机非广播不解析, 但物理帧日志已发射)
         rx_motor_id = can_get_motor_id(can_id)
         if rx_motor_id != 0 and rx_motor_id != self._motor_id:
+            return
+
+        # 0xF3 SET_FD_MODE 应答捕获: ACK{ack_enable, cap} (2 字节)
+        # 由 switch_fd_mode 同步等待, 不走 frame_received 信号
+        if cmd == JmCmd.SET_FD_MODE and len(data) >= 2:
+            self._fd_ack_result = (data[0], data[1])
+            self._fd_ack_event.set()
+            self.rx_frames += 1
             return
 
         # MIT/IMPEDANCE/READ_FEEDBACK 压缩反馈帧: 8 字节压缩 → 解压为 22 字节兼容载荷
@@ -501,10 +623,13 @@ class CanTransport(Transport):
     def _handle_multi_frame(self, can_id: int, cmd: int, data: bytes) -> bool:
         """多帧重组状态机, 返回 True=已处理, False=单帧。
 
-        多帧格式: data[0]=控制字(bit7=末帧, bit6:0=序号), data[1..7]=片段
-        - 多帧第一帧: DLC=8, ctrl=0x00(seq=0, 非末帧)
-        - 多帧中间帧: DLC=8, ctrl=seq(非末帧)
-        - 多帧末帧: DLC=任意, ctrl=0x80|seq
+        多帧格式: data[0]=控制字(bit7=末帧, bit6:0=序号), data[1..]=片段
+        - 经典: 每帧片段7B, 单帧DLC=8
+        - FD: 每帧片段63B, 单帧DLC可达64
+        - 末帧末尾追加 2 字节 CRC16(小端), 校验通过后去除 CRC 再 emit
+
+        seq 连续性检查: 收到乱序帧(seq != expected_seq)时丢弃整个多帧,
+        避免帧丢失导致数据错乱和 CRC 必然失败。
         """
         if len(data) == 0:
             return False
@@ -512,29 +637,53 @@ class CanTransport(Transport):
         ctrl = data[0]
         is_last = bool(ctrl & CAN_SEG_LAST)
         seq = ctrl & CAN_SEG_SEQ_MASK
-        seg = data[1:1 + CAN_SEG_PAYLOAD]
+        seg_payload = self._seg_payload()
+        seg = data[1:1 + seg_payload]
+        single_max = self._single_max()
 
-        # 有正在重组的缓冲 → 检查是否为末帧或下一帧
+        # seq==0 且非末帧且DLC==single_max: 新一轮多帧开始
+        # (旧缓冲未完成则覆盖, 避免乱序帧污染)
+        if seq == 0 and not is_last and len(data) == single_max:
+            self._rx_segments[can_id] = bytearray(seg)
+            self._rx_segments_ts[can_id] = time.time()
+            self._rx_expected_seq[can_id] = 1
+            return True
+
+        # 有正在重组的缓冲 → 检查 seq 连续性
         if can_id in self._rx_segments:
+            expected_seq = self._rx_expected_seq.get(can_id, 0)
+
+            # seq 不连续 → 帧丢失, 丢弃整个多帧
+            if seq != expected_seq:
+                self.rx_seq_errors += 1
+                self._rx_segments.pop(can_id, None)
+                self._rx_segments_ts.pop(can_id, None)
+                self._rx_expected_seq.pop(can_id, None)
+                return True
+
             if is_last:
                 buf = self._rx_segments.pop(can_id, bytearray())
                 self._rx_segments_ts.pop(can_id, None)
+                self._rx_expected_seq.pop(can_id, None)
                 buf.extend(seg)
+                # CRC 校验(末 2 字节小端)
+                if len(buf) >= 2:
+                    recv_crc = buf[-2] | (buf[-1] << 8)
+                    calc_crc = crc16_calc(bytes(buf[:-2]))
+                    if recv_crc != calc_crc:
+                        self.rx_crc_errors += 1
+                        return True
+                    buf = buf[:-2]
                 self.rx_frames += 1
                 self.frame_received.emit(cmd, bytes(buf))
                 return True
             else:
                 self._rx_segments[can_id].extend(seg)
                 self._rx_segments_ts[can_id] = time.time()
+                self._rx_expected_seq[can_id] = seq + 1
                 return True
 
-        # 无缓冲: 判断是否为多帧第一帧(DLC=8, ctrl=0x00)
-        # 风险: DLC=8 且 data[0]=0x00 的单帧会误判, 由 _cleanup_stale_segments 超时回退兜底
-        if len(data) == 8 and not is_last and seq == 0:
-            self._rx_segments[can_id] = bytearray(seg)
-            self._rx_segments_ts[can_id] = time.time()
-            return True
-
+        # 无缓冲: 单帧(包括孤立末帧), 返回 False 让调用方当单帧处理
         return False
 
     def _cleanup_stale_segments(self):
@@ -551,6 +700,7 @@ class CanTransport(Transport):
         for cid in stale_cids:
             buf = self._rx_segments.pop(cid, bytearray())
             self._rx_segments_ts.pop(cid, None)
+            self._rx_expected_seq.pop(cid, None)
             if buf:
                 cmd = can_get_cmd(cid)
                 self.rx_frames += 1
@@ -595,10 +745,10 @@ class CanTransport(Transport):
         return self._bitrate
 
     def send_raw(self, can_id: int, data: bytes, extended: bool = True) -> bool:
-        """P2-2 手动发送原始 CAN 帧(调试用), 不走协议组帧"""
-        msg = can.Message(
-            arbitration_id=can_id,
-            data=bytearray(data[:8]),
-            is_extended_id=extended,
-        )
+        """P2-2 手动发送原始 CAN 帧(调试用), 不走协议组帧。
+        经典模式截断到 8 字节, FD 模式截断到 64 字节。"""
+        max_len = 64 if self._fd_mode else 8
+        msg = self._make_fd_msg(can_id, bytearray(data[:max_len]))
+        # send_raw 允许覆盖 is_extended_id(调试用)
+        msg.is_extended_id = extended
         return self._write_msg(msg)

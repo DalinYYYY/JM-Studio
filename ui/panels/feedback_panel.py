@@ -125,6 +125,7 @@ class _FocDiagram(LayoutEditMixin, QWidget):
         self.setMinimumHeight(300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._vals = {}     # key -> 显示字符串
+        self._dirty = False  # 脏标记: set_values 置位, flush 时清除并 update
         self._ensure_edit_state()
         self._corner_btns = []   # 浮于左下角的编辑/导出按钮
 
@@ -169,7 +170,13 @@ class _FocDiagram(LayoutEditMixin, QWidget):
 
     def set_values(self, vals: dict):
         self._vals = dict(vals)
-        self.update()
+        self._dirty = True  # 标记脏, 由 flush 统一触发重绘(避免每帧 update)
+
+    def flush(self):
+        """由外部定时器统一调用, 仅在脏时触发重绘"""
+        if self._dirty:
+            self._dirty = False
+            self.update()
 
     def set_corner_buttons(self, *btns):
         """登记浮于框图左下角的按钮(编辑/导出), 由 resizeEvent 重定位。"""
@@ -617,9 +624,12 @@ class _ParamCard(QFrame):
         if lbl is None:
             return
         lbl.setText(text)
-        # 记住语义覆盖色(None 表示回到主题默认 value 色), 供主题切换重建样式
-        self._val_color[attr] = color
-        lbl.setStyleSheet(self._val_style(color or theme.hex("value")))
+        # 仅颜色变化时才重设样式表(setStyleSheet 极其昂贵, 避免每帧调用)
+        new_color = color or theme.hex("value")
+        old_color = self._val_color.get(attr)
+        if old_color != new_color:
+            self._val_color[attr] = new_color
+            lbl.setStyleSheet(self._val_style(new_color))
 
 
 class _MotorView(QWidget):
@@ -648,7 +658,7 @@ class _MotorView(QWidget):
         self._clock.start()
         self._last_ms = self._clock.elapsed()
         self._timer = QTimer(self)
-        self._timer.setInterval(16)   # ~60fps
+        self._timer.setInterval(33)   # ~30fps (足够流畅, 降低 paintEvent 开销)
         self._timer.timeout.connect(self._tick)
 
     # 仅在可见时跑动画, 省 CPU
@@ -1010,9 +1020,11 @@ class FeedbackPanel(QWidget):
 
         self._dot = QLabel("●")
         self._dot.setStyleSheet("font-size:14px; border:none;")
+        self._dot_col = None  # 缓存当前颜色, 避免每帧 setStyleSheet
         lay.addWidget(self._dot)
 
         self._lbl_state = QLabel("未连接")
+        self._lbl_state_col = None  # 缓存当前颜色
         lay.addWidget(self._lbl_state)
 
         lay.addStretch()
@@ -1192,15 +1204,13 @@ class FeedbackPanel(QWidget):
 
         # 运动子状态 (twin 扩展, 反映 STANDSTILL/MOVING/DECEL/HOLDING/BRAKING)
         ms = getattr(fb, "motion_state", 0)
-        motion_lbl = self._card_state._val_labels.get("_motion")
-        self._card_state.set_text("_motion", motion_state_name(ms))
-        if motion_lbl is not None:
-            # 不同状态用不同颜色: 静止=灰, 运动=蓝, 减速=橙, 保持=绿
-            col = {0: "#8890A4", 1: "#5F9EFF", 2: "#FFB454",
-                   3: "#5FE6AC", 4: "#FF6B6B"}.get(int(ms), "#7FD4FF")
-            motion_lbl.setStyleSheet(f"color:{col}; font-weight:bold;")
+        # 不同状态用不同颜色: 静止=灰, 运动=蓝, 减速=橙, 保持=绿
+        motion_col = {0: "#8890A4", 1: "#5F9EFF", 2: "#FFB454",
+                      3: "#5FE6AC", 4: "#FF6B6B"}.get(int(ms), "#7FD4FF")
+        self._card_state.set_text("_motion", motion_state_name(ms), motion_col)
 
         self._refresh_state_styles()
+        self._foc.flush()  # FOC 框图脏标记刷新(避免 set_values 每次直接 update)
 
     def set_motor_params(self, params: dict):
         """电机本体参数(r/ld/lq/flux/kt/ke/pole_pairs), 转发到转子示意图下方显示。"""
@@ -1236,10 +1246,15 @@ class FeedbackPanel(QWidget):
             dot = col = theme.hex("accent")
             text = (f"{top_fsm_name(top)}   ·   运行子态 {run_state_name(run_state)}"
                     f"   ·   使能 {'ON' if enable else 'OFF'}")
-        self._dot.setStyleSheet(f"color:{dot}; font-size:14px; border:none;")
-        self._lbl_state.setStyleSheet(
-            f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 13px; "
-            f"font-weight: bold; color: {col}; border: none;")
+        # 仅颜色变化时才重设样式表(避免每帧 setStyleSheet)
+        if self._dot_col != dot:
+            self._dot_col = dot
+            self._dot.setStyleSheet(f"color:{dot}; font-size:14px; border:none;")
+        if self._lbl_state_col != col:
+            self._lbl_state_col = col
+            self._lbl_state.setStyleSheet(
+                f"font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 13px; "
+                f"font-weight: bold; color: {col}; border: none;")
         self._lbl_state.setText(text)
 
     def set_link_active(self, active: bool):

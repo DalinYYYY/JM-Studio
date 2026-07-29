@@ -94,21 +94,21 @@ class ConnectionPanel(QGroupBox):
         self._spin_can_motor_id = QSpinBox()
         self._spin_can_motor_id.setRange(0, 255)
         self._spin_can_motor_id.setValue(1)
-        self._layout.addWidget(self._spin_can_motor_id, 5, 1, 1, 2)
+        self._layout.addWidget(self._spin_can_motor_id, 5, 1)
 
-        # P2-1: 监听模式 (第 6 行)
-        self._chk_listen_only = QCheckBox("监听模式(只看帧不解析)")
+        # P2-1: 监听模式 (与电机 ID 同行)
+        self._chk_listen_only = QCheckBox("监听模式")
         self._chk_listen_only.setToolTip("开启后只记录 CAN 物理帧日志, 不解析协议帧")
         self._chk_listen_only.toggled.connect(self.listen_only_changed.emit)
-        self._layout.addWidget(self._chk_listen_only, 6, 0, 1, 3)
+        self._layout.addWidget(self._chk_listen_only, 5, 2)
 
-        # ---- 连接按钮 (第 7 行) ----
+        # ---- 连接按钮 (第 6 行) ----
         self._btn_connect = QPushButton("连接")
         self._btn_connect.setFixedHeight(26)
         self._btn_connect.setStyleSheet(
             "background-color: #4CAF50; color: white; font-weight: bold;")
         self._btn_connect.clicked.connect(self._on_toggle)
-        self._layout.addWidget(self._btn_connect, 7, 0, 1, 3)
+        self._layout.addWidget(self._btn_connect, 6, 0, 1, 3)
 
         # 默认串口模式: 隐藏 CAN 区
         self._set_can_visible(False)

@@ -268,7 +268,7 @@ class JmClient(QObject):
         payload = struct.pack('<BHH', 1 if enable else 0, mask & 0xFFFF, period_ms & 0xFFFF)
         return self._send(JmCmd.SET_TELEMETRY, payload)
 
-    # ---- CAN 管理 0xF0~0xF2 ----
+    # ---- CAN 管理 0xF0~0xF3 ----
     def cmd_set_can_id(self, new_id: int):
         """设置本机 CAN 地址(0xF0): 仅写 RAM 生效, 需随后 param_save()(0xE4) 固化, 重启后 CAN 滤波生效。
         new_id 范围 1~127, 越界由固件 dispatch 层拦截返回 NACK(OUT_OF_RANGE)。"""
@@ -276,6 +276,16 @@ class JmClient(QObject):
             self.error_occurred.emit(f"CAN ID 越界: {new_id}, 应在 1~127 范围内")
             return False
         return self._send(JmCmd.SET_CAN_ID, struct.pack('<B', new_id & 0xFF))
+
+    def cmd_switch_fd_mode(self, enable: bool) -> bool:
+        """切换 CAN FD 运行期模式(0xF3): 仅 CAN 传输有效, UART 传输返回 False。
+        enable=True 切换到 FD 长帧模式(单帧64B), False 切回经典模式(单帧8B)。
+        切换为纯软件操作, 不重新初始化 FDCAN 外设。
+        返回 True=上下位机均已切换成功, False=失败(硬件不支持或超时)。"""
+        from transport.can_transport import CanTransport
+        if not isinstance(self._tp, CanTransport):
+            return False
+        return self._tp.switch_fd_mode(enable)
 
     # ---------------- 帧分发(主线程槽) ----------------
     def _merge_and_emit_feedback(self, fb):
