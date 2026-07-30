@@ -45,12 +45,15 @@ FB_TEMP_MIN, FB_TEMP_MAX = -40.0, 215.0
 # ---- 多帧分包常量(与固件 jm_proto_can.h 一致) ----
 CAN_SEG_LAST = 0x80
 CAN_SEG_SEQ_MASK = 0x7F
+CAN_MULTI_FLAG = 1 << 16
 # 经典模式
 CAN_SEG_PAYLOAD_CLS = 7
 CAN_SINGLE_MAX_CLS = 8
 # FD 模式
 CAN_SEG_PAYLOAD_FD = 63
 CAN_SINGLE_MAX_FD = 64
+CAN_FD_DLC_LENGTHS = frozenset((*range(0, 9), 12, 16, 20, 24, 32, 48, 64))
+CAN_FD_SEG_LENGTHS = (63, 47, 31, 23, 19, 15, 11, 7, 6, 5, 4, 3, 2, 1)
 # 多帧重组超时(ms)
 CAN_MULTI_TIMEOUT_MS = 200
 # 0xF3 SET_FD_MODE 同步等待 ACK 超时
@@ -330,7 +333,7 @@ class CanTransport(Transport):
                 self._send_mit(cmd, payload)
             else:
                 single_max = self._single_max()
-                if len(payload) <= single_max:
+                if len(payload) <= single_max and self._is_valid_single_length(len(payload)):
                     self._send_single(cmd, payload)
                 else:
                     self._send_multi(cmd, payload)
@@ -350,6 +353,9 @@ class CanTransport(Transport):
 
     def _seg_payload(self) -> int:
         return CAN_SEG_PAYLOAD_FD if self._fd_mode else CAN_SEG_PAYLOAD_CLS
+
+    def _is_valid_single_length(self, length: int) -> bool:
+        return length <= CAN_SINGLE_MAX_CLS if not self._fd_mode else length in CAN_FD_DLC_LENGTHS
 
     def _make_fd_msg(self, can_id: int, data: bytes) -> can.Message:
         """根据当前 FD 模式构造 CAN 帧"""
@@ -417,7 +423,7 @@ class CanTransport(Transport):
     def _send_multi(self, cmd: int, payload: bytes) -> bool:
         """多帧分包: 每帧 data[0]=控制字, data[1..]=片段(经典7B/FD63B);
         末帧末尾追加 2 字节 CRC16(小端, 覆盖整个载荷)"""
-        can_id = can_make_id(cmd, self._motor_id)
+        can_id = can_make_id(cmd, self._motor_id) | CAN_MULTI_FLAG
         seg_payload = self._seg_payload()
         crc = crc16_calc(payload)
         payload_with_crc = payload + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
@@ -426,8 +432,12 @@ class CanTransport(Transport):
         total = len(payload_with_crc)
         ok = True
         while offset < total:
-            seg = payload_with_crc[offset:offset + seg_payload]
-            offset += seg_payload
+            remaining = total - offset
+            chunk = seg_payload
+            if self._fd_mode:
+                chunk = next(size for size in CAN_FD_SEG_LENGTHS if size <= remaining)
+            seg = payload_with_crc[offset:offset + chunk]
+            offset += chunk
             is_last = offset >= total
             ctrl = (CAN_SEG_LAST if is_last else 0) | (seq & CAN_SEG_SEQ_MASK)
             frame_data = bytes([ctrl]) + seg
@@ -613,7 +623,7 @@ class CanTransport(Transport):
             return
 
         # 多帧重组: 基于控制字和 DLC 智能判断(不依赖命令白名单)
-        if self._handle_multi_frame(can_id, cmd, data):
+        if (can_id & CAN_MULTI_FLAG) and self._handle_multi_frame(can_id, cmd, data):
             return
 
         # 单帧: data 即为载荷(不含 CMD, CMD 走仲裁 ID)
@@ -639,11 +649,25 @@ class CanTransport(Transport):
         seq = ctrl & CAN_SEG_SEQ_MASK
         seg_payload = self._seg_payload()
         seg = data[1:1 + seg_payload]
-        single_max = self._single_max()
 
         # seq==0 且非末帧且DLC==single_max: 新一轮多帧开始
         # (旧缓冲未完成则覆盖, 避免乱序帧污染)
-        if seq == 0 and not is_last and len(data) == single_max:
+        # CAN_MULTI_FLAG removes single-frame ambiguity. A transfer can start
+        # and finish in one frame when that produces a valid CAN FD DLC.
+        if seq == 0 and is_last:
+            buf = bytearray(seg)
+            if len(buf) < 2:
+                return True
+            recv_crc = buf[-2] | (buf[-1] << 8)
+            calc_crc = crc16_calc(bytes(buf[:-2]))
+            if recv_crc != calc_crc:
+                self.rx_crc_errors += 1
+                return True
+            self.rx_frames += 1
+            self.frame_received.emit(cmd, bytes(buf[:-2]))
+            return True
+
+        if seq == 0:
             self._rx_segments[can_id] = bytearray(seg)
             self._rx_segments_ts[can_id] = time.time()
             self._rx_expected_seq[can_id] = 1
