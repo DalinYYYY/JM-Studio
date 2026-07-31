@@ -46,6 +46,8 @@ class JmClient(QObject):
     ack_received = pyqtSignal(int)                     # cmd
     nack_received = pyqtSignal(int, int)               # cmd, err_code
     dev_info_received = pyqtSignal(int, int, bytes)    # hw_ver, fw_ver, uid
+    can_id_set_result = pyqtSignal(int, bool)          # new_id, restart_required
+    can_node_discovered = pyqtSignal(int, int, int, bytes, int)  # source_id, hw, fw, uid, reported_id
     dev_name_received = pyqtSignal(str)
     param_read_result = pyqtSignal(int, int, object)   # param_id, type, value_bytes
     motor_info_read_result = pyqtSignal(int, int, object)   # param_id, type, value_bytes(固定4B)
@@ -65,6 +67,7 @@ class JmClient(QObject):
         self._tp = transport
         self._reg = jp.get_registry()
         self._tp.frame_received.connect(self._on_frame)
+        self._tp.addressed_frame_received.connect(self._on_addressed_frame)
         self._tp.connected.connect(self.connected)
         self._tp.error_occurred.connect(self.error_occurred)
         # 合并反馈状态: 各 READ_*/TELEMETRY 帧按 filled_fields 增量合并,
@@ -97,6 +100,7 @@ class JmClient(QObject):
         except Exception:
             pass
         for sig, slot in ((old.frame_received, self._on_frame),
+                          (old.addressed_frame_received, self._on_addressed_frame),
                           (old.connected, self.connected),
                           (old.error_occurred, self.error_occurred)):
             try:
@@ -107,6 +111,7 @@ class JmClient(QObject):
         # 重置累积反馈, 避免旧设备数据混入新连接
         self._last_feedback = jp.FeedbackData()
         transport.frame_received.connect(self._on_frame)
+        transport.addressed_frame_received.connect(self._on_addressed_frame)
         transport.connected.connect(self.connected)
         transport.error_occurred.connect(self.error_occurred)
         transport.start()
@@ -270,12 +275,31 @@ class JmClient(QObject):
 
     # ---- CAN 管理 0xF0~0xF3 ----
     def cmd_set_can_id(self, new_id: int):
-        """设置本机 CAN 地址(0xF0): 仅写 RAM 生效, 需随后 param_save()(0xE4) 固化, 重启后 CAN 滤波生效。
-        new_id 范围 1~127, 越界由固件 dispatch 层拦截返回 NACK(OUT_OF_RANGE)。"""
+        """原子保存本机 CAN 节点地址(0xF0), 重启后过滤器使用新地址。"""
         if not 1 <= new_id <= 127:
             self.error_occurred.emit(f"CAN ID 越界: {new_id}, 应在 1~127 范围内")
             return False
         return self._send(JmCmd.SET_CAN_ID, struct.pack('<B', new_id & 0xFF))
+
+    def begin_can_scan(self) -> bool:
+        if self._tp.name != "can" or not self.is_open():
+            return False
+        self._tp.set_discovery_mode(True)
+        return True
+
+    def probe_can_node(self, node_id: int) -> bool:
+        if self._tp.name != "can" or not self.is_open():
+            return False
+        return self._tp.send_to(node_id, JmCmd.READ_DEV_INFO)
+
+    def end_can_scan(self):
+        if self._tp.name == "can":
+            self._tp.set_discovery_mode(False)
+
+    def select_can_node(self, node_id: int) -> bool:
+        if self._tp.name != "can" or not self.is_open():
+            return False
+        return self._tp.set_motor_id(node_id)
 
     def cmd_switch_fd_mode(self, enable: bool) -> bool:
         """切换 CAN FD 运行期模式(0xF3): 仅 CAN 传输有效, UART 传输返回 False。
@@ -375,6 +399,12 @@ class JmClient(QObject):
             self.dev_name_received.emit(name)
             return
 
+        # SET_CAN_ID: ACK{new_id:u8,restart_required:u8}; 兼容旧固件单字节 ACK。
+        if cmd == JmCmd.SET_CAN_ID and len(payload) >= 1:
+            self.can_id_set_result.emit(payload[0], bool(payload[1]) if len(payload) >= 2 else True)
+            self.ack_received.emit(cmd)
+            return
+
         # PARAM_READ 应答: param_id(u16) type(u8) value
         if cmd == JmCmd.PARAM_READ and len(payload) >= 3:
             param_id = codec.rd_u16(payload, 0)
@@ -445,3 +475,13 @@ class JmClient(QObject):
         else:
             # 空 payload 帧: 既不匹配特化分支也不满足 ACK 条件, 上报避免队列死锁
             self.error_occurred.emit(f"空payload帧 cmd=0x{cmd:02X}")
+
+    def _on_addressed_frame(self, node_id: int, cmd: int, payload: bytes):
+        """解析扫描响应，同时保留产生响应的节点地址。"""
+        if cmd != JmCmd.READ_DEV_INFO or len(payload) < 20 or not 1 <= node_id <= 127:
+            return
+        hw = codec.rd_u32(payload, 0)
+        fw = codec.rd_u32(payload, 4)
+        uid = bytes(payload[8:20])
+        reported_id = payload[20] if len(payload) >= 21 else node_id
+        self.can_node_discovered.emit(node_id, hw, fw, uid, reported_id)

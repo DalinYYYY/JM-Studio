@@ -14,6 +14,8 @@ class Transport(QObject):
 
     # 收到完整逻辑帧 (cmd:int, payload:bytes); 在后台线程发射, 经信号槽投递到主线程
     frame_received = pyqtSignal(int, bytes)
+    # CAN 完整逻辑帧并携带源节点地址(node_id, cmd, payload); 其他传输不发射
+    addressed_frame_received = pyqtSignal(int, int, bytes)
     # 连接状态变化
     connected = pyqtSignal(bool)
     # 错误信息(字符串)

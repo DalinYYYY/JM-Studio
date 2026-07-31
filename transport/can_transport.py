@@ -113,6 +113,8 @@ class CanTransport(Transport):
         self._tx_seq: int = 0
         # P2-1 监听模式: 只记物理帧日志, 不解析协议帧
         self._listen_only = False
+        # 节点发现模式: 额外接收任意 1~127 节点的 READ_DEV_INFO 响应
+        self._discovery_mode = False
         # P1-1/P1-2 总线状态检查(收循环空闲周期读取, 不阻塞 recv)
         self._last_bus_state = ""
         self._bus_state_check_ts = 0.0
@@ -133,6 +135,11 @@ class CanTransport(Transport):
         self.rx_crc_errors: int = 0
         # 多帧 seq 不连续统计(帧丢失或乱序)
         self.rx_seq_errors: int = 0
+        # 总线负载估算专用计数器: 累计总线所有帧(RX+TX)的位长(含帧头+填充+ITF)
+        # 在收帧最早期(过滤前)累加, 确保 RX 计入总线上所有帧, 与其他 CAN 工具一致。
+        # 由 _bus_load_lock 保护(rx/tx/ui 三线程访问)
+        self._bus_load_bits: int = 0
+        self._bus_load_lock = threading.Lock()
 
     # ---------------- 通道枚举 ----------------
     @staticmethod
@@ -182,6 +189,9 @@ class CanTransport(Transport):
              motor_id: int = 1, fd: bool = False, data_bitrate: int = 0,
              **_) -> bool:
         """打开 CAN 总线。fd=True 启用 CAN FD 模式(需 PCAN-USB FD 设备), 打开成功后启动独立发送线程。"""
+        if not 1 <= int(motor_id) <= 127:
+            self.error_occurred.emit(f"CAN 节点 ID 越界: {motor_id}, 应在 1~127 范围内")
+            return False
         try:
             # 静默关闭旧连接, 不发 connected(False) 避免状态闪烁
             if self._bus is not None:
@@ -239,12 +249,16 @@ class CanTransport(Transport):
                 self._channel = channel
                 self._bitrate = bitrate
                 self._motor_id = motor_id & 0xFF
+                self._discovery_mode = False
                 self._rx_segments.clear()
                 self._rx_segments_ts.clear()
                 self._rx_expected_seq.clear()
                 self._tx_seq = 0
                 self.reset_stats()
                 self.tx_dropped_count = 0
+                # 总线负载计数器清零(重连后重新统计)
+                with self._bus_load_lock:
+                    self._bus_load_bits = 0
                 self._fd_capable = bool(fd)  # 硬件 FD 能力(由 UI 勾选决定)
                 self._fd_mode = False        # 上电默认经典模式(与下位机一致)
                 self._fd_ack_event.clear()
@@ -276,6 +290,7 @@ class CanTransport(Transport):
                 self._bus = None
             self._rx_segments.clear()
             self._rx_segments_ts.clear()
+            self._discovery_mode = False
         self._wake_event.set()
         if was_running:
             self.connected.emit(False)
@@ -290,7 +305,18 @@ class CanTransport(Transport):
         if not self.is_open():
             return False
         try:
-            self._tx_queue.put_nowait((cmd, payload))
+            self._tx_queue.put_nowait((cmd, payload, self._motor_id))
+            return True
+        except queue.Full:
+            self.tx_dropped_count += 1
+            return False
+
+    def send_to(self, node_id: int, cmd: int, payload: bytes = b'') -> bool:
+        """向指定节点发送协议帧, 目标地址在入队时固定。"""
+        if not self.is_open() or not 1 <= int(node_id) <= 127:
+            return False
+        try:
+            self._tx_queue.put_nowait((cmd, payload, int(node_id)))
             return True
         except queue.Full:
             self.tx_dropped_count += 1
@@ -321,22 +347,22 @@ class CanTransport(Transport):
         """发送线程主循环: 阻塞取队列 → 组帧 → 写总线。"""
         while not self._tx_stop.is_set():
             try:
-                cmd, payload = self._tx_queue.get(timeout=0.1)
+                cmd, payload, node_id = self._tx_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
             # 0xF3 SET_FD_MODE 走同步发送(等待 ACK), 不走队列
             if cmd == JmCmd.SET_FD_MODE:
-                self._send_fd_mode_sync(payload)
+                self._send_fd_mode_sync(payload, node_id)
                 continue
             # 实际发送(阻塞调用, 不影响 UI 线程)
             if cmd == JmCmd.MIT or cmd == JmCmd.IMPEDANCE:
-                self._send_mit(cmd, payload)
+                self._send_mit(cmd, payload, node_id)
             else:
                 single_max = self._single_max()
                 if len(payload) <= single_max and self._is_valid_single_length(len(payload)):
-                    self._send_single(cmd, payload)
+                    self._send_single(cmd, payload, node_id)
                 else:
-                    self._send_multi(cmd, payload)
+                    self._send_multi(cmd, payload, node_id)
 
     @property
     def fd_mode(self) -> bool:
@@ -384,7 +410,8 @@ class CanTransport(Transport):
         # 清空完成事件, 入队由 _tx_loop 处理
         self._fd_switch_done.clear()
         try:
-            self._tx_queue.put_nowait((JmCmd.SET_FD_MODE, bytes([1 if enable else 0])))
+            self._tx_queue.put_nowait(
+                (JmCmd.SET_FD_MODE, bytes([1 if enable else 0]), self._motor_id))
         except queue.Full:
             self.tx_dropped_count += 1
             return False
@@ -396,7 +423,7 @@ class CanTransport(Transport):
         ack_enable, cap = self._fd_ack_result
         return ack_enable == (1 if enable else 0) and (cap == 1 if enable else True)
 
-    def _send_fd_mode_sync(self, payload: bytes) -> None:
+    def _send_fd_mode_sync(self, payload: bytes, node_id: int) -> None:
         """同步发送 0xF3 SET_FD_MODE 并等待 ACK(在 _tx_loop 中调用)。
         ACK 由 _handle_rx_msg 捕获并 set _fd_ack_event。
         完成后切换自身 _fd_mode 并 set _fd_switch_done 通知 UI 线程。"""
@@ -404,7 +431,7 @@ class CanTransport(Transport):
         self._fd_ack_result = None
         self._fd_ack_event.clear()
         # 用当前模式发帧(切换前)
-        self._send_single(JmCmd.SET_FD_MODE, payload)
+        self._send_single(JmCmd.SET_FD_MODE, payload, node_id)
         # 等待 ACK(由 _handle_rx_msg 捕获 0xF3 应答后 set 事件)
         ok = self._fd_ack_event.wait(timeout=SWITCH_FD_ACK_TIMEOUT_S)
         if ok and self._fd_ack_result is not None:
@@ -414,16 +441,18 @@ class CanTransport(Transport):
         # 通知 UI 线程切换完成
         self._fd_switch_done.set()
 
-    def _send_single(self, cmd: int, payload: bytes) -> bool:
+    def _send_single(self, cmd: int, payload: bytes, node_id: int | None = None) -> bool:
         """单帧: 数据区直接是载荷(无控制字), 经典≤8B, FD≤64B"""
-        can_id = can_make_id(cmd, self._motor_id)
+        target = self._motor_id if node_id is None else node_id
+        can_id = can_make_id(cmd, target)
         msg = self._make_fd_msg(can_id, payload)
         return self._write_msg(msg)
 
-    def _send_multi(self, cmd: int, payload: bytes) -> bool:
+    def _send_multi(self, cmd: int, payload: bytes, node_id: int | None = None) -> bool:
         """多帧分包: 每帧 data[0]=控制字, data[1..]=片段(经典7B/FD63B);
         末帧末尾追加 2 字节 CRC16(小端, 覆盖整个载荷)"""
-        can_id = can_make_id(cmd, self._motor_id) | CAN_MULTI_FLAG
+        target = self._motor_id if node_id is None else node_id
+        can_id = can_make_id(cmd, target) | CAN_MULTI_FLAG
         seg_payload = self._seg_payload()
         crc = crc16_calc(payload)
         payload_with_crc = payload + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
@@ -454,6 +483,9 @@ class CanTransport(Transport):
                 self._bus.send(msg, timeout=self._WRITE_TIMEOUT_S)
                 self.tx_bytes += msg.dlc
                 self.tx_frames += 1
+                # 总线负载统计: TX 帧也占用总线带宽
+                self._accumulate_bus_load(
+                    msg.dlc, msg.is_extended_id, getattr(msg, 'is_fd', False))
                 # 物理帧日志(TX)
                 self.raw_can_frame.emit(int(msg.arbitration_id), bytes(msg.data[:msg.dlc]), False, 0.0)
                 return True
@@ -523,7 +555,7 @@ class CanTransport(Transport):
         # 小端打包: <5fH (5 个 float32 + 1 个 uint16) = 22 字节
         return struct.pack('<5fH', pos, vel, torque, temp_motor, 0.0, err)
 
-    def _send_mit(self, cmd: int, payload: bytes) -> bool:
+    def _send_mit(self, cmd: int, payload: bytes, node_id: int | None = None) -> bool:
         """MIT/IMPEDANCE 命令: 把 payload 解析为 5 个 float, 压缩成 8 字节发送
 
         payload 假设为 5 个 float32 (pos, vel, kp, kd, tff), 共 20 字节。
@@ -534,9 +566,48 @@ class CanTransport(Transport):
         else:
             pos = vel = kp = kd = tff = 0.0
         data = self._pack_mit(pos, vel, kp, kd, tff)
-        return self._send_single(cmd, data)
+        return self._send_single(cmd, data, node_id)
 
     # ---------------- 后台收循环 ----------------
+    @staticmethod
+    def _estimate_frame_bits(dlc: int, extended: bool, fd: bool = False) -> int:
+        """估算单个 CAN 帧在总线上的占用位长(含帧头+位填充+帧间隔)。
+
+        用于总线负载率估算, 与 PCAN-View 等工具的口径对齐:
+        - 经典扩展帧(29-bit ID), DLC=8: 约 154 位
+        - 经典标准帧(11-bit ID), DLC=8: 约 128 位
+        公式(CAN 2.0B, 含位填充):
+            可填充位 = (扩展:49 + 8*DLC) | (标准:34 + 8*DLC)
+              含 SOF/仲裁/IDE/r1/r0/DLC/数据/CRC
+            填充位 ≈ (可填充位 - 1) // 4   (每 5 个相同位插 1 填充位)
+            非填充固定 = 13   (CRC定界符1 + ACK1 + ACK定界符1 + EOF7 + ITF3)
+            总位长 = 可填充位 + 填充位 + 非填充固定
+        CAN FD 长帧公式不同, 此处粗略按经典公式估算(FD 场景负载本就高, 仅供参考)。
+        """
+        if fd:
+            # FD 帧: 简化估算, 数据段按 64B 上限粗算(实际应按 BRS/header 另算)
+            dlc_eff = min(dlc, 64)
+            stuffable = 65 + 8 * dlc_eff
+        elif extended:
+            stuffable = 49 + 8 * dlc
+        else:
+            stuffable = 34 + 8 * dlc
+        stuff_bits = max(0, (stuffable - 1) // 4)
+        return stuffable + stuff_bits + 13
+
+    def _accumulate_bus_load(self, dlc: int, extended: bool, fd: bool = False):
+        """累加一帧到总线负载计数器(rx/tx 线程调用)"""
+        bits = self._estimate_frame_bits(dlc, extended, fd)
+        with self._bus_load_lock:
+            self._bus_load_bits += bits
+
+    def get_and_reset_bus_load_bits(self) -> int:
+        """取样并清零总线负载累计位长(UI 线程周期调用)"""
+        with self._bus_load_lock:
+            val = self._bus_load_bits
+            self._bus_load_bits = 0
+        return val
+
     def _run(self):
         while self._alive:
             try:
@@ -547,6 +618,11 @@ class CanTransport(Transport):
                             continue
                         msg = self._bus.recv(timeout=self._READ_TIMEOUT_S)
                     if msg is not None:
+                        # 过滤 TX 回环帧: PCAN 驱动可能回放本机发送的帧(MSGTYPE.ECHO 位),
+                        # 若不过滤, 自己发的 MIT/IMPEDANCE 命令会被误当反馈帧/ACK 处理,
+                        # 导致状态乱闪。python-can Message.is_rx 基于该位判断方向。
+                        if not getattr(msg, 'is_rx', True):
+                            continue
                         # 错误帧/远程帧不再静默丢弃
                         if msg.is_error_frame:
                             self.error_occurred.emit(
@@ -557,7 +633,13 @@ class CanTransport(Transport):
                             self.raw_can_frame.emit(
                                 int(msg.arbitration_id), b'', True, msg.timestamp or 0.0)
                             self.rx_frames += 1
+                            # 远程帧也占总线: DLC=0, 但有帧头开销
+                            self._accumulate_bus_load(
+                                0, msg.is_extended_id, getattr(msg, 'is_fd', False))
                             continue
+                        # 总线负载统计: 在 motor_id 过滤前累加, 计入总线上所有 RX 帧
+                        self._accumulate_bus_load(
+                            msg.dlc, msg.is_extended_id, getattr(msg, 'is_fd', False))
                         self.rx_bytes += msg.dlc
                         self._handle_rx_msg(msg)
                     else:
@@ -601,9 +683,12 @@ class CanTransport(Transport):
         if self._listen_only:
             return
 
-        # motor_id 过滤(非本机非广播不解析, 但物理帧日志已发射)
+        # 地址过滤: 正常模式仅接收当前节点/广播; 发现模式额外接收各节点设备信息。
         rx_motor_id = can_get_motor_id(can_id)
-        if rx_motor_id != 0 and rx_motor_id != self._motor_id:
+        discovery_reply = (self._discovery_mode
+                           and cmd == JmCmd.READ_DEV_INFO
+                           and 1 <= rx_motor_id <= 127)
+        if rx_motor_id != 0 and rx_motor_id != self._motor_id and not discovery_reply:
             return
 
         # 0xF3 SET_FD_MODE 应答捕获: ACK{ack_enable, cap} (2 字节)
@@ -614,12 +699,15 @@ class CanTransport(Transport):
             self.rx_frames += 1
             return
 
-        # MIT/IMPEDANCE/READ_FEEDBACK 压缩反馈帧: 8 字节压缩 → 解压为 22 字节兼容载荷
-        if (cmd in (JmCmd.MIT, JmCmd.IMPEDANCE, JmCmd.READ_FEEDBACK)
-                and len(data) == 8):
+        # READ_FEEDBACK(0xC0) 压缩反馈帧: 8 字节压缩 → 解压为 22 字节兼容载荷
+        # 注: MIT(0x13)/IMPEDANCE(0x30) 命令帧也是 8 字节, 但那是主机→电机的控制帧,
+        # 固件不回发(CSV 协议表 Motor->Host 方向只有 0xCA/0xFE)。
+        # 若 PCAN 开了本地回环, 收到的 0x13/0x30 是自己发的命令帧, 误当反馈帧解压会
+        # 把命令目标值当成实际位置/速度, 还产生假故障码 → 状态乱闪。故只认 0xC0。
+        if cmd == JmCmd.READ_FEEDBACK and len(data) == 8:
             payload = self._unpack_mit_feedback(data)
             self.rx_frames += 1
-            self.frame_received.emit(JmCmd.READ_FEEDBACK, payload)
+            self._emit_protocol_frame(can_id, JmCmd.READ_FEEDBACK, payload)
             return
 
         # 多帧重组: 基于控制字和 DLC 智能判断(不依赖命令白名单)
@@ -628,7 +716,15 @@ class CanTransport(Transport):
 
         # 单帧: data 即为载荷(不含 CMD, CMD 走仲裁 ID)
         self.rx_frames += 1
-        self.frame_received.emit(cmd, data)
+        self._emit_protocol_frame(can_id, cmd, data)
+
+    def _emit_protocol_frame(self, can_id: int, cmd: int, payload: bytes):
+        """保留 CAN 源节点；扫描响应不进入当前设备的普通业务分发。"""
+        node_id = can_get_motor_id(can_id)
+        self.addressed_frame_received.emit(node_id, int(cmd), bytes(payload))
+        is_current_target = node_id == 0 or node_id == self._motor_id
+        if is_current_target and not (self._discovery_mode and cmd == JmCmd.READ_DEV_INFO):
+            self.frame_received.emit(int(cmd), bytes(payload))
 
     def _handle_multi_frame(self, can_id: int, cmd: int, data: bytes) -> bool:
         """多帧重组状态机, 返回 True=已处理, False=单帧。
@@ -664,7 +760,7 @@ class CanTransport(Transport):
                 self.rx_crc_errors += 1
                 return True
             self.rx_frames += 1
-            self.frame_received.emit(cmd, bytes(buf[:-2]))
+            self._emit_protocol_frame(can_id, cmd, bytes(buf[:-2]))
             return True
 
         if seq == 0:
@@ -699,7 +795,7 @@ class CanTransport(Transport):
                         return True
                     buf = buf[:-2]
                 self.rx_frames += 1
-                self.frame_received.emit(cmd, bytes(buf))
+                self._emit_protocol_frame(can_id, cmd, bytes(buf))
                 return True
             else:
                 self._rx_segments[can_id].extend(seg)
@@ -728,7 +824,7 @@ class CanTransport(Transport):
             if buf:
                 cmd = can_get_cmd(cid)
                 self.rx_frames += 1
-                self.frame_received.emit(cmd, bytes([0x00]) + bytes(buf))
+                self._emit_protocol_frame(cid, cmd, bytes([0x00]) + bytes(buf))
 
     # ---------------- 总线状态(P1-1/P1-2) ----------------
     def _check_bus_state(self):
@@ -762,6 +858,17 @@ class CanTransport(Transport):
     def set_listen_only(self, enabled: bool):
         """P2-1 监听模式: True=只记物理帧日志, 不解析协议帧"""
         self._listen_only = enabled
+
+    def set_discovery_mode(self, enabled: bool):
+        """允许/禁止接收任意节点的 READ_DEV_INFO 扫描响应。"""
+        self._discovery_mode = bool(enabled)
+
+    def set_motor_id(self, node_id: int) -> bool:
+        """切换当前单播目标和接收软件过滤地址, 不重启物理总线。"""
+        if not 1 <= int(node_id) <= 127:
+            return False
+        self._motor_id = int(node_id)
+        return True
 
     @property
     def bitrate(self) -> int:
