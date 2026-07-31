@@ -1,5 +1,5 @@
 id,param_name,description,group,access,data_type,array_size,default_value,unit,min_value,max_value,notes
-1,motor_id,电机实例ID,MotorInstance,RW,uint8_t,1,0,,0,31,多电机系统的唯一标识
+1,motor_id,电机实例ID,MotorInstance,RW,uint8_t,1,1,,0,127,多电机系统的唯一节点地址 0保留为广播
 2,motor_name,电机名称字符串,MotorInstance,RW,char,16,0,,0,0,16字节电机名称字符串
 3,r,定子相电阻,MotorConfig,RW,float,1,0.1,ohm,0.001,10,FOC算法核心参数
 4,ld,d轴定子电感,MotorConfig,RW,float,1,0.0001,H,1e-05,0.01,

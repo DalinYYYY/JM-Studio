@@ -9,22 +9,22 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1699,
-      "height": 1022,
-      "x": 603,
-      "y": 161
+      "width": 1529,
+      "height": 1006,
+      "x": 355,
+      "y": 132
     },
     "right_splitter": [
-      966,
+      950,
       0
     ],
     "main_splitter": [
-      330,
-      1343
+      344,
+      1159
     ],
     "log_splitter_sizes": [
-      712,
-      242
+      341,
+      127
     ],
     "layout_edit": true,
     "telemetry": {
@@ -54,7 +54,7 @@
       "motor_param": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/motor_param.csv"
     },
     "plot": {
-      "window_points": 500,
+      "window_points": 5000,
       "follow": true,
       "auto_y": true,
       "current_visibility": {
@@ -133,7 +133,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 503,
+        "5": 334,
         "6": 72,
         "7": 72
       }
@@ -167,7 +167,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 503,
+          "5": 334,
           "6": 72,
           "7": 72
         }

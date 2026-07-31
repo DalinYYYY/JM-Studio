@@ -144,7 +144,7 @@ typedef struct __ALIGNED_4 {
 typedef struct __ALIGNED_4 {
     float device_zero;           // 机械零点位置 (rad)
     uint32_t device_time;        // 生产日期 YYYYMMDD
-    uint32_t can_id;             // 11位标准ID
+    uint32_t can_id;             // 节点ID 1~127, 0保留为广播
     uint32_t can_baudrate;       // (bps)
     float can_timeout_s;         // 0=禁用超时 (s)
     uint32_t can_fd_enable;      // 0:传统CAN 1:CAN FD

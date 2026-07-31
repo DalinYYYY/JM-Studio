@@ -20,6 +20,8 @@ class ConnectionPanel(QGroupBox):
     disconnect_requested = pyqtSignal()
     bitrate_changed = pyqtSignal(int)                   # P2-4: CAN 比特率热切换
     listen_only_changed = pyqtSignal(bool)              # P2-1: 监听模式
+    scan_can_requested = pyqtSignal()
+    set_can_id_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__("连接", parent)
@@ -89,10 +91,10 @@ class ConnectionPanel(QGroupBox):
         self._combo_can_bitrate.currentTextChanged.connect(self._on_bitrate_changed)
         self._layout.addWidget(self._combo_can_bitrate, 4, 1, 1, 2)
 
-        self._lbl_motor_id = QLabel("电机 ID:")
+        self._lbl_motor_id = QLabel("节点 ID:")
         self._layout.addWidget(self._lbl_motor_id, 5, 0)
         self._spin_can_motor_id = QSpinBox()
-        self._spin_can_motor_id.setRange(0, 255)
+        self._spin_can_motor_id.setRange(1, 127)
         self._spin_can_motor_id.setValue(1)
         self._layout.addWidget(self._spin_can_motor_id, 5, 1)
 
@@ -102,13 +104,24 @@ class ConnectionPanel(QGroupBox):
         self._chk_listen_only.toggled.connect(self.listen_only_changed.emit)
         self._layout.addWidget(self._chk_listen_only, 5, 2)
 
-        # ---- 连接按钮 (第 6 行) ----
+        # ---- CAN 节点管理 (第 6 行) ----
+        self._btn_can_scan = QPushButton("扫描节点")
+        self._btn_can_scan.clicked.connect(self.scan_can_requested.emit)
+        self._btn_can_scan.setEnabled(False)
+        self._layout.addWidget(self._btn_can_scan, 6, 0, 1, 2)
+
+        self._btn_set_can_id = QPushButton("设置 ID")
+        self._btn_set_can_id.clicked.connect(self.set_can_id_requested.emit)
+        self._btn_set_can_id.setEnabled(False)
+        self._layout.addWidget(self._btn_set_can_id, 6, 2)
+
+        # ---- 连接按钮 (第 7 行) ----
         self._btn_connect = QPushButton("连接")
         self._btn_connect.setFixedHeight(26)
         self._btn_connect.setStyleSheet(
             "background-color: #4CAF50; color: white; font-weight: bold;")
         self._btn_connect.clicked.connect(self._on_toggle)
-        self._layout.addWidget(self._btn_connect, 6, 0, 1, 3)
+        self._layout.addWidget(self._btn_connect, 7, 0, 1, 3)
 
         # 默认串口模式: 隐藏 CAN 区
         self._set_can_visible(False)
@@ -117,9 +130,9 @@ class ConnectionPanel(QGroupBox):
         """在连接按钮右侧放置一个工具按钮。"""
         self._layout.removeWidget(self._btn_connect)
         self._layout.addWidget(
-            self._btn_connect, 7, 0, 1, 2, Qt.AlignmentFlag.AlignVCenter)
+            self._btn_connect, 8, 0, 1, 2, Qt.AlignmentFlag.AlignVCenter)
         widget.setFixedHeight(self._btn_connect.height())
-        self._layout.addWidget(widget, 7, 2, Qt.AlignmentFlag.AlignVCenter)
+        self._layout.addWidget(widget, 8, 2, Qt.AlignmentFlag.AlignVCenter)
 
     # ---------------- CAN 可用性探测 ----------------
     def _detect_can_support(self):
@@ -156,7 +169,8 @@ class ConnectionPanel(QGroupBox):
         for w in (self._lbl_can_ch, self._combo_can_channel, self._btn_can_refresh,
                   self._lbl_can_bitrate, self._combo_can_bitrate,
                   self._lbl_motor_id, self._spin_can_motor_id,
-                  self._chk_listen_only):
+                  self._chk_listen_only, self._btn_can_scan,
+                  self._btn_set_can_id):
             w.setVisible(visible)
 
     # ---------------- 设备列表刷新 ----------------
@@ -227,6 +241,9 @@ class ConnectionPanel(QGroupBox):
         self._btn_can_refresh.setEnabled(not connected)
         # P2-4: 比特率下拉保持可用(允许热切换), 仅禁用通道/电机ID
         self._spin_can_motor_id.setEnabled(not connected)
+        is_can = self._combo_transport.currentData() == "can"
+        self._btn_can_scan.setEnabled(connected and is_can)
+        self._btn_set_can_id.setEnabled(connected and is_can)
         if connected:
             self._btn_connect.setText("断开")
             self._btn_connect.setStyleSheet(
@@ -266,6 +283,11 @@ class ConnectionPanel(QGroupBox):
 
     def set_can_motor_id(self, v: int):
         self._spin_can_motor_id.setValue(int(v))
+
+    def set_can_scan_active(self, active: bool):
+        self._btn_can_scan.setText("扫描中..." if active else "扫描节点")
+        self._btn_can_scan.setEnabled(self._connected and not active)
+        self._btn_set_can_id.setEnabled(self._connected and not active)
 
     def get_can_channel_name(self) -> str:
         return self._combo_can_channel.currentData() or ""

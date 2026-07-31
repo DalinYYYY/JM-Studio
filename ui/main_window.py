@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QGroupBox, QGridLayout, QPushButton, QMessageBox, QLabel, QSplitter,
     QScrollArea, QLayout, QFrame, QDialog, QDialogButtonBox, QFormLayout,
-    QSpinBox, QApplication, QComboBox, QFileDialog,
+    QSpinBox, QApplication, QComboBox, QFileDialog, QInputDialog,
 )
 from PyQt6.QtCore import Qt, QTimer
 
@@ -48,6 +48,13 @@ from ui.preset_edit_dialog import PresetEditDialog
 from ui.preset_manage_dialog import PresetManageDialog
 
 
+def format_version(value: int) -> str:
+    """将协议 u32 版本号格式化为 major.minor.patch.build。"""
+    value = int(value) & 0xFFFFFFFF
+    return ".".join(str((value >> shift) & 0xFF)
+                    for shift in (24, 16, 8, 0))
+
+
 class MainWindow(QMainWindow):
     """关节电机上位机主窗口"""
 
@@ -78,8 +85,6 @@ class MainWindow(QMainWindow):
         self._stats_period = 500   # ms
         self._last_tx_bytes = 0
         self._last_rx_bytes = 0
-        # P1-3: CAN 总线占用率估算(本次周期增量帧数)
-        self._last_total_frames = 0
 
         # 高频遥测进入 UI 前先做有界缓存, 显示/绘图按固定频率刷新。
         self._display_period_ms = 50
@@ -112,6 +117,16 @@ class MainWindow(QMainWindow):
         self._reconnect_max_attempts = 10  # 最多重试 10 次 (~20s), 超过则放弃
         self._user_disconnected = False    # True=用户主动断开, 不自动重连
         self._last_connect_params: dict | None = None  # 上次成功连接参数
+
+        # CAN 节点扫描与地址修改状态
+        self._can_scan_timer = QTimer(self)
+        self._can_scan_timer.setInterval(10)
+        self._can_scan_timer.timeout.connect(self._probe_next_can_node)
+        self._can_scan_active = False
+        self._can_scan_next_id = 1
+        self._can_scan_results: dict[int, tuple[int, int, bytes, int]] = {}
+        self._pending_can_id: int | None = None
+        self._verify_can_id: int | None = None
 
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setMinimumSize(1200, 800)
@@ -714,13 +729,11 @@ class MainWindow(QMainWindow):
         self._sb_frames.setText(f"帧 TX:{tp.tx_frames} RX:{tp.rx_frames}")
         # P1-3: CAN 模式下估算总线占用率; 串口模式清空 BUS/LOAD 标签
         if tp.name == "can":
-            total_frames = tp.tx_frames + tp.rx_frames
-            delta_frames = total_frames - self._last_total_frames
-            self._last_total_frames = total_frames
-            # 每帧约 47(SOF+仲裁+控制+CRC+ACK+EOF) + 8*DLC + 15(ITF) bits; DLC 平均按 8
-            est_bits = delta_frames * (47 + 8 * 8 + 15)
+            # 取样本周期内总线所有帧(RX+TX, 含发给其他节点的帧)累计位长并清零
+            # 位长含帧头+位填充+帧间隔, 与 PCAN-View 等工具口径对齐
+            bus_bits = tp.get_and_reset_bus_load_bits()
             bitrate = getattr(tp, 'bitrate', 1000000) or 1000000
-            load_pct = est_bits / (bitrate * dt) * 100 if bitrate > 0 else 0.0
+            load_pct = bus_bits / (bitrate * dt) * 100 if bitrate > 0 else 0.0
             self._sb_load.setText(f"LOAD: {load_pct:.1f}%")
             color = ("#E53935" if load_pct > 70
                      else "#F9A825" if load_pct > 40
@@ -730,7 +743,6 @@ class MainWindow(QMainWindow):
         else:
             self._sb_load.setText("")
             self._sb_bus_state.setText("")
-            self._last_total_frames = 0
 
     def _on_bus_state_changed(self, state: str, tec: int, rec: int):
         """P1-1/P1-2: CAN 总线状态变化 → 状态栏 BUS 标签着色显示。
@@ -752,12 +764,37 @@ class MainWindow(QMainWindow):
         btn_info.clicked.connect(lambda: self._client.query_dev_info())
         btn_name = QPushButton("读设备名称")
         btn_name.clicked.connect(lambda: self._client.query_dev_name())
-        btn_hb = QPushButton("心跳")
-        btn_hb.clicked.connect(lambda: self._client.heartbeat())
+        # 心跳: checkable, 按下后周期发送(100ms), 再按停止; 断开连接时自动停止
+        self._btn_hb = QPushButton("心跳")
+        self._btn_hb.setCheckable(True)
+        self._btn_hb.setToolTip("点击开始周期发送心跳(10Hz), 再次点击停止")
+        self._btn_hb.toggled.connect(self._on_hb_toggled)
+        self._hb_timer = QTimer(self)
+        self._hb_timer.setInterval(100)
+        self._hb_timer.timeout.connect(lambda: self._client.heartbeat())
         layout.addWidget(btn_info, 0, 0)
         layout.addWidget(btn_name, 0, 1)
-        layout.addWidget(btn_hb, 0, 2)
+        layout.addWidget(self._btn_hb, 0, 2)
         return grp
+
+    def _on_hb_toggled(self, on: bool):
+        """心跳按钮切换: 开启周期发送 / 停止。未连接时拒绝开启。
+
+        高亮(绿色)表示正在发送, 暗色(默认)表示已停止。
+        """
+        if on:
+            if not self._client.is_open():
+                self._btn_hb.setChecked(False)
+                return
+            self._client.heartbeat()       # 立即发一帧, 再启动周期
+            self._hb_timer.start()
+            self._btn_hb.setText("心跳●")
+            self._btn_hb.setStyleSheet(
+                "background-color: #4CAF50; color: white; font-weight: bold;")
+        else:
+            self._hb_timer.stop()
+            self._btn_hb.setText("心跳")
+            self._btn_hb.setStyleSheet("")   # 恢复默认暗色样式
 
     def _create_menu_config_group(self) -> QGroupBox:
         grp = QGroupBox("菜单配置")
@@ -939,6 +976,8 @@ class MainWindow(QMainWindow):
         c.nack_received.connect(self._on_nack)
         c.calib_status_received.connect(self._on_calib_status)
         c.dev_info_received.connect(self._on_dev_info)
+        c.can_id_set_result.connect(self._on_can_id_set_result)
+        c.can_node_discovered.connect(self._on_can_node_discovered)
         c.dev_name_received.connect(self._on_dev_name)
         c.param_read_result.connect(self._on_param_result)
         c.motor_info_read_result.connect(self._on_param_result)
@@ -954,6 +993,8 @@ class MainWindow(QMainWindow):
         self._conn_panel.connect_requested.connect(self._on_connect)
         self._conn_panel.connect_can_requested.connect(self._on_connect_can)
         self._conn_panel.disconnect_requested.connect(self._on_disconnect)
+        self._conn_panel.scan_can_requested.connect(self._start_can_scan)
+        self._conn_panel.set_can_id_requested.connect(self._request_set_can_id)
         self._plot_panel.debug_window_toggled.connect(self._on_debug_window_toggled)
         self._control_panel.command.connect(self._on_control_command)
         self._motion_panel.send_command.connect(self._on_motion_command)
@@ -1135,6 +1176,109 @@ class MainWindow(QMainWindow):
             mode = "开启" if enabled else "关闭"
             self.statusBar().showMessage(f"CAN 监听模式已{mode}", 2000)
 
+    def _start_can_scan(self):
+        """按 1~127 单播 READ_DEV_INFO，避免广播发现导致多节点同时应答。"""
+        if self._can_scan_active:
+            return
+        if not self._client.begin_can_scan():
+            QMessageBox.information(self, "节点扫描", "请先连接 CAN 总线")
+            return
+        self._can_scan_active = True
+        self._can_scan_next_id = 1
+        self._can_scan_results.clear()
+        self._conn_panel.set_can_scan_active(True)
+        self._can_scan_timer.start()
+        self._log_panel.log("[CAN] 开始扫描节点 ID 1~127")
+
+    def _probe_next_can_node(self):
+        if not self._can_scan_active or not self._client.is_open():
+            self._cancel_can_scan()
+            return
+        if self._can_scan_next_id > 127:
+            self._can_scan_timer.stop()
+            QTimer.singleShot(300, self._finish_can_scan)
+            return
+        self._client.probe_can_node(self._can_scan_next_id)
+        self._can_scan_next_id += 1
+
+    def _cancel_can_scan(self):
+        self._can_scan_timer.stop()
+        self._client.end_can_scan()
+        self._can_scan_active = False
+        self._conn_panel.set_can_scan_active(False)
+
+    def _finish_can_scan(self):
+        if not self._can_scan_active:
+            return
+        self._cancel_can_scan()
+        ids = sorted(self._can_scan_results)
+        self._log_panel.log(f"[CAN] 节点扫描完成，发现 {len(ids)} 个节点: {ids}")
+        if not ids:
+            QMessageBox.information(self, "节点扫描", "未发现节点")
+            return
+
+        items = []
+        for node_id in ids:
+            hw, fw, uid, reported_id = self._can_scan_results[node_id]
+            id_text = f"ID {node_id:3d}" if reported_id == node_id else f"ID {node_id:3d} (设备报告 {reported_id})"
+            items.append(
+                f"{id_text}  HW {format_version(hw)}  FW {format_version(fw)}  "
+                f"UID {uid.hex().upper()}")
+        selected, ok = QInputDialog.getItem(
+            self, "节点扫描", "选择当前操作节点:", items, 0, False)
+        if not ok:
+            return
+        index = items.index(selected)
+        node_id = ids[index]
+        if self._client.select_can_node(node_id):
+            self._conn_panel.set_can_motor_id(node_id)
+            if self._last_connect_params and self._last_connect_params.get("type") == "can":
+                self._last_connect_params["motor_id"] = node_id
+            self.statusBar().showMessage(f"当前 CAN 节点已切换为 ID={node_id}", 3000)
+
+    def _on_can_node_discovered(self, node_id: int, hw: int, fw: int,
+                                uid: bytes, reported_id: int):
+        if self._can_scan_active:
+            self._can_scan_results[node_id] = (hw, fw, uid, reported_id)
+            return
+        if self._verify_can_id is not None:
+            expected = self._verify_can_id
+            self._verify_can_id = None
+            if node_id == expected and reported_id == expected:
+                self._log_panel.log(f"[CAN] 重启后节点 ID 校验通过: {node_id}")
+            else:
+                self._log_panel.log_warn(
+                    f"[CAN] 节点 ID 校验失败: 期望 {expected}, "
+                    f"仲裁ID {node_id}, 设备报告 {reported_id}")
+
+    def _request_set_can_id(self):
+        if self._client.transport.name != "can" or not self._client.is_open():
+            QMessageBox.information(self, "设置节点 ID", "请先连接目标 CAN 节点")
+            return
+        old_id = self._conn_panel.get_can_motor_id()
+        new_id, ok = QInputDialog.getInt(
+            self, "设置节点 ID", f"当前 ID: {old_id}\n新节点 ID:",
+            old_id, 1, 127, 1)
+        if not ok or new_id == old_id:
+            return
+        self._pending_can_id = new_id
+        if not self._client.cmd_set_can_id(new_id):
+            self._pending_can_id = None
+
+    def _on_can_id_set_result(self, new_id: int, restart_required: bool):
+        self._pending_can_id = None
+        self._verify_can_id = new_id
+        self._conn_panel.set_can_motor_id(new_id)
+        if self._last_connect_params and self._last_connect_params.get("type") == "can":
+            self._last_connect_params["motor_id"] = new_id
+        self._log_panel.log(
+            f"[CAN] 节点 ID={new_id} 已写入 Flash，"
+            f"{'重启后生效' if restart_required else '已生效'}")
+        QMessageBox.information(
+            self, "设置节点 ID",
+            f"节点 ID {new_id} 已保存到设备。\n"
+            f"{'请重启设备后使用新 ID 重连。' if restart_required else '新 ID 已生效。'}")
+
     # ==================== 连接管理 ====================
     def _on_connect(self, port: str, baud: int):
         # 选择虚拟数据引擎: 切换到 VirtualTransport, 无需真实串口
@@ -1190,6 +1334,8 @@ class MainWindow(QMainWindow):
             self._user_disconnected = False
             # CAN 连接真机: 虚拟电机模式开关必须关闭并禁用
             self._force_disable_virtual_mode()
+            if self._verify_can_id == motor_id:
+                QTimer.singleShot(150, self._client.query_dev_info)
 
     def _force_disable_virtual_mode(self):
         """真机连接或断开时: 强制关闭并禁用虚拟电机模式开关, 隐藏相关视图。"""
@@ -1206,6 +1352,8 @@ class MainWindow(QMainWindow):
         self._user_disconnected = True
         self._reconnect_timer.stop()
         self._reconnect_attempts = 0
+        if self._can_scan_active:
+            self._cancel_can_scan()
         # 断开前若仍在周期上报, 通知下位机停止, 并复位面板开关
         if self._client.is_open():
             self._client.set_telemetry(False, 0, 0)
@@ -1265,11 +1413,16 @@ class MainWindow(QMainWindow):
         self._link_connected = connected
         is_can = (self._client.transport.name == "can")
         if not connected:
+            if self._can_scan_active:
+                self._cancel_can_scan()
             self._telemetry_panel.set_running(False)
             # P2-5: 断开时隐藏 CAN 提示; P1-1/P1-3: 清空状态栏 CAN 标签
             self._feedback_panel.set_can_mode(False)
             self._sb_bus_state.setText("")
             self._sb_load.setText("")
+            # 断开时停止周期心跳, 避免向已关闭的链路发帧
+            if self._btn_hb.isChecked():
+                self._btn_hb.setChecked(False)
             # 自动重连: 非用户主动断开 + 有上次连接参数 → 启动重连定时器
             # 虚拟引擎不自动重连(本地仿真不会异常断开, 重连无意义)
             if (not self._user_disconnected
@@ -2084,6 +2237,8 @@ class MainWindow(QMainWindow):
             f"NACK {cmd_name(cmd)}(0x{cmd:02X}) err={cn}(0x{err:02X})")
         # 故障信息面板加载 NACK 错误信息
         self._fault_info_panel.show_nack_error(cmd, err)
+        if cmd == JmCmd.SET_CAN_ID:
+            self._pending_can_id = None
         # 标定面板: 0x90~0x98 NACK 转发(内部按 cmd 过滤)
         self._calib_panel.on_nack(cmd, err)
         # PID 面板: 0xA1 来源切换 / 0xA5 调试参数写入 失败 NACK 转发(内部按 cmd 过滤)
@@ -2188,10 +2343,13 @@ class MainWindow(QMainWindow):
 
     def _on_dev_info(self, hw: int, fw: int, uid: bytes):
         uid_hex = uid.hex(':').upper()
-        self._log_panel.log(f"[RX] DEV_INFO HW=0x{hw:08X} FW=0x{fw:08X} UID={uid_hex}")
+        self._log_panel.log(
+            f"[RX] DEV_INFO HW={format_version(hw)} "
+            f"FW={format_version(fw)} UID={uid_hex}")
         QMessageBox.information(
             self, "设备信息",
-            f"硬件版本: 0x{hw:08X}\n固件版本: 0x{fw:08X}\nUID: {uid_hex}")
+            f"硬件版本: {format_version(hw)}\n"
+            f"固件版本: {format_version(fw)}\nUID: {uid_hex}")
 
     def _on_dev_name(self, name: str):
         self._log_panel.log(f'[RX] DEV_NAME="{name}"')

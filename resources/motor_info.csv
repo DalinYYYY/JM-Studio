@@ -35,7 +35,7 @@ peak_current,峰值电流,MotorCalibParam,RW,float,6,0.1,200,A,0x0080,43,电机�
 max_speed,最大转速,MotorCalibParam,RW,float,150,10,1000,rad/s,0x0080,44,电机最大转速(运行期限幅) 切换电机型号时需同步修改
 device_zero,设备零度,DeviceParam,RW,float,0,-12.566,12.566,rad,0x0100,48,机械零点位置 [DeviceParam段48-63 本表占用48-55]
 device_time,设备生产日期,DeviceParam,RW,uint32_t,0,0,99999999,,0x0100,49,YYYYMMDD格式
-can_id,CAN节点ID,DeviceParam,RW,uint32_t,1,0,2047,,0x0100,50,11位标准ID
+can_id,CAN节点ID,DeviceParam,RW,uint32_t,1,1,127,,0x0100,50,设备节点地址 0保留为广播
 can_baudrate,CAN波特率,DeviceParam,RW,uint32_t,1000000,10000,8000000,bps,0x0100,51,
 can_timeout_s,CAN通信超时,DeviceParam,RW,float,0.5,0,60,s,0x0100,52,0=禁用超时
 can_fd_enable,CAN FD使能,DeviceParam,RW,uint32_t,0,0,1,,0x0100,53,0:传统CAN 1:CAN FD
