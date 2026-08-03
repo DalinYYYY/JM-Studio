@@ -48,6 +48,9 @@ class JmClient(QObject):
     dev_info_received = pyqtSignal(int, int, bytes)    # hw_ver, fw_ver, uid
     can_id_set_result = pyqtSignal(int, bool)          # new_id, restart_required
     can_node_discovered = pyqtSignal(int, int, int, bytes, int)  # source_id, hw, fw, uid, reported_id
+    can_di_discovered = pyqtSignal(int, bytes, int)    # source_id, di56, guard
+    can_di_set_result = pyqtSignal(int, bytes, int)    # source_id, di56, status
+    can_di_identify_result = pyqtSignal(int, bytes, int)  # source_id, di56, status
     dev_name_received = pyqtSignal(str)
     param_read_result = pyqtSignal(int, int, object)   # param_id, type, value_bytes
     motor_info_read_result = pyqtSignal(int, int, object)   # param_id, type, value_bytes(固定4B)
@@ -292,6 +295,30 @@ class JmClient(QObject):
             return False
         return self._tp.send_to(node_id, JmCmd.READ_DEV_INFO)
 
+    def discover_can_di(self, round_id: int, slot_exp: int,
+                        slot_ms: int, nonce: int) -> bool:
+        if self._tp.name != "can" or not self.is_open():
+            return False
+        payload = struct.pack('<BBBBI', 1, round_id & 0xFF,
+                              slot_exp & 0xFF, slot_ms & 0xFF,
+                              nonce & 0xFFFFFFFF)
+        return self._tp.send_to(0, JmCmd.CAN_DI_DISCOVER, payload)
+
+    def set_can_id_by_di(self, di56: bytes, new_id: int) -> bool:
+        if self._tp.name != "can" or not self.is_open():
+            return False
+        if len(di56) != 7 or not 1 <= int(new_id) <= 127:
+            return False
+        return self._tp.send_to(
+            0, JmCmd.CAN_DI_SET_ID, bytes(di56) + bytes([int(new_id)]))
+
+    def identify_can_device(self, di56: bytes, duration_100ms: int = 30) -> bool:
+        if self._tp.name != "can" or not self.is_open() or len(di56) != 7:
+            return False
+        duration = max(0, min(255, int(duration_100ms)))
+        return self._tp.send_to(
+            0, JmCmd.CAN_DI_IDENTIFY, bytes(di56) + bytes([duration]))
+
     def end_can_scan(self):
         if self._tp.name == "can":
             self._tp.set_discovery_mode(False)
@@ -478,6 +505,15 @@ class JmClient(QObject):
 
     def _on_addressed_frame(self, node_id: int, cmd: int, payload: bytes):
         """解析扫描响应，同时保留产生响应的节点地址。"""
+        if cmd == JmCmd.CAN_DI_DISCOVER and len(payload) == 8 and 1 <= node_id <= 127:
+            self.can_di_discovered.emit(node_id, bytes(payload[:7]), payload[7])
+            return
+        if cmd == JmCmd.CAN_DI_SET_ID and len(payload) == 8 and 1 <= node_id <= 127:
+            self.can_di_set_result.emit(node_id, bytes(payload[:7]), payload[7])
+            return
+        if cmd == JmCmd.CAN_DI_IDENTIFY and len(payload) == 8 and 1 <= node_id <= 127:
+            self.can_di_identify_result.emit(node_id, bytes(payload[:7]), payload[7])
+            return
         if cmd != JmCmd.READ_DEV_INFO or len(payload) < 20 or not 1 <= node_id <= 127:
             return
         hw = codec.rd_u32(payload, 0)

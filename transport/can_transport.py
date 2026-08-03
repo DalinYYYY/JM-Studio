@@ -313,7 +313,7 @@ class CanTransport(Transport):
 
     def send_to(self, node_id: int, cmd: int, payload: bytes = b'') -> bool:
         """向指定节点发送协议帧, 目标地址在入队时固定。"""
-        if not self.is_open() or not 1 <= int(node_id) <= 127:
+        if not self.is_open() or not 0 <= int(node_id) <= 127:
             return False
         try:
             self._tx_queue.put_nowait((cmd, payload, int(node_id)))
@@ -686,7 +686,10 @@ class CanTransport(Transport):
         # 地址过滤: 正常模式仅接收当前节点/广播; 发现模式额外接收各节点设备信息。
         rx_motor_id = can_get_motor_id(can_id)
         discovery_reply = (self._discovery_mode
-                           and cmd == JmCmd.READ_DEV_INFO
+                           and cmd in (JmCmd.READ_DEV_INFO,
+                                       JmCmd.CAN_DI_DISCOVER,
+                                       JmCmd.CAN_DI_SET_ID,
+                                       JmCmd.CAN_DI_IDENTIFY)
                            and 1 <= rx_motor_id <= 127)
         if rx_motor_id != 0 and rx_motor_id != self._motor_id and not discovery_reply:
             return
@@ -723,7 +726,13 @@ class CanTransport(Transport):
         node_id = can_get_motor_id(can_id)
         self.addressed_frame_received.emit(node_id, int(cmd), bytes(payload))
         is_current_target = node_id == 0 or node_id == self._motor_id
-        if is_current_target and not (self._discovery_mode and cmd == JmCmd.READ_DEV_INFO):
+        commissioning_cmd = cmd in (JmCmd.CAN_DI_DISCOVER,
+                                    JmCmd.CAN_DI_SET_ID,
+                                    JmCmd.CAN_DI_IDENTIFY)
+        # Commissioning responses have their own addressed signals. A normal
+        # READ_DEV_INFO for the selected node must remain usable while the
+        # non-modal device manager keeps discovery mode enabled.
+        if is_current_target and not commissioning_cmd:
             self.frame_received.emit(int(cmd), bytes(payload))
 
     def _handle_multi_frame(self, can_id: int, cmd: int, data: bytes) -> bool:
@@ -860,7 +869,7 @@ class CanTransport(Transport):
         self._listen_only = enabled
 
     def set_discovery_mode(self, enabled: bool):
-        """允许/禁止接收任意节点的 READ_DEV_INFO 扫描响应。"""
+        """允许/禁止接收任意节点的设备发现和CAN-DI响应。"""
         self._discovery_mode = bool(enabled)
 
     def set_motor_id(self, node_id: int) -> bool:

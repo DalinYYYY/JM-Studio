@@ -168,6 +168,9 @@ class JmCmd(IntEnum):
     SET_BAUDRATE = 0xF1
     BROADCAST_SYNC = 0xF2
     SET_FD_MODE = 0xF3
+    CAN_DI_DISCOVER = 0xF4
+    CAN_DI_SET_ID = 0xF5
+    CAN_DI_IDENTIFY = 0xF6
     NACK = 0xFE
 
 
