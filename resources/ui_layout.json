@@ -9,18 +9,18 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1529,
-      "height": 1006,
-      "x": 355,
-      "y": 132
+      "width": 1636,
+      "height": 1016,
+      "x": 565,
+      "y": 205
     },
     "right_splitter": [
-      950,
+      960,
       0
     ],
     "main_splitter": [
-      344,
-      1159
+      350,
+      1260
     ],
     "log_splitter_sizes": [
       341,
@@ -29,7 +29,7 @@
     "layout_edit": true,
     "telemetry": {
       "mask": 383,
-      "period_ms": 5
+      "period_ms": 2
     },
     "feedback_poll": {
       "enabled": false,
@@ -97,7 +97,7 @@
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 458,
+        "5": 375,
         "6": 72,
         "7": 72
       }
@@ -109,7 +109,7 @@
         "2": 120,
         "3": 200,
         "4": 125,
-        "5": 426,
+        "5": 349,
         "6": 72,
         "7": 72
       }
@@ -183,7 +183,7 @@
     },
     "fault_info": {
       "disable_mask": 0,
-      "current_tab": 2
+      "current_tab": 0
     }
   },
   "theme": "dark",

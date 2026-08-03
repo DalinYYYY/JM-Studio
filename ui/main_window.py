@@ -6,6 +6,7 @@
 
 import time
 import json
+import secrets
 from collections import deque
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from ui.panels.twin_param_panel import TwinParamPanel
 from ui.panels.fault_info_panel import FaultInfoPanel
 from ui.panels.debug_plot_window import DebugPlotWindow
 from ui.csv_load_dialog import CsvLoadDialog
+from ui.can_device_manager import CanDeviceManagerDialog
 from ui.theme import theme
 from ui import feature_flags
 from ui import layout_store
@@ -120,11 +122,21 @@ class MainWindow(QMainWindow):
 
         # CAN 节点扫描与地址修改状态
         self._can_scan_timer = QTimer(self)
-        self._can_scan_timer.setInterval(10)
-        self._can_scan_timer.timeout.connect(self._probe_next_can_node)
+        self._can_scan_timer.setSingleShot(True)
+        self._can_scan_timer.timeout.connect(self._advance_can_di_scan)
         self._can_scan_active = False
-        self._can_scan_next_id = 1
-        self._can_scan_results: dict[int, tuple[int, int, bytes, int]] = {}
+        self._can_scan_round = 0
+        self._can_scan_current_round = 0
+        self._can_scan_total_rounds = 3
+        self._can_scan_slot_exp = 8
+        self._can_scan_slot_ms = 2
+        self._can_scan_results: dict[bytes, dict] = {}
+        self._can_device_dialog: CanDeviceManagerDialog | None = None
+        self._can_commissioning_required = False
+        self._can_set_queue = deque()
+        self._can_set_pending_key: bytes | None = None
+        self._can_set_pending_new_id: int | None = None
+        self._can_set_generation = 0
         self._pending_can_id: int | None = None
         self._verify_can_id: int | None = None
 
@@ -978,6 +990,9 @@ class MainWindow(QMainWindow):
         c.dev_info_received.connect(self._on_dev_info)
         c.can_id_set_result.connect(self._on_can_id_set_result)
         c.can_node_discovered.connect(self._on_can_node_discovered)
+        c.can_di_discovered.connect(self._on_can_di_discovered)
+        c.can_di_set_result.connect(self._on_can_di_set_result)
+        c.can_di_identify_result.connect(self._on_can_di_identify_result)
         c.dev_name_received.connect(self._on_dev_name)
         c.param_read_result.connect(self._on_param_result)
         c.motor_info_read_result.connect(self._on_param_result)
@@ -1177,69 +1192,284 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"CAN 监听模式已{mode}", 2000)
 
     def _start_can_scan(self):
-        """按 1~127 单播 READ_DEV_INFO，避免广播发现导致多节点同时应答。"""
+        """通过CAN-DI广播执行多轮分时扫描。"""
         if self._can_scan_active:
+            return
+        if self._can_set_pending_key is not None:
+            QMessageBox.information(self, "CAN-DI扫描", "设备正在切换ID，请等待确认完成")
             return
         if not self._client.begin_can_scan():
             QMessageBox.information(self, "节点扫描", "请先连接 CAN 总线")
             return
+        self._can_commissioning_required = True
+        self._show_can_device_dialog()
         self._can_scan_active = True
-        self._can_scan_next_id = 1
+        self._can_scan_round = 0
+        self._can_scan_current_round = 0
         self._can_scan_results.clear()
         self._conn_panel.set_can_scan_active(True)
-        self._can_scan_timer.start()
-        self._log_panel.log("[CAN] 开始扫描节点 ID 1~127")
+        self._can_device_dialog.set_scan_active(True)
+        self._refresh_can_device_dialog()
+        self._log_panel.log("[CAN-DI] 开始3轮广播扫描")
+        self._send_can_di_round()
 
-    def _probe_next_can_node(self):
+    def _send_can_di_round(self):
         if not self._can_scan_active or not self._client.is_open():
             self._cancel_can_scan()
             return
-        if self._can_scan_next_id > 127:
-            self._can_scan_timer.stop()
-            QTimer.singleShot(300, self._finish_can_scan)
+        if self._can_scan_round >= self._can_scan_total_rounds:
+            self._finish_can_scan()
             return
-        self._client.probe_can_node(self._can_scan_next_id)
-        self._can_scan_next_id += 1
+        self._can_scan_current_round = (self._can_scan_round + 1) & 0xFF
+        nonce = secrets.randbits(32)
+        if not self._client.discover_can_di(
+                self._can_scan_current_round, self._can_scan_slot_exp,
+                self._can_scan_slot_ms, nonce):
+            self._cancel_can_scan()
+            return
+        self._can_scan_round += 1
+        window_ms = (1 << self._can_scan_slot_exp) * self._can_scan_slot_ms + 50
+        self._can_scan_timer.start(window_ms)
+        self._log_panel.log(
+            f"[CAN-DI] 扫描轮次 {self._can_scan_round}/{self._can_scan_total_rounds}")
+
+    def _advance_can_di_scan(self):
+        self._send_can_di_round()
 
     def _cancel_can_scan(self):
         self._can_scan_timer.stop()
-        self._client.end_can_scan()
         self._can_scan_active = False
         self._conn_panel.set_can_scan_active(False)
+        if self._can_device_dialog is not None:
+            self._can_device_dialog.set_scan_active(False)
 
     def _finish_can_scan(self):
         if not self._can_scan_active:
             return
         self._cancel_can_scan()
-        ids = sorted(self._can_scan_results)
-        self._log_panel.log(f"[CAN] 节点扫描完成，发现 {len(ids)} 个节点: {ids}")
+        self._refresh_can_device_dialog()
+        ids = sorted(rec["current_id"] for rec in self._can_scan_results.values())
+        self._log_panel.log(
+            f"[CAN-DI] 扫描完成，发现 {len(ids)} 台设备，节点ID={ids}")
         if not ids:
-            QMessageBox.information(self, "节点扫描", "未发现节点")
+            QMessageBox.information(
+                self, "CAN-DI扫描",
+                "未收到CAN-DI响应。设备固件可能尚不支持0xF4发现命令。")
             return
 
-        items = []
-        for node_id in ids:
-            hw, fw, uid, reported_id = self._can_scan_results[node_id]
-            id_text = f"ID {node_id:3d}" if reported_id == node_id else f"ID {node_id:3d} (设备报告 {reported_id})"
-            items.append(
-                f"{id_text}  HW {format_version(hw)}  FW {format_version(fw)}  "
-                f"UID {uid.hex().upper()}")
-        selected, ok = QInputDialog.getItem(
-            self, "节点扫描", "选择当前操作节点:", items, 0, False)
-        if not ok:
+        target_id = None
+        if self._last_connect_params and self._last_connect_params.get("type") == "can":
+            target_id = int(self._last_connect_params.get("motor_id", 0))
+        target_count = sum(1 for rec in self._can_scan_results.values()
+                           if rec["current_id"] == target_id)
+        if target_count == 1:
+            self._can_commissioning_required = True
+            self._log_panel.log(
+                f"[CAN-DI] 当前 ID={target_id} 唯一，请点击设备行的“选中”进入控制")
+        elif target_count > 1:
+            self._can_commissioning_required = True
+            self._log_panel.log_warn(
+                f"[CAN-DI] 当前 ID={target_id} 存在 {target_count} 台设备，"
+                "已暂停普通查询和控制，请先完成改址")
+        else:
+            self._can_commissioning_required = True
+            self._log_panel.log_warn(
+                "[CAN-DI] 当前目标未发现，请在设备管理窗口选择一个唯一 ID")
+
+    def _show_can_device_dialog(self):
+        if self._can_device_dialog is None:
+            dlg = CanDeviceManagerDialog(self)
+            dlg.scan_requested.connect(self._start_can_scan)
+            dlg.identify_requested.connect(self._on_can_di_identify_requested)
+            dlg.set_id_requested.connect(self._on_can_di_set_requested)
+            dlg.batch_set_requested.connect(self._on_can_di_batch_requested)
+            dlg.select_requested.connect(self._select_can_di_node)
+            dlg.session_closed.connect(self._on_can_di_session_closed)
+            self._can_device_dialog = dlg
+        self._can_device_dialog.show()
+        self._can_device_dialog.raise_()
+        self._can_device_dialog.activateWindow()
+
+    def _refresh_can_device_dialog(self):
+        if self._can_device_dialog is None:
             return
-        index = items.index(selected)
-        node_id = ids[index]
+        records = sorted(self._can_scan_results.values(),
+                         key=lambda rec: (rec["current_id"], rec["key"]))
+        self._can_device_dialog.set_records(records, self._can_scan_total_rounds)
+
+    def _on_can_di_discovered(self, node_id: int, di56: bytes, guard: int):
+        if not self._can_scan_active:
+            return
+        key = bytes(di56) + bytes([guard & 0xFF])
+        rec = self._can_scan_results.get(key)
+        if rec is None:
+            rec = {
+                "key": key, "di56": bytes(di56), "guard": guard & 0xFF,
+                "current_id": node_id, "seen_rounds": set(),
+                "desired_id": None, "state": "在线",
+            }
+            self._can_scan_results[key] = rec
+        rec["current_id"] = node_id
+        rec["seen_rounds"].add(self._can_scan_current_round)
+        if rec.get("state") not in ("写入中", "切换中"):
+            rec["state"] = "在线"
+        self._refresh_can_device_dialog()
+
+    def _record_for_di(self, di56: bytes):
+        matches = [rec for rec in self._can_scan_results.values()
+                   if rec["di56"] == bytes(di56)]
+        return matches[0] if len(matches) == 1 else None
+
+    def _validate_can_di_changes(self, changes: list[tuple[bytes, int]]) -> list:
+        occupied = {rec["current_id"] for rec in self._can_scan_results.values()}
+        targets = set()
+        queue_items = []
+        for di56, new_id in changes:
+            rec = self._record_for_di(di56)
+            if rec is None:
+                QMessageBox.warning(self, "设置CAN ID", "CAN-DI不存在或发生压缩标识冲突")
+                return []
+            if new_id == rec["current_id"]:
+                continue
+            if new_id in occupied or new_id in targets:
+                QMessageBox.warning(self, "设置CAN ID", f"目标 ID {new_id} 已被占用")
+                return []
+            targets.add(new_id)
+            queue_items.append((rec["key"], int(new_id)))
+        return queue_items
+
+    def _on_can_di_set_requested(self, di56: bytes, new_id: int):
+        items = self._validate_can_di_changes([(bytes(di56), int(new_id))])
+        if items:
+            self._start_can_di_set_queue(items)
+
+    def _on_can_di_batch_requested(self, changes: list):
+        items = self._validate_can_di_changes(
+            [(bytes(di), int(new_id)) for di, new_id in changes])
+        if items:
+            self._start_can_di_set_queue(items)
+
+    def _start_can_di_set_queue(self, items: list):
+        if self._can_set_pending_key is not None:
+            QMessageBox.information(self, "设置CAN ID", "已有设备正在切换，请等待完成")
+            return
+        self._can_set_queue = deque(items)
+        self._process_next_can_di_set()
+
+    def _process_next_can_di_set(self):
+        if not self._can_set_queue:
+            self._can_set_pending_key = None
+            self._can_set_pending_new_id = None
+            self._log_panel.log("[CAN-DI] 顺序设置完成，开始重新扫描验证")
+            QTimer.singleShot(100, self._start_can_scan)
+            return
+        key, new_id = self._can_set_queue.popleft()
+        rec = self._can_scan_results.get(key)
+        if rec is None:
+            self._process_next_can_di_set()
+            return
+        self._can_set_pending_key = key
+        self._can_set_pending_new_id = new_id
+        self._can_set_generation += 1
+        generation = self._can_set_generation
+        rec["desired_id"] = new_id
+        rec["state"] = "写入中"
+        self._refresh_can_device_dialog()
+        if not self._client.set_can_id_by_di(rec["di56"], new_id):
+            rec["state"] = "发送失败"
+            self._can_set_pending_key = None
+            self._can_set_pending_new_id = None
+            self._can_set_queue.clear()
+            self._refresh_can_device_dialog()
+            return
+        QTimer.singleShot(1500, lambda g=generation: self._on_can_di_set_timeout(g))
+
+    def _on_can_di_set_result(self, node_id: int, di56: bytes, status: int):
+        rec = self._record_for_di(di56)
+        if rec is None or rec["key"] != self._can_set_pending_key:
+            return
+        if status != 0:
+            rec["state"] = f"失败 0x{status:02X}"
+            self._log_panel.log_warn(
+                f"[CAN-DI] {bytes(di56).hex().upper()} 设置失败: {err_name(status)}")
+            self._can_set_queue.clear()
+            self._can_set_pending_key = None
+            self._can_set_pending_new_id = None
+            self._refresh_can_device_dialog()
+            return
+
+        if node_id != self._can_set_pending_new_id:
+            rec["state"] = "切换中"
+            self._refresh_can_device_dialog()
+            return
+
+        rec["current_id"] = node_id
+        rec["desired_id"] = node_id
+        rec["state"] = "验证成功"
+        self._log_panel.log(
+            f"[CAN-DI] {bytes(di56).hex().upper()} 已切换到 ID={node_id}")
+        self._can_set_pending_key = None
+        self._can_set_pending_new_id = None
+        self._refresh_can_device_dialog()
+        QTimer.singleShot(50, self._process_next_can_di_set)
+
+    def _on_can_di_set_timeout(self, generation: int):
+        if generation != self._can_set_generation or self._can_set_pending_key is None:
+            return
+        rec = self._can_scan_results.get(self._can_set_pending_key)
+        if rec is not None:
+            rec["state"] = "确认超时"
+        self._can_set_queue.clear()
+        self._can_set_pending_key = None
+        self._can_set_pending_new_id = None
+        self._refresh_can_device_dialog()
+        self._log_panel.log_warn("[CAN-DI] 新ID确认超时，请重新扫描确认设备实际地址")
+
+    def _on_can_di_identify_requested(self, di56: bytes, duration_100ms: int):
+        if not self._client.identify_can_device(di56, duration_100ms):
+            QMessageBox.warning(self, "识别设备", "识别命令发送失败")
+
+    def _on_can_di_identify_result(self, node_id: int, di56: bytes, status: int):
+        rec = self._record_for_di(di56)
+        if rec is not None:
+            rec["state"] = "正在指示" if status == 0 else f"识别失败 0x{status:02X}"
+            self._refresh_can_device_dialog()
+
+    def _select_can_di_node(self, node_id: int):
+        matching = [rec for rec in self._can_scan_results.values()
+                    if rec["current_id"] == int(node_id)]
+        if len(matching) != 1:
+            self._can_commissioning_required = True
+            QMessageBox.warning(
+                self, "选择CAN设备",
+                f"CAN ID={node_id} 不是唯一设备，不能进入普通控制。请先完成改址。")
+            return
         if self._client.select_can_node(node_id):
+            self._can_commissioning_required = False
             self._conn_panel.set_can_motor_id(node_id)
             if self._last_connect_params and self._last_connect_params.get("type") == "can":
                 self._last_connect_params["motor_id"] = node_id
             self.statusBar().showMessage(f"当前 CAN 节点已切换为 ID={node_id}", 3000)
+            self._log_panel.log(f"[CAN-DI] 已选中唯一设备 ID={node_id}，主窗口控制已启用")
+            if self._can_device_dialog is not None:
+                self._can_device_dialog.close()
+
+    def _on_can_di_session_closed(self):
+        if self._can_scan_active:
+            self._cancel_can_scan()
+        if self._can_set_pending_key is None:
+            self._client.end_can_scan()
+        if (self._client.transport.name == "can" and self._client.is_open()
+                and self._can_commissioning_required):
+            self._log_panel.log_warn("[CAN-DI] 未选中唯一设备，已断开CAN连接")
+            self.statusBar().showMessage("未选中唯一CAN设备，已断开CAN连接", 3000)
+            self._user_disconnected = True
+            self._reconnect_timer.stop()
+            self._client.close()
 
     def _on_can_node_discovered(self, node_id: int, hw: int, fw: int,
                                 uid: bytes, reported_id: int):
         if self._can_scan_active:
-            self._can_scan_results[node_id] = (hw, fw, uid, reported_id)
             return
         if self._verify_can_id is not None:
             expected = self._verify_can_id
@@ -1255,15 +1485,10 @@ class MainWindow(QMainWindow):
         if self._client.transport.name != "can" or not self._client.is_open():
             QMessageBox.information(self, "设置节点 ID", "请先连接目标 CAN 节点")
             return
-        old_id = self._conn_panel.get_can_motor_id()
-        new_id, ok = QInputDialog.getInt(
-            self, "设置节点 ID", f"当前 ID: {old_id}\n新节点 ID:",
-            old_id, 1, 127, 1)
-        if not ok or new_id == old_id:
-            return
-        self._pending_can_id = new_id
-        if not self._client.cmd_set_can_id(new_id):
-            self._pending_can_id = None
+        if self._can_scan_results:
+            self._show_can_device_dialog()
+        else:
+            self._start_can_scan()
 
     def _on_can_id_set_result(self, new_id: int, restart_required: bool):
         self._pending_can_id = None
@@ -1413,6 +1638,7 @@ class MainWindow(QMainWindow):
         self._link_connected = connected
         is_can = (self._client.transport.name == "can")
         if not connected:
+            self._can_commissioning_required = False
             if self._can_scan_active:
                 self._cancel_can_scan()
             self._telemetry_panel.set_running(False)
@@ -1441,11 +1667,16 @@ class MainWindow(QMainWindow):
                 self._log_panel.log("[重连] 自动重连成功")
             self._reconnect_attempts = 0
             self._user_disconnected = False
-            # 连接建立后主动查询三环 PID 来源 (0xA2), 回填面板徽章
-            try:
-                self._client.pid_source_get()
-            except Exception:
-                pass
+            # CAN总线上可能存在重复节点ID。必须先做CAN-DI发现，确认当前ID唯一后
+            # 才能发送普通查询；否则多个节点会把彼此的同CMD响应误当成新请求。
+            if is_can:
+                self._can_commissioning_required = True
+                QTimer.singleShot(50, self._start_can_scan)
+            else:
+                try:
+                    self._client.pid_source_get()
+                except Exception:
+                    pass
             # P0-7: CAN 模式看门狗策略 — 保守延长到 5s
             # (固件 CAN 侧是否回应用层 ACK 待联调确认; 串口维持 1s)
             self._cmd_watchdog.setInterval(5000 if is_can else 1000)
@@ -1522,6 +1753,12 @@ class MainWindow(QMainWindow):
         if not self._client.is_open():
             QMessageBox.warning(self, "提示", "请先连接串口")
             return False
+        if (self._client.transport.name == "can"
+                and self._can_commissioning_required):
+            QMessageBox.information(
+                self, "CAN设备未确认",
+                "请先在CAN设备管理窗口完成扫描，并选择一个无ID冲突的设备")
+            return False
         return True
 
     def _on_poll_state(self):
@@ -1533,6 +1770,9 @@ class MainWindow(QMainWindow):
         合并机制, 让 UI 拿到完整的反馈数据。
         """
         if not self._client.is_open():
+            return
+        if (self._client.transport.name == "can"
+                and self._can_commissioning_required):
             return
         self._client.query_state()
         self._client.query_dq_current()
