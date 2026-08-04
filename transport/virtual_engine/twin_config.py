@@ -33,22 +33,22 @@ class MotorInstance:
 
 @dataclass
 class MotorBase:
-    r: float = 0.1              # 定子相电阻 ohm
-    ld: float = 0.0001           # d轴电感 H
-    lq: float = 0.00012          # q轴电感 H
-    flux: float = 0.001          # 磁链 Wb
-    kt: float = 0.1              # 转矩常数 Nm/A
+    r: float = 3.6              # 定子相电阻 ohm
+    ld: float = 0.0048           # d轴电感 H
+    lq: float = 0.0048           # q轴电感 H
+    flux: float = 0.02           # 磁链 Wb
+    kt: float = 0.21             # 转矩常数 Nm/A
     pole_pairs: int = 7          # 极对数
-    rated_current: float = 5.0   # 额定电流 A
-    peak_current: float = 15.0   # 峰值电流 A
-    max_speed: float = 300.0     # 最大转速 rad/s
+    rated_current: float = 0.6   # 额定电流 A
+    peak_current: float = 3.7    # 峰值电流 A
+    max_speed: float = 200.0     # 最大转速 rad/s
     dead_time_ns: float = 500.0  # PWM死区 ns
-    rated_voltage: float = 48.0  # 额定电压 V
-    rated_speed_rpm: float = 3000.0
-    rated_torque: float = 2.0     # 额定转矩 Nm
-    peak_torque: float = 6.0      # 峰值转矩 Nm
+    rated_voltage: float = 24.0  # 额定电压 V
+    rated_speed_rpm: float = 1550.0
+    rated_torque: float = 0.2     # 额定转矩 Nm
+    peak_torque: float = 0.5      # 峰值转矩 Nm
     inertia: float = 1e-5         # 转子惯量 kg*m^2
-    ke: float = 0.01              # 反电动势常数 V/(rad/s)
+    ke: float = 0.14              # 反电动势常数 V/(rad/s)
     pwm_freq_hz: int = 20000      # PWM载波 Hz
     foc_freq_hz: int = 20000      # FOC频率 Hz
 
@@ -100,7 +100,7 @@ class CurrentLoop:
     decoupling_gain: float = 1.0
     deadtime_comp_v: float = 0.0       # V
     pwm_max_duty: float = 0.9
-    current_bandwidth_hz: float = 1000.0
+    current_bandwidth_hz: float = 500.0
     current_filter_alpha: float = 0.1
     d_feedforward_gain: float = 1.0
     q_feedforward_gain: float = 1.0

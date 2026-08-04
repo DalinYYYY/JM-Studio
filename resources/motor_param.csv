@@ -1,22 +1,22 @@
 id,param_name,description,group,access,data_type,array_size,default_value,unit,min_value,max_value,notes
 1,motor_id,电机实例ID,MotorInstance,RW,uint8_t,1,1,,0,127,多电机系统的唯一节点地址 0保留为广播
 2,motor_name,电机名称字符串,MotorInstance,RW,char,16,0,,0,0,16字节电机名称字符串
-3,r,定子相电阻,MotorConfig,RW,float,1,0.1,ohm,0.001,10,FOC算法核心参数
-4,ld,d轴定子电感,MotorConfig,RW,float,1,0.0001,H,1e-05,0.01,
-5,lq,q轴定子电感,MotorConfig,RW,float,1,0.00012,H,1e-05,0.01,
-6,flux,永磁体磁链,MotorConfig,RW,float,1,0.001,Wb,0.0001,0.1,
-7,kt,转矩常数,MotorConfig,RW,float,1,0.1,Nm/A,0.01,10,
+3,r,定子相电阻,MotorConfig,RW,float,1,3.6,ohm,0.001,10,FOC算法核心参数
+4,ld,d轴定子电感,MotorConfig,RW,float,1,0.0048,H,1e-05,0.01,
+5,lq,q轴定子电感,MotorConfig,RW,float,1,0.0048,H,1e-05,0.01,
+6,flux,永磁体磁链,MotorConfig,RW,float,1,0.02,Wb,0.0001,0.1,
+7,kt,转矩常数,MotorConfig,RW,float,1,0.21,Nm/A,0.01,10,
 8,pole_pairs,极对数,MotorConfig,RW,uint8_t,1,7,,1,64,
-9,rated_current,电机额定电流,MotorConfig,RW,float,1,5,A,0.1,100,
-10,peak_current,电机峰值电流,MotorConfig,RW,float,1,15,A,0.1,200,
-11,max_speed,电机最大转速,MotorConfig,RW,float,1,300,rad/s,10,1000,
+9,rated_current,电机额定电流,MotorConfig,RW,float,1,0.6,A,0.1,100,
+10,peak_current,电机峰值电流,MotorConfig,RW,float,1,3.7,A,0.1,200,
+11,max_speed,电机最大转速,MotorConfig,RW,float,1,200,rad/s,10,1000,
 12,dead_time_ns,PWM死区时间,MotorConfig,RW,float,1,500,ns,100,2000,
-13,rated_voltage,电机额定电压,MotorConfig,RW,float,1,48,V,12,100,额定直流母线电压
-14,rated_speed_rpm,电机额定转速,MotorConfig,RW,float,1,3000,rpm,100,20000,
-15,rated_torque,电机额定转矩,MotorConfig,RW,float,1,2,Nm,0.1,100,连续输出转矩
-16,peak_torque,电机峰值转矩,MotorConfig,RW,float,1,6,Nm,0.1,300,最大瞬时转矩
+13,rated_voltage,电机额定电压,MotorConfig,RW,float,1,24,V,12,100,额定直流母线电压
+14,rated_speed_rpm,电机额定转速,MotorConfig,RW,float,1,1550,rpm,100,20000,
+15,rated_torque,电机额定转矩,MotorConfig,RW,float,1,0.2,Nm,0.1,100,连续输出转矩
+16,peak_torque,电机峰值转矩,MotorConfig,RW,float,1,0.5,Nm,0.1,300,最大瞬时转矩
 17,inertia,转子转动惯量,MotorConfig,RW,float,1,1e-05,kg*m2,1e-07,0.01,电机转子转动惯量
-18,ke,反电动势常数,MotorConfig,RW,float,1,0.01,V/(rad/s),0.001,1,反电动势常数 ke = flux * 极对数
+18,ke,反电动势常数,MotorConfig,RW,float,1,0.14,V/(rad/s),0.001,1,反电动势常数 ke = flux * 极对数
 19,pwm_freq_hz,PWM载波频率,MotorConfig,RW,uint32_t,1,20000,Hz,5000,100000,PWM开关频率
 20,foc_freq_hz,FOC控制频率,MotorConfig,RW,uint32_t,1,20000,Hz,1000,100000,磁场定向控制执行频率
 21,gear_ratio,减速器减速比,GearboxConfig,RW,float,1,100,,1,1000,减速比 = 电机转速 / 输出转速
@@ -48,7 +48,7 @@ id,param_name,description,group,access,data_type,array_size,default_value,unit,m
 47,decoupling_gain,DQ交叉解耦增益,CurrentLoop,RW,float,1,1,,0,1,
 48,deadtime_comp_v,死区补偿电压,CurrentLoop,RW,float,1,0,V,0,5,
 49,pwm_max_duty,PWM最大占空比,CurrentLoop,RW,float,1,0.9,,0.5,0.95,
-50,current_bandwidth_hz,电流环带宽,CurrentLoop,RW,float,1,1000,Hz,100,5000,电流环闭环带宽
+50,current_bandwidth_hz,电流环带宽,CurrentLoop,RW,float,1,500,Hz,100,5000,电流环闭环带宽
 51,current_filter_alpha,电流采样滤波系数,CurrentLoop,RW,float,1,0.1,,0,1,电流采样低通滤波系数
 52,d_feedforward_gain,d轴前馈增益,CurrentLoop,RW,float,1,1,,0,2,d轴电压前馈补偿
 53,q_feedforward_gain,q轴前馈增益,CurrentLoop,RW,float,1,1,,0,2,q轴电压前馈补偿

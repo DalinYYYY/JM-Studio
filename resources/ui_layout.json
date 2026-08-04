@@ -28,8 +28,8 @@
     ],
     "layout_edit": true,
     "telemetry": {
-      "mask": 383,
-      "period_ms": 2
+      "mask": 511,
+      "period_ms": 50
     },
     "feedback_poll": {
       "enabled": false,
