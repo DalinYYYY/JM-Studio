@@ -199,7 +199,7 @@ class PidPanel(QGroupBox):
         self._cur_bw_spin = QDoubleSpinBox()
         self._cur_bw_spin.setRange(0.0, 10000.0)
         self._cur_bw_spin.setValue(0.0)
-        self._cur_bw_spin.setSpecialValueText("默认(1000)")
+        self._cur_bw_spin.setSpecialValueText("默认(电机配置)")
         bw_row.addWidget(self._cur_bw_spin)
         bw_row.addWidget(QLabel("速度环(Hz):"))
         self._vel_bw_spin = QDoubleSpinBox()
