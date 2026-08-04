@@ -28,8 +28,6 @@ DANGER_CMDS = {
     JmCmd.FACTORY_RESET: "恢复出厂设置",
     JmCmd.PARAM_SAVE: "参数保存到 Flash",
     JmCmd.PARAM_RESET: "参数重置",
-    JmCmd.MOTOR_INFO_WRITE: "电机配置写入",
-    JmCmd.MOTOR_INFO_WRITE_BULK: "电机配置批量写入",
     JmCmd.MOTOR_INFO_SAVE: "电机配置保存到 Flash",
     JmCmd.MOTOR_INFO_RESET: "电机配置恢复默认",
     JmCmd.MOTOR_INFO_RECALIB_RESET: "清除标定状态",
