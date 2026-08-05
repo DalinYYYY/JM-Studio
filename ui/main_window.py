@@ -140,6 +140,12 @@ class MainWindow(QMainWindow):
         self._pending_can_id: int | None = None
         self._verify_can_id: int | None = None
 
+        # PID 调试页运行态: 最近一次上位机下发目标值 + 临时遥测接管快照
+        self._pid_last_targets = {"id": None, "iq": None, "vel": None, "pos": None}
+        self._pid_telemetry_snapshot: dict | None = None
+        self._pid_telemetry_active = False
+        self._active_main_tab_widget = None
+
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setMinimumSize(1200, 800)
 
@@ -281,7 +287,7 @@ class MainWindow(QMainWindow):
             self._registry, title="PID 参数 (Flash)", source="motor_config",
             groups=("ControlParam",), show_save=True,
             save_text="保存PID参数到Flash", show_legend=False,
-            show_bulk_rw=True)
+            show_bulk_rw=False, show_import_export=True)
         self._twin_param_panel = TwinParamPanel()
         self._fault_info_panel = FaultInfoPanel()
         self._log_panel = LogPanel()
@@ -1039,6 +1045,8 @@ class MainWindow(QMainWindow):
             lambda ring, ptype, val: self._on_pid_param_set(ring, ptype, val))
         self._pid_panel.pid_param_get_requested.connect(
             lambda ring, ptype: self._on_pid_param_get(ring, ptype))
+        self._pid_panel.pid_tuning_mode_changed.connect(
+            self._on_pid_tuning_mode_changed)
         # PID 参数面板: 注入 PID Tab 内嵌, 复用 motor_config 通道(0xE6/0xE7/0xEA)
         self._pid_panel.attach_params_panel(self._pid_params_panel)
         self._pid_params_panel.read_param.connect(
@@ -1786,9 +1794,100 @@ class MainWindow(QMainWindow):
         if not self._ensure_open():
             return
         try:
-            self._client.send_command(cmd, values)
+            ok = self._client.send_command(cmd, values)
+            if ok:
+                self._track_pid_command_targets(cmd, values)
         except Exception as e:
             QMessageBox.critical(self, "错误", f"发送异常: {e}")
+
+    def _track_pid_command_targets(self, cmd: int, values: dict):
+        """记录最近一次运动指令中的 PID 相关目标值, 供 PID 页观测显示。"""
+        if not isinstance(values, dict):
+            return
+        aliases = {
+            "id": ("id_ref", "id", "id_weak"),
+            "iq": ("iq_ref", "iq"),
+            "vel": ("vel_ref", "vel", "vel_ff"),
+            "pos": ("pos_ref", "pos"),
+        }
+        changed = False
+        for target_key, names in aliases.items():
+            for name in names:
+                if name in values:
+                    try:
+                        self._pid_last_targets[target_key] = float(values[name])
+                    except (TypeError, ValueError):
+                        self._pid_last_targets[target_key] = values[name]
+                    changed = True
+                    break
+        if changed:
+            self._pid_panel.set_pid_targets(self._pid_last_targets)
+
+    def _pid_required_telemetry_mask(self) -> int:
+        """PID 调试页需要的遥测字段。当前所有模式都至少需要位置/速度、DQ 和状态。"""
+        return (jp.JmTlmBit.POS_VEL | jp.JmTlmBit.DQ |
+                jp.JmTlmBit.PHASE | jp.JmTlmBit.STATE |
+                jp.JmTlmBit.CURRENT_TARGET | jp.JmTlmBit.MOTION_TARGET)
+
+    def _pid_telemetry_period(self) -> int:
+        try:
+            base = int(self._pid_telemetry_snapshot.get("period_ms", 20)
+                       if self._pid_telemetry_snapshot else self._telemetry_panel.get_period())
+        except Exception:
+            base = 20
+        return max(1, min(base, 20))
+
+    def _activate_pid_telemetry(self):
+        """进入 PID 页时临时接管遥测配置, 退出后恢复用户原设置。"""
+        if not self._client.is_open():
+            return
+        if not self._pid_telemetry_active:
+            try:
+                self._pid_telemetry_snapshot = self._telemetry_panel.snapshot_config()
+            except Exception:
+                self._pid_telemetry_snapshot = {
+                    "enable": False,
+                    "mask": self._telemetry_panel.current_mask(),
+                    "period_ms": self._telemetry_panel.get_period(),
+                }
+            self._pid_telemetry_active = True
+        self._apply_pid_telemetry_for_mode()
+
+    def _apply_pid_telemetry_for_mode(self):
+        if not self._pid_telemetry_active or not self._client.is_open():
+            return
+        mask = int(self._pid_required_telemetry_mask())
+        period_ms = self._pid_telemetry_period()
+        self._telemetry_panel.apply_config(mask, period_ms, force=True)
+        self._telemetry_panel.set_running(True)
+        self._client.set_telemetry(True, mask, period_ms)
+        mode = self._pid_panel.current_tuning_mode()
+        self._log_panel.log(
+            f"[PID] 调试页接管遥测: mode={mode} mask=0x{mask:04X} 周期={period_ms}ms")
+
+    def _restore_pid_telemetry(self):
+        """离开 PID 页时恢复进入前的遥测配置。"""
+        if not self._pid_telemetry_active:
+            return
+        snap = self._pid_telemetry_snapshot or {"enable": False, "mask": 0, "period_ms": 20}
+        self._pid_telemetry_active = False
+        self._pid_telemetry_snapshot = None
+        enable = bool(snap.get("enable", False))
+        mask = int(snap.get("mask", 0))
+        period_ms = int(snap.get("period_ms", 20) or 20)
+        self._telemetry_panel.apply_config(mask, period_ms, force=True)
+        self._telemetry_panel.set_running(enable)
+        if self._client.is_open():
+            self._client.set_telemetry(enable, mask if enable else 0, period_ms if enable else 0)
+            if enable:
+                self._log_panel.log(
+                    f"[PID] 恢复进入前遥测: mask=0x{mask:04X} 周期={period_ms}ms")
+            else:
+                self._log_panel.log("[PID] 恢复进入前遥测: 停止")
+
+    def _on_pid_tuning_mode_changed(self, _mode: str):
+        if self._active_main_tab_widget is self._pid_panel:
+            self._apply_pid_telemetry_for_mode()
 
     def _on_main_tab_changed(self, index: int):
         """切到标定/PID Tab 且已连接时, 自动读一次参数。"""
@@ -1796,6 +1895,9 @@ class MainWindow(QMainWindow):
             w = self._tabs.widget(index)
         except Exception:
             return
+        if self._active_main_tab_widget is self._pid_panel and w is not self._pid_panel:
+            self._restore_pid_telemetry()
+        self._active_main_tab_widget = w
         if w is self._calib_panel:
             if not self._client.is_open():
                 return
@@ -1808,6 +1910,7 @@ class MainWindow(QMainWindow):
         if w is self._pid_panel:
             if not self._client.is_open():
                 return
+            self._activate_pid_telemetry()
             # 已连接: 触发 PID 参数面板批量读取 (ControlParam 段)
             try:
                 self._pid_params_panel.read_all()
@@ -1822,7 +1925,12 @@ class MainWindow(QMainWindow):
         # 强制补全 DQ|PHASE, 否则三相电流/DQ电流恒为0(与启动恢复路径一致)
         if enable:
             mask |= jp.JmTlmBit.DQ | jp.JmTlmBit.PHASE
-        self._client.set_telemetry(enable, mask, period_ms)
+            # UI 必须反映实际下发掩码，避免复选框状态与下位机订阅不一致。
+            self._telemetry_panel.apply_config(mask, period_ms, force=True)
+        sent = self._client.set_telemetry(enable, mask, period_ms)
+        if not sent:
+            self._telemetry_panel.set_running(False)
+            self._log_panel.log_warn("[遥测] SET_TELEMETRY 未发送成功")
         if enable:
             self._log_panel.log(
                 f"[TX] 遥控使能: mask=0x{mask:04X} 周期={period_ms}ms")
@@ -2421,6 +2529,8 @@ class MainWindow(QMainWindow):
             self._plot_panel.feed_feedback_batch(batch)
             last_fb = batch[-1]
             self._feedback_panel.update_feedback(last_fb)
+            self._pid_panel.update_pid_observation(
+                last_fb, targets=self._pid_last_targets)
             # 实时故障解码: 故障上升沿才记入历史
             self._fault_info_panel.update_fault_mask(
                 getattr(last_fb, 'fault_mask', 0) or 0)
@@ -2477,6 +2587,9 @@ class MainWindow(QMainWindow):
             f"NACK {cmd_name(cmd)}(0x{cmd:02X}) err={cn}(0x{err:02X})")
         # 故障信息面板加载 NACK 错误信息
         self._fault_info_panel.show_nack_error(cmd, err)
+        if cmd == JmCmd.SET_TELEMETRY:
+            self._telemetry_panel.set_running(False)
+            self._log_panel.log_warn("[遥测] 下位机拒绝 SET_TELEMETRY，已停止显示为运行中")
         if cmd == JmCmd.SET_CAN_ID:
             self._pending_can_id = None
         # 标定面板: 0x90~0x98 NACK 转发(内部按 cmd 过滤)

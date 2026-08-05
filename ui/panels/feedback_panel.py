@@ -676,9 +676,9 @@ class _MotorView(QWidget):
 
     def set_feedback(self, single_rad, omega, iq, enabled):
         # single_rad 已由 FeedbackPanel.update_feedback 做位置死区滤波, 这里直接接收
-        self._tgt_th = float(single_rad)
-        self._omega = float(omega)
-        self._iq = float(iq)
+        self._tgt_th = float(single_rad or 0.0)
+        self._omega = float(omega or 0.0)
+        self._iq = float(iq or 0.0)
         self._enabled = bool(enabled)
 
     def set_enabled(self, enabled: bool):

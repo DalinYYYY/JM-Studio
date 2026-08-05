@@ -253,9 +253,13 @@ class PlotPanel(QGroupBox):
         self._plot_states = {}
         self._buffers = {
             'pos': _SeriesBuffer(self.MAX_POINTS),
+            'pos_ref': _SeriesBuffer(self.MAX_POINTS),
             'vel': _SeriesBuffer(self.MAX_POINTS),
+            'vel_ref': _SeriesBuffer(self.MAX_POINTS),
             'id': _SeriesBuffer(self.MAX_POINTS),
+            'id_ref': _SeriesBuffer(self.MAX_POINTS),
             'iq': _SeriesBuffer(self.MAX_POINTS),
+            'iq_ref': _SeriesBuffer(self.MAX_POINTS),
             'ibus': _SeriesBuffer(self.MAX_POINTS),
             'ia': _SeriesBuffer(self.MAX_POINTS),
             'ib': _SeriesBuffer(self.MAX_POINTS),
@@ -264,10 +268,13 @@ class PlotPanel(QGroupBox):
         }
         self._plots = {}
         self._extra_buffers = {}
-        self._current_series_order = ('id', 'iq', 'ibus', 'ia', 'ib', 'ic')
+        self._current_series_order = (
+            'id', 'id_ref', 'iq', 'iq_ref', 'ibus', 'ia', 'ib', 'ic')
         self._current_series_labels = {
             'id': 'Id',
+            'id_ref': 'Id目标',
             'iq': 'Iq',
+            'iq_ref': 'Iq目标',
             'ibus': 'IBus',
             'ia': 'Ia',
             'ib': 'Ib',
@@ -376,20 +383,29 @@ class PlotPanel(QGroupBox):
 
     # 曲线名 -> 主题色键
     _PEN_KEY = {
-        'pos': 'plot_pos', 'vel': 'plot_vel', 'id': 'plot_id', 'iq': 'plot_iq',
+        'pos': 'plot_pos', 'pos_ref': 'plot_target',
+        'vel': 'plot_vel', 'vel_ref': 'plot_target',
+        'id': 'plot_id', 'id_ref': 'plot_target',
+        'iq': 'plot_iq', 'iq_ref': 'plot_target',
         'ibus': 'plot_ibus', 'ia': 'plot_ia', 'ib': 'plot_ib', 'ic': 'plot_ic',
         'angle': 'plot_angle',
     }
 
     def _pen(self, name):
-        style = Qt.PenStyle.DashLine if name == 'ibus' else Qt.PenStyle.SolidLine
+        style = (Qt.PenStyle.DashLine
+                 if name == 'ibus' or name.endswith('_ref')
+                 else Qt.PenStyle.SolidLine)
         return pg.mkPen(theme.hex(self._PEN_KEY[name]), width=2, style=style)
 
     def _build_plots(self):
         pos_pen = self._pen('pos')
+        pos_ref_pen = self._pen('pos_ref')
         vel_pen = self._pen('vel')
+        vel_ref_pen = self._pen('vel_ref')
         id_pen = self._pen('id')
+        id_ref_pen = self._pen('id_ref')
         iq_pen = self._pen('iq')
+        iq_ref_pen = self._pen('iq_ref')
         ibus_pen = self._pen('ibus')
         ia_pen = self._pen('ia')
         ib_pen = self._pen('ib')
@@ -398,17 +414,21 @@ class PlotPanel(QGroupBox):
 
         self._plots['pos'] = self._create_plot(
             0, 0, "位置", "位置", "rad",
-            [('pos', pos_pen, '位置')], show_bottom=True, show_left=True,
-            menu_profile={'auto_y': True, 'legend': False, 'series': False})
+            [('pos', pos_pen, '位置'), ('pos_ref', pos_ref_pen, '位置目标')],
+            show_bottom=True, show_left=True,
+            menu_profile={'auto_y': True, 'legend': True, 'series': False})
         self._plots['vel'] = self._create_plot(
             0, 1, "速度", "速度", "rad/s",
-            [('vel', vel_pen, '速度')], show_bottom=True, show_left=True,
-            menu_profile={'auto_y': True, 'legend': False, 'series': False})
+            [('vel', vel_pen, '速度'), ('vel_ref', vel_ref_pen, '速度目标')],
+            show_bottom=True, show_left=True,
+            menu_profile={'auto_y': True, 'legend': True, 'series': False})
         self._plots['current'] = self._create_plot(
             1, 0, "电流", "电流", "A",
             [
                 ('id', id_pen, 'Id'),
+                ('id_ref', id_ref_pen, 'Id目标'),
                 ('iq', iq_pen, 'Iq'),
+                ('iq_ref', iq_ref_pen, 'Iq目标'),
                 ('ibus', ibus_pen, 'IBus'),
                 ('ia', ia_pen, 'Ia'),
                 ('ib', ib_pen, 'Ib'),
@@ -769,15 +789,24 @@ class PlotPanel(QGroupBox):
     def feed_feedback(self, fb):
         idx = float(self._point_index)
         self._point_index += 1
+        filled = getattr(fb, 'filled_fields', ())
+
+        def target_value(field):
+            return getattr(fb, field, 0.0) if field in filled else float('nan')
+
         # pos/vel 移动平均平滑编码器/PLL噪声
         pos_v = float(self._pos_ma.update_batch(
             np.array([getattr(fb, 'pos', 0.0)], dtype=np.float32))[0])
         vel_v = float(self._vel_ma.update_batch(
             np.array([getattr(fb, 'vel', 0.0)], dtype=np.float32))[0])
         self._buffers['pos'].append(idx, pos_v)
+        self._buffers['pos_ref'].append(idx, target_value('pos_ref'))
         self._buffers['vel'].append(idx, vel_v)
+        self._buffers['vel_ref'].append(idx, target_value('vel_ref'))
         self._buffers['id'].append(idx, getattr(fb, 'id', 0.0))
+        self._buffers['id_ref'].append(idx, target_value('id_ref'))
         self._buffers['iq'].append(idx, getattr(fb, 'iq', 0.0))
+        self._buffers['iq_ref'].append(idx, target_value('iq_ref'))
         self._buffers['ibus'].append(idx, getattr(fb, 'ibus', 0.0))
         self._buffers['ia'].append(idx, getattr(fb, 'ia', 0.0))
         self._buffers['ib'].append(idx, getattr(fb, 'ib', 0.0))
@@ -793,7 +822,8 @@ class PlotPanel(QGroupBox):
 
     # 字段提取顺序 (与 _buffers 对齐, pos/vel 单独滤波不在此循环)
     _FEEDBACK_FIELDS = (
-        'id', 'iq', 'ibus', 'ia', 'ib', 'ic',
+        'pos_ref', 'vel_ref', 'id', 'id_ref', 'iq', 'iq_ref',
+        'ibus', 'ia', 'ib', 'ic',
     )
 
     def feed_feedback_batch(self, fb_list):
@@ -822,7 +852,12 @@ class PlotPanel(QGroupBox):
         for field in self._FEEDBACK_FIELDS:
             ys = np.empty(n, dtype=np.float32)
             for i in range(n):
-                ys[i] = getattr(fb_list[i], field, 0.0)
+                if field.endswith('_ref'):
+                    filled = getattr(fb_list[i], 'filled_fields', ())
+                    ys[i] = (getattr(fb_list[i], field, 0.0)
+                             if field in filled else np.nan)
+                else:
+                    ys[i] = getattr(fb_list[i], field, 0.0)
             self._buffers[field].append_batch(ts_arr, ys)
         # 机械角度 (单圈) - 移动平均(圆形均值)平滑编码器噪声
         ys_angle = np.empty(n, dtype=np.float32)
@@ -858,7 +893,10 @@ class PlotPanel(QGroupBox):
         idx_min = max(0.0, idx_end - float(self._window_points))
 
         # P2 优化: 曲线级脏标记, 仅重绘有新数据的曲线 (避免全量重绘)
-        for name in ('pos', 'vel', 'id', 'iq', 'ibus', 'ia', 'ib', 'ic', 'angle'):
+        for name in (
+                'pos', 'pos_ref', 'vel', 'vel_ref',
+                'id', 'id_ref', 'iq', 'iq_ref',
+                'ibus', 'ia', 'ib', 'ic', 'angle'):
             buf = self._buffers[name]
             if force or buf.dirty:
                 self._update_curve(name, idx_min)
@@ -881,7 +919,14 @@ class PlotPanel(QGroupBox):
                 self._auto_range_y(idx_min)
 
     def _update_curve(self, name: str, idx_min: float):
-        cfg = self._plots.get('current') if name in self._current_series_order else self._plots.get(name)
+        if name in self._current_series_order:
+            cfg = self._plots.get('current')
+        elif name == 'pos_ref':
+            cfg = self._plots.get('pos')
+        elif name == 'vel_ref':
+            cfg = self._plots.get('vel')
+        else:
+            cfg = self._plots.get(name)
         if cfg is None:
             return
         buf = self._buffers.get(name) if name in self._buffers else self._extra_buffers.get(name)
@@ -938,8 +983,11 @@ class PlotPanel(QGroupBox):
                 _ts, ys = buf.arrays_view(idx_min)
                 if not len(ys):
                     continue
-                cur_min = float(np.min(ys))
-                cur_max = float(np.max(ys))
+                finite = ys[np.isfinite(ys)]
+                if not len(finite):
+                    continue
+                cur_min = float(np.min(finite))
+                cur_max = float(np.max(finite))
                 if y0 is None:
                     y0 = cur_min
                     y1 = cur_max
@@ -954,8 +1002,8 @@ class PlotPanel(QGroupBox):
             return y0 - pad, y1 + pad
 
         ranges = {
-            'pos': _range_from(('pos',)),
-            'vel': _range_from(('vel',)),
+            'pos': _range_from(('pos', 'pos_ref')),
+            'vel': _range_from(('vel', 'vel_ref')),
             'current': _range_from(self._visible_current_series()),
             'angle': _range_from(('angle',)),
         }

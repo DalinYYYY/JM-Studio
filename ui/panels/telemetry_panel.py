@@ -67,9 +67,25 @@ class TelemetryPanel(QGroupBox):
         """当前上传周期 ms(供设置持久化)。"""
         return self._spin_period.value()
 
-    def apply_config(self, mask: int, period_ms: int):
-        """按 mask 还原各勾选 + 设周期(启动恢复设置用, 不触发下发命令)。"""
-        if self._running:
+    def is_running(self) -> bool:
+        """当前是否处于周期上报使能态。"""
+        return bool(self._running)
+
+    def snapshot_config(self) -> dict:
+        """保存当前遥测 UI 配置, 供临时接管后恢复。"""
+        return {
+            "enable": bool(self._running),
+            "mask": int(self.current_mask()),
+            "period_ms": int(self.get_period()),
+        }
+
+    def apply_config(self, mask: int, period_ms: int, force: bool = False):
+        """按 mask 还原各勾选 + 设周期(启动恢复设置用, 不触发下发命令)。
+
+        force=True 用于 PID 调试页临时接管遥测: 即使当前处于运行态,
+        也同步 UI 勾选, 退出 PID 页后再恢复原配置。
+        """
+        if self._running and not force:
             return  # 上报中不改 UI 配置
         for bit, chk in self._checks:
             chk.setChecked(bool(int(mask) & bit))
