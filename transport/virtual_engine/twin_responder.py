@@ -402,8 +402,23 @@ class TwinResponder:
         if mask & JmTlmBit.STATE:
             out += bytes([self._top_fsm() & 0xFF, self._run_state() & 0xFF,
                           self._ctrl_mode_jmcmd() & 0xFF,
-                          1 if self._top_fsm() in (int(TopFsm.READY), int(TopFsm.RUN)) else 0,
-                          int(t.get('run_state', 0)) & 0xFF])  # 第5字节: 运动子状态
+                          1 if self._top_fsm() in (int(TopFsm.READY), int(TopFsm.RUN)) else 0])
+            trailing_groups = (
+                JmTlmBit.DEBUG | JmTlmBit.CURRENT_TARGET | JmTlmBit.MOTION_TARGET)
+            if not (mask & trailing_groups):
+                out += bytes([int(t.get('run_state', 0)) & 0xFF])
+        if mask & JmTlmBit.CURRENT_TARGET:
+            out += struct.pack(
+                '<ff',
+                t.get('id_ref', getattr(self.engine.fsm, 'target_id', 0.0)),
+                t.get('iq_ref', getattr(self.engine.fsm, 'target_iq', 0.0)),
+            )
+        if mask & JmTlmBit.MOTION_TARGET:
+            out += struct.pack(
+                '<ff',
+                t.get('vel_ref', getattr(self.engine.fsm, 'target_vel', 0.0)),
+                t.get('pos_ref', getattr(self.engine.fsm, 'target_pos', 0.0)),
+            )
         return (int(JmCmd.TELEMETRY), bytes(out))
 
     # ================= 内部: 参数读写 =================

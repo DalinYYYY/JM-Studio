@@ -340,11 +340,18 @@ class JmClient(QObject):
     def _merge_and_emit_feedback(self, fb):
         """把部分字段帧合并到 _last_feedback, 再 emit 合并后的完整 fb。"""
         merged = self._last_feedback
+        filled = list(getattr(merged, 'filled_fields', ()))
         for field in getattr(fb, 'filled_fields', ()):
             try:
-                setattr(merged, field, getattr(fb, field))
+                value = getattr(fb, field)
+                if value is None:
+                    continue
+                setattr(merged, field, value)
+                if field not in filled:
+                    filled.append(field)
             except Exception:
                 pass
+        merged.filled_fields = tuple(filled)
         # 浅拷贝后发射, 避免 QueuedConnection 槽拿到被持续修改的同一对象
         self.feedback_updated.emit(copy.copy(merged))
 

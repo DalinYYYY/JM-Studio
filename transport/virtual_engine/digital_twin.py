@@ -187,6 +187,7 @@ class DigitalTwinEngine:
             # 控制量
             'ud': ud, 'uq': uq,
             'id_ref': self.controller.last_id_ref, 'iq_ref': self.controller.last_iq_ref,
+            'vel_ref': self.fsm.target_vel, 'pos_ref': self.fsm.target_pos,
             'id_meas': self.controller.foc.foc.id, 'iq_meas': self.controller.foc.foc.iq,
             'vel_setpoint': self.controller.cascade.vel_setpoint,
             # 负载
