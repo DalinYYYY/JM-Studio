@@ -15,7 +15,9 @@ class FeedbackData:
     """实时反馈数据(各字段单位见注释)"""
     __slots__ = [
         'pos', 'vel', 'torque',
+        'pos_ref', 'vel_ref',
         'id', 'iq', 'ia', 'ib', 'ic',
+        'id_ref', 'iq_ref',
         'vbus', 'ibus', 'power', 'temp_fet', 'temp_motor',
         'multiturn', 'single',
         'fault_mask', 'warn_mask',
@@ -29,8 +31,12 @@ class FeedbackData:
         self.pos = 0.0          # rad
         self.vel = 0.0          # rad/s
         self.torque = 0.0       # Nm
+        self.pos_ref = 0.0      # rad
+        self.vel_ref = 0.0      # rad/s
         self.id = 0.0           # A
         self.iq = 0.0           # A
+        self.id_ref = 0.0       # A
+        self.iq_ref = 0.0       # A
         self.ia = 0.0           # A
         self.ib = 0.0           # A
         self.ic = 0.0           # A
@@ -133,59 +139,106 @@ def parse_telemetry(payload: bytes):
     def take_f32():
         nonlocal offset
         if offset + 4 > len(payload):
-            return 0.0  # 截断帧保护, 避免抛 struct.error
+            return None  # 截断帧保护；调用方可据此回退到本地目标
         v = codec.rd_f32(payload, offset)
         offset += 4
         return v
 
     if mask & JmTlmBit.POS_VEL:
-        fb.pos = take_f32(); fb.vel = take_f32()
-        filled += ['pos', 'vel']
+        pos = take_f32()
+        vel = take_f32()
+        if pos is not None and vel is not None:
+            fb.pos = pos
+            fb.vel = vel
+            filled += ['pos', 'vel']
     if mask & JmTlmBit.DQ:
-        fb.id = take_f32(); fb.iq = take_f32()
-        filled += ['id', 'iq']
+        id_v = take_f32()
+        iq_v = take_f32()
+        if id_v is not None and iq_v is not None:
+            fb.id = id_v
+            fb.iq = iq_v
+            filled += ['id', 'iq']
     if mask & JmTlmBit.PHASE:
-        fb.ia = take_f32(); fb.ib = take_f32(); fb.ic = take_f32()
-        filled += ['ia', 'ib', 'ic']
+        ia = take_f32()
+        ib = take_f32()
+        ic = take_f32()
+        if ia is not None and ib is not None and ic is not None:
+            fb.ia = ia
+            fb.ib = ib
+            fb.ic = ic
+            filled += ['ia', 'ib', 'ic']
     if mask & JmTlmBit.BUS:
-        fb.vbus = take_f32(); fb.ibus = take_f32(); fb.power = take_f32()
-        filled += ['vbus', 'ibus', 'power']
+        vbus = take_f32()
+        ibus = take_f32()
+        power = take_f32()
+        if vbus is not None and ibus is not None and power is not None:
+            fb.vbus = vbus
+            fb.ibus = ibus
+            fb.power = power
+            filled += ['vbus', 'ibus', 'power']
     if mask & JmTlmBit.TEMP:
-        fb.temp_fet = take_f32(); fb.temp_motor = take_f32()
-        filled += ['temp_fet', 'temp_motor']
+        temp_fet = take_f32()
+        temp_motor = take_f32()
+        if temp_fet is not None and temp_motor is not None:
+            fb.temp_fet = temp_fet
+            fb.temp_motor = temp_motor
+            filled += ['temp_fet', 'temp_motor']
     if mask & JmTlmBit.MULTITURN:
         if offset + 8 <= len(payload):
             fb.multiturn = codec.rd_i32(payload, offset); offset += 4
-            fb.single = take_f32()
-        filled += ['multiturn', 'single']
+            single = take_f32()
+            if single is not None:
+                fb.single = single
+                filled += ['multiturn', 'single']
     if mask & JmTlmBit.TORQUE:
-        fb.torque = take_f32()
-        filled += ['torque']
+        torque = take_f32()
+        if torque is not None:
+            fb.torque = torque
+            filled += ['torque']
     if mask & JmTlmBit.FAULT:
         if offset + 8 <= len(payload):
             fb.fault_mask = codec.rd_u32(payload, offset); offset += 4
             fb.warn_mask = codec.rd_u32(payload, offset); offset += 4
-        filled += ['fault_mask', 'warn_mask']
+            filled += ['fault_mask', 'warn_mask']
     if mask & JmTlmBit.STATE:
-        if offset + 4 > len(payload):
-            filled += ['top_fsm', 'run_state', 'ctrl_mode', 'enable']
-        else:
+        if offset + 4 <= len(payload):
             fb.top_fsm = payload[offset]; offset += 1
             fb.run_state = payload[offset]; offset += 1
             fb.ctrl_mode = payload[offset]; offset += 1
             fb.enable = payload[offset]; offset += 1
-        # 可选第5字节: 运动子状态 (twin 扩展, 真机固件不发则保持默认0=STANDSTILL)
-        # 仅当 DEBUG 组不在 mask 中时才尝试读取, 否则会误消费 DEBUG 组首字节
-        if offset < len(payload) and not (mask & JmTlmBit.DEBUG):
-            fb.motion_state = payload[offset]; offset += 1
-        filled += ['top_fsm', 'run_state', 'ctrl_mode', 'enable', 'motion_state']
+            filled += ['top_fsm', 'run_state', 'ctrl_mode', 'enable']
+            # 可选第5字节: 运动子状态 (twin 扩展, 真机固件不发则保持默认0=STANDSTILL)
+            # 仅当 DEBUG 组不在 mask 中时才尝试读取, 否则会误消费 DEBUG 组首字节
+            trailing_groups = (
+                JmTlmBit.DEBUG | JmTlmBit.CURRENT_TARGET | JmTlmBit.MOTION_TARGET)
+            if offset < len(payload) and not (mask & trailing_groups):
+                fb.motion_state = payload[offset]; offset += 1
+                filled += ['motion_state']
+    if mask & JmTlmBit.CURRENT_TARGET:
+        id_ref = take_f32()
+        iq_ref = take_f32()
+        if id_ref is not None and iq_ref is not None:
+            fb.id_ref = id_ref
+            fb.iq_ref = iq_ref
+            filled += ['id_ref', 'iq_ref']
+    if mask & JmTlmBit.MOTION_TARGET:
+        vel_ref = take_f32()
+        pos_ref = take_f32()
+        if vel_ref is not None and pos_ref is not None:
+            fb.vel_ref = vel_ref
+            fb.pos_ref = pos_ref
+            filled += ['vel_ref', 'pos_ref']
     if mask & JmTlmBit.DEBUG:
         # 调试通道 jm_dbg[]: 取帧内剩余字节, 每 4 字节一个 f32(通道数由固件 JM_DBG_CH 决定)
         dbg = []
         while offset + 4 <= len(payload):
-            dbg.append(take_f32())
-        fb.debug = tuple(dbg)
-        filled += ['debug']
+            v = take_f32()
+            if v is None:
+                break
+            dbg.append(v)
+        if dbg:
+            fb.debug = tuple(dbg)
+            filled += ['debug']
 
     fb.filled_fields = tuple(filled)
     return fb, tuple(filled)

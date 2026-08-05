@@ -331,7 +331,9 @@ class JmTlmBit:
     TORQUE = (1 << 6)
     FAULT = (1 << 7)
     STATE = (1 << 8)
-    DEBUG = (1 << 9)
+    DEBUG = (1 << 9)  # 变长组，帧内始终放在固定长度组之后
+    CURRENT_TARGET = (1 << 10)
+    MOTION_TARGET = (1 << 11)
 
     # (mask位, 中文标签) 列表, 供 UI 生成勾选框
     ITEMS = [
@@ -345,6 +347,8 @@ class JmTlmBit:
         (FAULT, "故障/警告"),
         (STATE, "状态机"),
         (DEBUG, "调试通道"),
+        (CURRENT_TARGET, "电流目标(ID/IQ)"),
+        (MOTION_TARGET, "速度/位置目标"),
     ]
 
 
