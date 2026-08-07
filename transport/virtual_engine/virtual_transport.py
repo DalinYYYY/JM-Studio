@@ -34,6 +34,8 @@ class VirtualTransport(Transport):
         self._tlm_timer = QTimer(self)
         self._tlm_timer.timeout.connect(self._on_tlm_tick)
         self._tlm_period_ms = self._resp.tlm_period_ms
+        self._live_elapsed_ms = 0
+        self._trace_elapsed_ms = 0
 
     # ---------------- 生命周期 ----------------
     def start(self):
@@ -45,7 +47,10 @@ class VirtualTransport(Transport):
     def open(self, **cfg) -> bool:
         self.reset_stats()
         self._open = True
+        self._live_elapsed_ms = 0
+        self._trace_elapsed_ms = 0
         self._sim_timer.start(self._SIM_PERIOD_MS)
+        self._sync_tlm_timer()
         self.connected.emit(True)
         return True
 
@@ -96,19 +101,44 @@ class VirtualTransport(Transport):
             self.error_occurred.emit(f"仿真步异常: {e}")
 
     def _sync_tlm_timer(self):
-        if self._resp.tlm_enabled:
-            period = max(5, int(self._resp.tlm_period_ms))
-            if not self._tlm_timer.isActive() or period != self._tlm_period_ms:
-                self._tlm_period_ms = period
-                self._tlm_timer.start(period)
-        else:
+        live = max(5, int(self._resp.tlm_period_ms))
+        trace = 0
+        if getattr(self._resp, '_trace_rate', 0) and getattr(
+                self._resp, '_trace_packet_samples', 0):
+            trace = max(5, int(1000 * self._resp._trace_packet_samples /
+                               self._resp._trace_rate))
+        period = min([p for p in (live if self._resp.tlm_enabled else 0,
+                                  trace) if p] or [0])
+        if period == 0:
             self._tlm_timer.stop()
+            return
+        if not self._tlm_timer.isActive() or period != self._tlm_period_ms:
+            self._tlm_period_ms = period
+            self._live_elapsed_ms = 0
+            self._trace_elapsed_ms = 0
+            self._tlm_timer.start(period)
 
     def _on_tlm_tick(self):
         if not self._open:
             return
         try:
-            for rcmd, rpayload in self._resp.on_tick():
+            live_period = max(5, int(self._resp.tlm_period_ms))
+            trace_period = 0
+            if getattr(self._resp, '_trace_rate', 0) and getattr(
+                    self._resp, '_trace_packet_samples', 0):
+                trace_period = max(5, int(1000 * self._resp._trace_packet_samples /
+                                           self._resp._trace_rate))
+            self._live_elapsed_ms += self._tlm_period_ms
+            self._trace_elapsed_ms += self._tlm_period_ms
+            live_due = bool(self._resp.tlm_enabled and
+                            self._live_elapsed_ms >= live_period)
+            trace_due = bool(trace_period and
+                             self._trace_elapsed_ms >= trace_period)
+            if live_due:
+                self._live_elapsed_ms %= live_period
+            if trace_due:
+                self._trace_elapsed_ms %= trace_period
+            for rcmd, rpayload in self._resp.on_tick(live_due, trace_due):
                 self._emit_frame(rcmd, rpayload)
         except Exception as e:
             self.error_occurred.emit(f"遥测周期异常: {e}")

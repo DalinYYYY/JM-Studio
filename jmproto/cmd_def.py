@@ -121,6 +121,8 @@ class JmCmd(IntEnum):
     STOP_LOG = 0xB6
     HIGH_SPEED_DAQ = 0xB7
     SINGLE_STEP = 0xB8
+    TRACE_CONFIG = 0xB9
+    TRACE_DATA = 0xBA
 
     # 反馈查询 0xC0~0xCF
     READ_FEEDBACK = 0xC0

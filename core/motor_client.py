@@ -57,7 +57,8 @@ class JmClient(QObject):
     pid_autotune_result_received = pyqtSignal(dict)    # 0xA0 PID理论估计应答(parse_pid_autotune_ack 结果)
     pid_source_received = pyqtSignal(int, int, int)    # 0xA2 三环source状态(cur, vel, pos)
     pid_param_received = pyqtSignal(int, int, bytes)   # 0xA6 PID参数读取结果(ring, param_type, value4)
-    pid_capture_chunk_received = pyqtSignal(object)   # 0xC9 高速采样分块
+    trace_config_received = pyqtSignal(object)      # 0xB9 TRACE 配置应答
+    trace_data_received = pyqtSignal(object)         # 0xBA TRACE 主动批量数据
     raw_frame = pyqtSignal(int, bytes)                 # cmd, payload(RX 入口, 日志面板格式化)
     tx_frame = pyqtSignal(int, bytes)                  # cmd, payload(TX 入口, 日志面板格式化)
 
@@ -78,7 +79,6 @@ class JmClient(QObject):
         # 危险命令二次确认回调: UI 层注入, 签名 (cmd, payload) -> bool
         # None 表示无 UI 注入, 直接发送(用于脚本/无 GUI 场景)
         self._confirm_cb = None
-        self._capture_read_pending = False
 
     @property
     def registry(self):
@@ -283,25 +283,20 @@ class JmClient(QObject):
         return self._send(JmCmd.PID_PARAM_SET,
                           bytes([int(ring) & 0xFF, 0]) + bytes(entries))
 
-    def pid_capture_start(self, channel_mask: int, rate_hz: int,
-                          sample_count: int = 256):
-        payload = struct.pack('<IIH', int(channel_mask) & 0xFFFFFFFF,
-                              int(rate_hz) & 0xFFFFFFFF,
-                              max(1, min(256, int(sample_count))))
-        sent = self._send(JmCmd.HIGH_SPEED_DAQ, payload)
-        self._capture_read_pending = bool(sent)
-        return sent
+    def trace_config(self, enable: bool, session_id: int = 0,
+                     channel_mask: int = 0, rate_hz: int = 1000,
+                     packet_samples: int = 4, flags: int = 0):
+        """配置 TRACE(0xB9): enable + session:u16 + mask:u32 + rate:u32 + packet:u8 + flags:u8。"""
+        payload = struct.pack('<BHII BB', 1 if enable else 0,
+                              int(session_id) & 0xFFFF,
+                              int(channel_mask) & 0xFFFFFFFF,
+                              max(1, int(rate_hz)) & 0xFFFFFFFF,
+                              max(1, min(8, int(packet_samples))),
+                              int(flags) & 0xFF)
+        return self._send(JmCmd.TRACE_CONFIG, payload)
 
-    def pid_capture_stop(self):
-        self._capture_read_pending = False
-        return self._send(JmCmd.STOP_LOG)
-
-    def pid_capture_read(self, offset: int = 0, count: int = 7):
-        sent = self._send(JmCmd.READ_DEBUG,
-                          struct.pack('<HB', int(offset) & 0xFFFF,
-                                      max(0, min(255, int(count)))))
-        self._capture_read_pending = bool(sent)
-        return sent
+    def trace_stop(self, session_id: int = 0):
+        return self.trace_config(False, session_id=session_id)
 
     # ---- 遥测订阅 / 遥控开关 ----
     def set_telemetry(self, enable: bool, mask: int, period_ms: int = 0):
@@ -424,6 +419,19 @@ class JmClient(QObject):
                 self.pid_param_received.emit(payload[0], payload[1], payload[2:6])
             return
 
+        # TRACE_CONFIG 应答: session:u16 + actual_rate:u32 + packet:u8 + capacity:u16。
+        if cmd == JmCmd.TRACE_CONFIG:
+            if len(payload) == 9:
+                self.trace_config_received.emit({
+                    'session_id': codec.rd_u16(payload, 0),
+                    'actual_rate_hz': codec.rd_u32(payload, 2),
+                    'packet_samples': payload[6],
+                    'buffer_capacity': codec.rd_u16(payload, 7),
+                })
+            elif len(payload) == 0:
+                self.trace_config_received.emit({})
+            return
+
         # ACK 类应答 (0x00~0xB8, payload[0]==status)
         if cmd <= JmCmd.SINGLE_STEP and len(payload) >= 1:
             if payload[0] == JmErr.OK:
@@ -449,33 +457,40 @@ class JmClient(QObject):
                 self._merge_and_emit_feedback(fb)
             return
 
-        # READ_DEBUG(0xC9): 调试帧, 当前不解析, 避免误入 ACK 兜底分支
-        if cmd == JmCmd.READ_DEBUG:
-            if self._capture_read_pending and len(payload) >= 15:
-                state = payload[0]
-                mask = codec.rd_u32(payload, 1)
-                rate = codec.rd_u32(payload, 5)
-                total = codec.rd_u16(payload, 9)
-                offset = codec.rd_u16(payload, 11)
-                count = payload[13]
-                channels = payload[14]
-                data = []
-                pos = 15
-                for _ in range(count):
-                    row = []
-                    for _ in range(channels):
-                        if pos + 4 > len(payload):
-                            break
-                        row.append(codec.rd_f32(payload, pos))
-                        pos += 4
-                    if len(row) == channels:
-                        data.append(row)
-                self.pid_capture_chunk_received.emit({
-                    'state': state, 'mask': mask, 'rate_hz': rate,
-                    'total': total, 'offset': offset, 'count': len(data),
-                    'channels': channels, 'samples': data,
-                })
+
+        # TRACE_DATA(0xBA): 主动批量波形帧，不进入普通反馈状态。
+        if cmd == JmCmd.TRACE_DATA:
+            if len(payload) < 25:
                 return
+            session = codec.rd_u16(payload, 0)
+            sequence = codec.rd_u32(payload, 2)
+            first_index = codec.rd_u32(payload, 6)
+            rate = codec.rd_u32(payload, 10)
+            mask = codec.rd_u32(payload, 14)
+            count = payload[18]
+            channels = payload[19]
+            flags = payload[20]
+            overflow = codec.rd_u32(payload, 21)
+            if (rate == 0 or mask == 0 or (mask & ~0xFF) != 0 or
+                    channels == 0 or channels != int(mask).bit_count()):
+                return
+            expected = 25 + count * channels * 4
+            if count == 0 or expected != len(payload):
+                return
+            samples = []
+            pos = 25
+            for _ in range(count):
+                row = [codec.rd_f32(payload, pos + i * 4)
+                       for i in range(channels)]
+                samples.append(row)
+                pos += channels * 4
+            self.trace_data_received.emit({
+                'session_id': session, 'sequence': sequence,
+                'first_sample_index': first_index, 'actual_rate_hz': rate,
+                'channel_mask': mask, 'sample_count': count,
+                'channels': channels, 'flags': flags,
+                'overflow_count': overflow, 'samples': samples,
+            })
             return
 
         # DEV_INFO

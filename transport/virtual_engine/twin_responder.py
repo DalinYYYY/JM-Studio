@@ -118,9 +118,12 @@ class TwinResponder:
             2: {1: 0.08, 2: 0.8, 3: 0.0, 4: 20.0, 5: 200.0, 6: 1.0, 7: 3},
             3: {1: 10.0, 2: 0.0, 3: 0.0, 4: 30.0, 5: 0.0, 6: 1.0, 7: 0},
         }
-        self._capture_samples = []
-        self._capture_mask = 0
-        self._capture_rate = 0
+        self._trace_session = 0
+        self._trace_mask = 0
+        self._trace_rate = 0
+        self._trace_packet_samples = 0
+        self._trace_sequence = 0
+        self._trace_sample_index = 0
 
     # ================= 命令入口 =================
     def on_command(self, cmd: int, payload: bytes):
@@ -231,26 +234,29 @@ class TwinResponder:
             value = self._pid_profiles.get(ring, {}).get(ptype, 0.0)
             raw = struct.pack('<I', int(value)) if ptype == 7 else struct.pack('<f', float(value))
             return [(cmd, bytes([ring, ptype]) + raw)]
-        if cmd == int(JmCmd.HIGH_SPEED_DAQ) and len(payload) >= 8:
-            self._capture_mask, self._capture_rate = struct.unpack_from('<II', payload, 0)
-            count = struct.unpack_from('<H', payload, 8)[0] if len(payload) >= 10 else 256
-            t = self._tlm()
-            vals = [t.get('id_ref', 0.0), t.get('id', 0.0), t.get('iq_ref', 0.0), t.get('iq', 0.0),
-                    t.get('vel_ref', 0.0), t.get('vel', 0.0), t.get('pos_ref', 0.0), t.get('pos', 0.0)]
-            self._capture_samples = [[vals[i] for i in range(8) if self._capture_mask & (1 << i)] for _ in range(max(1, min(256, count)))]
-            return [self._ack(cmd)]
-        if cmd == int(JmCmd.STOP_LOG):
-            return [self._ack(cmd)]
-        if cmd == int(JmCmd.READ_DEBUG) and len(payload) == 3 and self._capture_samples:
-            offset, count = struct.unpack_from('<HB', payload, 0)
-            channels = sum(1 for i in range(8) if self._capture_mask & (1 << i))
-            rows = self._capture_samples[offset:offset + count]
-            out = bytearray([2]) + codec.wr_u32(self._capture_mask) + codec.wr_u32(self._capture_rate)
-            out += codec.wr_u16(len(self._capture_samples)) + codec.wr_u16(offset) + bytes([len(rows), channels])
-            for row in rows:
-                for value in row:
-                    out += codec.wr_f32(value)
-            return [(cmd, bytes(out))]
+        if cmd == int(JmCmd.TRACE_CONFIG):
+            if len(payload) != 13:
+                return [self._nack(cmd, int(JmErr.LENGTH))]
+            enable = payload[0]
+            session, mask, rate = struct.unpack_from('<HII', payload, 1)
+            packet = payload[11]
+            if enable:
+                channels = (mask & 0xFF).bit_count()
+                if (enable != 1 or mask == 0 or mask & ~0xFF or
+                        channels == 0 or rate == 0 or not 1 <= packet <= 8):
+                    return [self._nack(cmd, int(JmErr.OUT_OF_RANGE))]
+                self._trace_session = session
+                self._trace_mask = mask
+                self._trace_rate = min(rate, 5000)
+                self._trace_packet_samples = packet
+                self._trace_sequence = 0
+                self._trace_sample_index = 0
+                return [(cmd, codec.wr_u16(session) + codec.wr_u32(self._trace_rate) +
+                         bytes([packet]) + codec.wr_u16(128))]
+            self._trace_mask = 0
+            self._trace_packet_samples = 0
+            self._trace_rate = 0
+            return [(cmd, b'')]
 
         # ---- 参数读写 ----
         if cmd == int(JmCmd.PARAM_READ):
@@ -275,11 +281,34 @@ class TwinResponder:
         return [self._nack(cmd, int(JmErr.UNSUPPORTED))]
 
     # ================= 周期回调 =================
-    def on_tick(self):
-        """周期回调, 返回本拍要主动上报的遥测帧。"""
-        if not self.tlm_enabled or self.tlm_mask == 0:
-            return []
-        return [self._telemetry_frame(self.tlm_mask)]
+    def on_tick(self, live_due=True, trace_due=True):
+        """周期回调；LIVE/TRACE 是否到期由调用方分别调度。"""
+        frames = []
+        if live_due and self.tlm_enabled and self.tlm_mask:
+            frames.append(self._telemetry_frame(self.tlm_mask))
+        if trace_due and self._trace_mask and self._trace_packet_samples:
+            rows = []
+            for i in range(self._trace_packet_samples):
+                t = self._tlm()
+                vals = [t.get('id_ref', 0.0), t.get('id', 0.0),
+                        t.get('iq_ref', 0.0), t.get('iq', 0.0),
+                        t.get('vel_ref', 0.0), t.get('vel', 0.0),
+                        t.get('pos_ref', 0.0), t.get('pos', 0.0)]
+                rows.append([vals[j] for j in range(8) if self._trace_mask & (1 << j)])
+            out = bytearray(codec.wr_u16(self._trace_session))
+            out += codec.wr_u32(self._trace_sequence)
+            out += codec.wr_u32(self._trace_sample_index)
+            out += codec.wr_u32(self._trace_rate) + codec.wr_u32(self._trace_mask)
+            out += bytes([self._trace_packet_samples,
+                          (self._trace_mask & 0xFF).bit_count(), 0])
+            out += codec.wr_u32(0)
+            for row in rows:
+                for value in row:
+                    out += codec.wr_f32(value)
+            self._trace_sequence = (self._trace_sequence + 1) & 0xFFFFFFFF
+            self._trace_sample_index += self._trace_packet_samples
+            frames.append((int(JmCmd.TRACE_DATA), bytes(out)))
+        return frames
 
     def advance(self, dt: float):
         """推进仿真: 按孪生 FOC 周期拆分多步执行。
