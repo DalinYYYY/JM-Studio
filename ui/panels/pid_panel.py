@@ -3,7 +3,7 @@ PID 整定面板 (顶级 Tab)。
 
 对标"电机标定" Tab 的三段式布局:
   1. 状态卡 — 连接状态 / 三环 source 徽章 / 最近操作
-  2. 操作区 — 左:理论估计(0xA0) 右:来源切换(0xA1)
+  2. 操作区 — 左:上位机理论估计 右:来源/调试模式切换(0xA1)
   3. 实时调试区 — 0xA5 写 / 0xA6 读 单个PID参数 (需对应环 source=DEBUG)
   4. 结果/历史 Splitter — ControlParam 参数表 + 操作历史
 
@@ -13,13 +13,12 @@ PID 整定面板 (顶级 Tab)。
   pid_param_set_requested(ring, param_type, value)           — 主窗口连 client.pid_param_set
   pid_param_get_requested(ring, param_type)                  — 主窗口连 client.pid_param_get
 
-IDLE 态守卫: 0xA0/0xA1 仅 TOP_FSM_IDLE(=3) 可执行。0xA5/0xA6 无状态限制。
+状态守卫: 理论估计只读 motor_info；0xA1 允许 IDLE/READY。0xA5/0xA6 无状态限制。
 """
 from collections import deque
 from datetime import datetime
 from enum import IntEnum
 import math
-import time
 
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from PyQt6.QtWidgets import (
@@ -29,13 +28,15 @@ from PyQt6.QtWidgets import (
     QWidget, QScrollArea, QGridLayout,
 )
 
-from jmproto.cmd_def import JmCmd, TopFsm
+from jmproto.cmd_def import JmCmd, TopFsm, top_fsm_name
+from core.pid_debug_profile import (
+    PID_WAVEFORM_DEFAULT_SOURCE, get_pid_debug_profile, get_waveform_source_def,
+)
+from core.pid_autotune import (
+    DEFAULT_CURRENT_BW_HZ, DEFAULT_VELOCITY_BW_HZ, DEFAULT_POSITION_BW_HZ,
+)
 from ui.theme import theme
-
-try:
-    import pyqtgraph as pg
-except Exception:  # pragma: no cover - pyqtgraph 缺失时降级为文本提示
-    pg = None
+from ui.panels.pid_waveform_window import PidWaveformWindow
 
 
 # ---- 三环 source 枚举 (与固件 motor_pid_load.h pid_source_e 一致) ----
@@ -57,6 +58,30 @@ _RING_CN = {PidRing.CURRENT: "电流环", PidRing.VELOCITY: "速度环", PidRing
 _SOURCE_CN = {PidSource.DEFAULT: "默认", PidSource.FLASH: "Flash", PidSource.AUTOTUNE: "理论估计", PidSource.DEBUG: "调试"}
 _SOURCE_COLOR_KEY = {PidSource.DEFAULT: "muted", PidSource.FLASH: "warn", PidSource.AUTOTUNE: "accent", PidSource.DEBUG: "ok"}
 
+# 来源区域同时承载 DEBUG 子模式。option_id 仅用于上位机单选组，
+# 下发 A1 时仍转换为原协议 source=0..3。
+_SOURCE_OPTIONS = {
+    PidRing.CURRENT: (
+        (0, "默认", PidSource.DEFAULT, None),
+        (1, "Flash", PidSource.FLASH, None),
+        (2, "理论估计", PidSource.AUTOTUNE, None),
+        (3, "调试-ID", PidSource.DEBUG, "current_d"),
+        (31, "调试-IQ", PidSource.DEBUG, "current_q"),
+    ),
+    PidRing.VELOCITY: (
+        (0, "默认", PidSource.DEFAULT, None),
+        (1, "Flash", PidSource.FLASH, None),
+        (2, "理论估计", PidSource.AUTOTUNE, None),
+        (3, "调试-速度", PidSource.DEBUG, "velocity"),
+    ),
+    PidRing.POSITION: (
+        (0, "默认", PidSource.DEFAULT, None),
+        (1, "Flash", PidSource.FLASH, None),
+        (2, "理论估计", PidSource.AUTOTUNE, None),
+        (3, "调试-位置", PidSource.DEBUG, "position"),
+    ),
+}
+
 
 class PidPanel(QGroupBox):
     """PID 整定面板 (顶级 Tab)。"""
@@ -64,11 +89,21 @@ class PidPanel(QGroupBox):
     # ---- 请求信号 (主窗口连接到 JmClient) ----
     pid_autotune_requested = pyqtSignal(int, float, float, float)  # ring_mask(bit0=电流 bit1=速度 bit2=位置), cur_bw, vel_bw, pos_bw
     pid_source_set_requested = pyqtSignal(int, int)                # ring_select, source
+    pid_source_get_requested = pyqtSignal()                        # A2 readback/heartbeat
+    pid_state_get_requested = pyqtSignal()                         # C1 refresh before guarded operations
     pid_param_set_requested = pyqtSignal(int, int, float)          # ring, param_type, value (0xA5)
     pid_param_get_requested = pyqtSignal(int, int)                 # ring, param_type (0xA6)
+    pid_capture_start_requested = pyqtSignal(int, int, int)       # mask, rate_hz, samples
+    pid_capture_stop_requested = pyqtSignal()
+    pid_capture_read_requested = pyqtSignal(int, int)             # offset, count
+    pid_debug_commit_requested = pyqtSignal(int, object)          # active profile ring, values
     pid_tuning_mode_changed = pyqtSignal(str)                     # current_d/current_q/velocity/position
+    pid_waveform_config_changed = pyqtSignal(bool, int)           # enabled, requested sample/upload rate
 
     _HISTORY_MAX = 200
+    # 波形存储: 按时间跨度(秒)配置, 而非固定点数。内存上限用于高频自动抽稀。
+    _WAVEFORM_SPAN_SEC = 20.0
+    _WAVEFORM_MAX_POINTS = 200000
 
     def __init__(self, registry=None, parent=None):
         super().__init__("", parent)
@@ -86,13 +121,26 @@ class PidPanel(QGroupBox):
         self._debug_slider_groups = {}
         # 当前 PID 调试模式 + 观测数据缓存
         self._tuning_mode = "current_d"
+        self._selected_debug_mode = self._tuning_mode
         self._pid_targets = {"id": 0.0, "iq": 0.0, "vel": 0.0, "pos": 0.0}
         self._last_feedback = None
-        self._plot_t0 = time.monotonic()
-        self._plot_points = deque(maxlen=800)
+        self._plot_sample_index = 0      # 波形横坐标: 采样点编号 (从 0 递增)
         self._plot_paused = False
+        # 波形显示与 DEBUG 整定解耦: 采哪路数据由波形窗口顶部切换
+        self._waveform_source = PID_WAVEFORM_DEFAULT_SOURCE
+        self._waveform_rate_hz = 1000
+        # 波形存储缓冲: 按时间跨度(秒)×采样率决定容量, 高频时自动抽稀
+        self._plot_points = deque(
+            maxlen=self._waveform_buffer_size(self._waveform_rate_hz))
+        self._waveform_window = None
+        self._waveform_window_opts = {}
+        self._capture_active = False
+        self._debug_values = {}
         # 写入后延迟回读定时器: 每个 (ring, param_type) 一个单次 QTimer
         self._readback_timers = {}
+        self._source_set_queue = deque()
+        self._source_set_pending = None
+        self._source_waiting_for_state = False
         # 构建UI
         self._build()
         self._refresh_status()
@@ -121,7 +169,6 @@ class PidPanel(QGroupBox):
         self._build_status_card(layout)
         self._build_operation_panel(layout)
         self._build_tuning_observer(layout)
-        self._build_pid_waveform(layout)
         self._build_debug_slider_area(layout)
         self._build_results_history_split(layout)
         self._sync_slider_groups()
@@ -189,7 +236,7 @@ class PidPanel(QGroupBox):
                 f"padding:2px 8px; border-radius:8px; font-size:11px; font-weight:bold;")
 
     def _build_operation_panel(self, parent_layout):
-        """操作区: 左(理论估计 0xA0) 右(来源切换 0xA1)。"""
+        """操作区: 左(生成修改值) 右(来源及调试模式切换 0xA1)。"""
         box = QFrame()
         box.setObjectName("pidOperationRow")
         box.setStyleSheet("QFrame#pidOperationRow{background:transparent; border:none;}")
@@ -198,7 +245,7 @@ class PidPanel(QGroupBox):
         h.setSpacing(8)
 
         # ---- 左: 理论估计 ----
-        autotune_box = QGroupBox("理论估计 (0xA0)")
+        autotune_box = QGroupBox("理论估计（生成修改值）")
         av = QVBoxLayout(autotune_box)
         av.setSpacing(6)
 
@@ -220,19 +267,19 @@ class PidPanel(QGroupBox):
         self._cur_bw_spin = QDoubleSpinBox()
         self._cur_bw_spin.setRange(0.0, 10000.0)
         self._cur_bw_spin.setValue(0.0)
-        self._cur_bw_spin.setSpecialValueText("默认(电机配置)")
+        self._cur_bw_spin.setToolTip("0 使用电机配置带宽")
         bw_row.addWidget(self._cur_bw_spin)
         bw_row.addWidget(QLabel("速度环(Hz):"))
         self._vel_bw_spin = QDoubleSpinBox()
         self._vel_bw_spin.setRange(0.0, 5000.0)
         self._vel_bw_spin.setValue(0.0)
-        self._vel_bw_spin.setSpecialValueText("默认(100)")
+        self._vel_bw_spin.setToolTip(f"0 使用 {DEFAULT_VELOCITY_BW_HZ:g} Hz")
         bw_row.addWidget(self._vel_bw_spin)
         bw_row.addWidget(QLabel("位置环(Hz):"))
         self._pos_bw_spin = QDoubleSpinBox()
         self._pos_bw_spin.setRange(0.0, 1000.0)
         self._pos_bw_spin.setValue(0.0)
-        self._pos_bw_spin.setSpecialValueText("默认(20)")
+        self._pos_bw_spin.setToolTip(f"0 使用 {DEFAULT_POSITION_BW_HZ:g} Hz")
         bw_row.addWidget(self._pos_bw_spin)
         av.addLayout(bw_row)
 
@@ -244,7 +291,7 @@ class PidPanel(QGroupBox):
 
         h.addWidget(autotune_box, 1)
 
-        # ---- 右: 来源切换 (0xA1) ----
+        # ---- 右: 来源切换 (0xA1)，同时选择 DEBUG 子模式 ----
         source_box = QGroupBox("来源切换 (0xA1)")
         sv = QVBoxLayout(source_box)
         sv.setSpacing(6)
@@ -255,12 +302,14 @@ class PidPanel(QGroupBox):
             row.addWidget(QLabel(f"{_RING_CN[ring]}:"))
             grp = QButtonGroup(self)
             grp.setExclusive(True)
-            for src in PidSource:
-                rb = QRadioButton(_SOURCE_CN[src])
-                grp.addButton(rb, int(src))
-                if src == PidSource.DEFAULT:
+            for option_id, label, src, mode in _SOURCE_OPTIONS[ring]:
+                rb = QRadioButton(label)
+                grp.addButton(rb, int(option_id))
+                if src == PidSource.DEFAULT and option_id == 0:
                     rb.setChecked(True)
                 row.addWidget(rb)
+            grp.idClicked.connect(
+                lambda option_id, r=ring: self._on_source_option_clicked(r, option_id))
             self._source_btn_groups[int(ring)] = grp
             row.addStretch()
             sv.addLayout(row)
@@ -313,43 +362,13 @@ class PidPanel(QGroupBox):
     #  DEBUG 滑条面板区 (source=DEBUG 时动态展开, 0xA5 写 / 0xA6 轮询读)
     # ========================================================================
     def _build_tuning_observer(self, parent_layout):
-        """调试模式选择 + 目标/反馈观测。
-
-        保持现有 PID 参数表和 DEBUG 滑条布局, 这里只增加一个轻量观测条:
-        当前模式决定显示哪一个实时 PID ring, 目标值来自上位机最近一次运动指令,
-        反馈值来自遥测/主动读取合并后的 FeedbackData。
-        """
+        """显示当前 DEBUG 模式及目标/反馈。"""
         box = QFrame()
         box.setObjectName("pidObserver")
         box.setStyleSheet(self._observer_box_qss())
         v = QVBoxLayout(box)
         v.setContentsMargins(0, 2, 0, 2)
         v.setSpacing(6)
-
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(6)
-        title = QLabel("调试模式 / 目标反馈")
-        title.setStyleSheet(
-            f"color:{theme.hex('text_strong')}; font-weight:bold; font-size:12px;")
-        mode_row.addWidget(title)
-        mode_row.addWidget(QLabel("调试模式:"))
-        self._mode_btn_group = QButtonGroup(self)
-        self._mode_btn_group.setExclusive(True)
-        self._mode_buttons = {}
-        for idx, item in enumerate(self._TUNING_MODE_ITEMS):
-            key, label, _ring, _source_ring, _field, _unit, tip = item
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setToolTip(tip)
-            btn.setStyleSheet(self._mode_btn_qss())
-            btn.setChecked(key == self._tuning_mode)
-            self._mode_btn_group.addButton(btn, idx)
-            self._mode_buttons[key] = btn
-            mode_row.addWidget(btn)
-        self._mode_btn_group.idClicked.connect(self._on_tuning_mode_id_clicked)
-        mode_row.addStretch()
-        v.addLayout(mode_row)
 
         obs_row = QHBoxLayout()
         obs_row.setSpacing(8)
@@ -368,76 +387,9 @@ class PidPanel(QGroupBox):
             obs_row.addWidget(self._make_observer_metric(title, lbl))
         v.addLayout(obs_row)
 
-        self._obs_hint_label = QLabel(
-            "目标值取上位机最近一次下发的控制值; 反馈值取当前遥测/读取反馈。")
-        self._obs_hint_label.setStyleSheet(f"color:{theme.hex('muted')}; font-size:11px;")
-        v.addWidget(self._obs_hint_label)
-
         parent_layout.addWidget(box)
         self._tuning_observer_box = box
         self._refresh_observer_labels()
-
-    def _build_pid_waveform(self, parent_layout):
-        """PID 页内小波形: 目标 / 反馈 / 误差。"""
-        box = QFrame()
-        box.setObjectName("pidWaveform")
-        box.setStyleSheet(self._waveform_box_qss())
-        v = QVBoxLayout(box)
-        v.setContentsMargins(0, 2, 0, 2)
-        v.setSpacing(4)
-
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        title = QLabel("PID 调试波形")
-        title.setStyleSheet(
-            f"color:{theme.hex('text_strong')}; font-weight:bold; font-size:12px;")
-        self._plot_info_label = QLabel("目标 / 反馈 / 误差")
-        self._plot_info_label.setStyleSheet(f"color:{theme.hex('muted')}; font-size:11px;")
-        header.addWidget(title)
-        header.addWidget(self._plot_info_label)
-        header.addStretch()
-        self._plot_pause_btn = QPushButton("暂停")
-        self._plot_pause_btn.setCheckable(True)
-        self._plot_pause_btn.setFixedHeight(24)
-        self._plot_pause_btn.setStyleSheet(self._normal_btn_qss())
-        self._plot_pause_btn.toggled.connect(self._on_plot_pause_toggled)
-        self._plot_clear_btn = QPushButton("清空")
-        self._plot_clear_btn.setFixedHeight(24)
-        self._plot_clear_btn.setStyleSheet(self._normal_btn_qss())
-        self._plot_clear_btn.clicked.connect(self._clear_pid_waveform)
-        header.addWidget(self._plot_pause_btn)
-        header.addWidget(self._plot_clear_btn)
-        v.addLayout(header)
-
-        if pg is None:
-            self._pid_plot = None
-            hint = QLabel("pyqtgraph 不可用, PID 波形暂不显示。")
-            hint.setStyleSheet(f"color:{theme.hex('muted')}; padding:8px;")
-            v.addWidget(hint)
-        else:
-            self._pid_plot = pg.PlotWidget()
-            self._pid_plot.setMinimumHeight(150)
-            self._pid_plot.setMaximumHeight(190)
-            self._pid_plot.setBackground(theme.hex("plot_bg"))
-            self._pid_plot.showGrid(x=True, y=True, alpha=0.25)
-            self._pid_plot.setMenuEnabled(False)
-            self._pid_plot.setMouseEnabled(x=False, y=False)
-            self._pid_plot.getPlotItem().hideButtons()
-            self._pid_plot.getAxis("bottom").setPen(theme.hex("border"))
-            self._pid_plot.getAxis("left").setPen(theme.hex("border"))
-            self._pid_plot.getAxis("bottom").setTextPen(theme.hex("muted"))
-            self._pid_plot.getAxis("left").setTextPen(theme.hex("muted"))
-            self._pid_plot.addLegend(offset=(8, 8))
-            self._curve_target = self._pid_plot.plot(
-                [], [], pen=pg.mkPen(theme.hex("plot_pos"), width=2), name="目标")
-            self._curve_feedback = self._pid_plot.plot(
-                [], [], pen=pg.mkPen(theme.hex("plot_vel"), width=2), name="反馈")
-            self._curve_error = self._pid_plot.plot(
-                [], [], pen=pg.mkPen(theme.hex("warn"), width=1), name="误差")
-            v.addWidget(self._pid_plot)
-
-        parent_layout.addWidget(box)
-        self._pid_waveform_box = box
 
     def _build_debug_slider_area(self, parent_layout):
         """滑条面板容器: 初始隐藏, 当某环 source 切换到 DEBUG 时动态添加对应滑条组。
@@ -450,16 +402,29 @@ class PidPanel(QGroupBox):
         v.setContentsMargins(0, 2, 0, 2)
         v.setSpacing(4)
 
+        # 标题行: 左(PID 调试波形 · 目标/反馈/误差) 右(打开波形窗口 + 保存当前调试值)
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header_title = QLabel("DEBUG 实时调试参数")
+        header.setSpacing(8)
+
+        header_title = QLabel("PID 调试波形")
         header_title.setStyleSheet(
             f"color:{theme.hex('text_strong')}; font-weight:bold; font-size:12px;")
-        header_tip = QLabel("0xA5 写入 / 0xA6 读回确认")
-        header_tip.setStyleSheet(f"color:{theme.hex('muted')}; font-size:11px;")
+        self._plot_info_label = QLabel("目标 / 反馈 / 误差")
+        self._plot_info_label.setStyleSheet(
+            f"color:{theme.hex('muted')}; font-size:11px;")
         header.addWidget(header_title)
-        header.addWidget(header_tip)
+        header.addWidget(self._plot_info_label)
         header.addStretch()
+
+        self._debug_commit_btn = QPushButton("保存当前调试值")
+        self._debug_commit_btn.setToolTip("把当前环可持久化字段写入ControlParam，读回校验后固化Flash")
+        self._debug_commit_btn.setFixedHeight(24)
+        self._debug_commit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._debug_commit_btn.setStyleSheet(self._normal_btn_qss())
+        self._debug_commit_btn.clicked.connect(self._on_debug_commit_clicked)
+        header.addWidget(self._debug_commit_btn)
+
         v.addLayout(header)
 
         # 滑条组动态挂载区 (直接布局, 不再用内部 QScrollArea)
@@ -492,9 +457,6 @@ class PidPanel(QGroupBox):
 
     def _observer_box_qss(self) -> str:
         return "QFrame#pidObserver{background:transparent; border:none;}"
-
-    def _waveform_box_qss(self) -> str:
-        return "QFrame#pidWaveform{background:transparent; border:none;}"
 
     def _mode_btn_qss(self) -> str:
         return (f"QPushButton{{background:{theme.hex('input_bg')};"
@@ -548,6 +510,37 @@ class PidPanel(QGroupBox):
     def current_tuning_mode(self) -> str:
         return self._tuning_mode
 
+    def is_debug_active(self) -> bool:
+        """当前选中调试模式是否已切到 DEBUG source。"""
+        return self._ring_source.get(self._active_source_ring(), PidSource.DEFAULT) == PidSource.DEBUG
+
+    def has_any_debug_source(self) -> bool:
+        """Return whether the device-confirmed source contains any DEBUG ring."""
+        return any(source == PidSource.DEBUG
+                   for source in self._ring_source.values())
+
+    def has_unapplied_source_selection(self) -> bool:
+        """Keep A2 refreshes from overwriting a user's unapplied radio draft."""
+        if (self._source_set_pending is not None or self._source_set_queue or
+                self._source_waiting_for_state):
+            return True
+        selected_debug_modes = []
+        for ring_id, group in self._source_btn_groups.items():
+            ring = PidRing(ring_id)
+            option = self._source_option(ring, group.checkedId())
+            if option is None:
+                continue
+            if PidSource(option[2]) != self._ring_source[ring]:
+                return True
+            if option[3] is not None:
+                selected_debug_modes.append(option[3])
+        if selected_debug_modes:
+            selected = (self._selected_debug_mode
+                        if self._selected_debug_mode in selected_debug_modes
+                        else selected_debug_modes[0])
+            return selected != self._tuning_mode
+        return False
+
     def _active_debug_ring(self) -> int:
         return int(self._mode_def()[2])
 
@@ -587,21 +580,15 @@ class PidPanel(QGroupBox):
             else:
                 self._remove_slider_group(ring)
         # 容器显隐: 有 DEBUG 组时显示容器, 无时隐藏 (不占空间)
+        # 波形控制行已内嵌于 _slider_container，随容器一起显隐，无需单独控制
         has_debug = len(self._debug_slider_groups) > 0
         if hasattr(self, '_slider_container'):
             self._slider_container.setVisible(has_debug)
-        if hasattr(self, '_pid_waveform_box'):
-            self._pid_waveform_box.setVisible(has_debug)
         # 新增 DEBUG 组时立即请求一次全部参数 (不再周期轮询)
         if new_rings:
             for ring in new_rings:
                 self._request_all_params(ring)
         self._refresh_observer_labels()
-
-    def _on_tuning_mode_id_clicked(self, idx: int):
-        if idx < 0 or idx >= len(self._TUNING_MODE_ITEMS):
-            return
-        self.set_tuning_mode(self._TUNING_MODE_ITEMS[idx][0])
 
     def set_tuning_mode(self, mode: str):
         """设置当前 PID 调试模式。"""
@@ -610,16 +597,46 @@ class PidPanel(QGroupBox):
             mode = "current_d"
         changed = mode != self._tuning_mode
         self._tuning_mode = mode
-        if hasattr(self, "_mode_buttons"):
-            btn = self._mode_buttons.get(mode)
-            if btn is not None and not btn.isChecked():
-                btn.setChecked(True)
         self._sync_slider_groups()
         self._refresh_observer_labels()
         if changed:
-            self._clear_pid_waveform()
+            # 波形显示与调试模式解耦: 换整定环不再清空/重启波形采集
             self._set_last_op(f"调试模式: {self._mode_def()[1]}")
             self.pid_tuning_mode_changed.emit(self._tuning_mode)
+
+    def _on_tuning_mode_id_clicked(self, idx: int):
+        """Compatibility shim for scripts written before modes moved into source rows.
+
+        The production UI has no standalone mode buttons; this method only maps
+        an old numeric mode request to the corresponding source radio button and
+        applies the same unified source workflow.
+        """
+        try:
+            mode = self._TUNING_MODE_ITEMS[int(idx)][0]
+        except (IndexError, TypeError, ValueError):
+            return
+        for ring, options in _SOURCE_OPTIONS.items():
+            option = next((item for item in options if item[3] == mode), None)
+            if option is None:
+                continue
+            button = self._source_btn_groups[int(ring)].button(option[0])
+            if button is not None:
+                button.setChecked(True)
+            self._selected_debug_mode = mode
+            self._on_source_apply_clicked()
+            return
+
+    @staticmethod
+    def _source_option(ring: PidRing, option_id: int):
+        for item in _SOURCE_OPTIONS[ring]:
+            if item[0] == option_id:
+                return item
+        return None
+
+    def _on_source_option_clicked(self, ring: PidRing, option_id: int):
+        option = self._source_option(ring, option_id)
+        if option is not None and option[3] is not None:
+            self._selected_debug_mode = option[3]
 
     def set_pid_targets(self, targets: dict):
         """更新上位机最近一次下发的 PID 相关目标值。"""
@@ -637,20 +654,194 @@ class PidPanel(QGroupBox):
         if feedback is not None:
             self._last_feedback = feedback
         self._refresh_observer_labels()
-        self._append_pid_waveform_point()
+
+    def _waveform_buffer_size(self, rate_hz: int) -> int:
+        """存储缓冲点数 = 时间跨度(秒)×有效采样率, 最少保留若干点。"""
+        return max(2, int(self._WAVEFORM_SPAN_SEC * max(50, int(rate_hz))))
+
+    def feed_capture_chunk(self, chunk: dict):
+        """把 C9 高速采样分块转换成所选数据源的目标/反馈曲线。
+
+        数据层: 存储缓冲按时间跨度(秒)配置, 高频时自动抽稀降采样,
+        保证时间跨度并限制内存; 新点只做增量追加, 不触发全量重绘。
+        采集与 DEBUG source 无关: 只要波形窗口在采, 数据就照常显示。
+        """
+        if (not isinstance(chunk, dict) or not self._waveform_enabled or
+                self._plot_paused):
+            return
+        mask = int(chunk.get('mask', 0))
+        rows = chunk.get('samples') or []
+        bit_map = [i for i in range(8) if mask & (1 << i)]
+        pair = get_pid_debug_profile(self._waveform_source).capture_channels
+        try:
+            ti, fi = bit_map.index(pair[0]), bit_map.index(pair[1])
+        except ValueError:
+            return
+        # 高频自动降采样: 需要的点数超上限时, 每 stride 存 1 点, 跨度不缩水
+        target_size = self._waveform_buffer_size(int(chunk.get('rate_hz', 0) or 0))
+        decimate = 1
+        if target_size > self._WAVEFORM_MAX_POINTS:
+            decimate = target_size // self._WAVEFORM_MAX_POINTS + 1
+            target_size = self._WAVEFORM_MAX_POINTS
+        if self._plot_points.maxlen != target_size:
+            keep = list(self._plot_points)
+            self._plot_points = deque(keep, maxlen=target_size)
+
+        # 只追加新点并增量推给可视窗口; 横坐标 = 采样点编号 (含抽稀跳过的点)
+        new_points = []
+        for idx, row in enumerate(rows):
+            if ti >= len(row) or fi >= len(row):
+                continue
+            sample_no = self._plot_sample_index
+            self._plot_sample_index += 1
+            if decimate > 1 and idx % decimate != 0:
+                continue
+            target = float(row[ti]); feedback = float(row[fi])
+            pt = (sample_no, target, feedback, target - feedback)
+            self._plot_points.append(pt)
+            new_points.append(pt)
+        if new_points:
+            self._waveform_window.append_points(new_points)
+
+    @property
+    def _waveform_enabled(self) -> bool:
+        """波形采集只由波形窗口是否打开决定 (面板上无独立开关)。"""
+        return self._waveform_window is not None
+
+    def waveform_enabled(self) -> bool:
+        return bool(self._waveform_enabled)
+
+    def waveform_source(self) -> str:
+        """当前波形上传数据源 (与 DEBUG 整定模式无关)。"""
+        return str(self._waveform_source)
+
+    def waveform_profile(self):
+        """所选数据源对应的采集配置 (掩码/通道对/采样上限)。"""
+        return get_pid_debug_profile(self._waveform_source)
+
+    def waveform_rate_hz(self) -> int:
+        """返回按所选数据源采样能力限幅后的高速采样上传频率。"""
+        profile = self.waveform_profile()
+        return max(50, min(int(self._waveform_rate_hz), profile.capture_rate_hz))
+
+    def set_capture_active(self, active: bool):
+        self._capture_active = bool(active)
+        self._refresh_waveform_status()
+
+    def _refresh_waveform_status(self):
+        """把采集状态推送到波形子窗口 (面板上不再有状态标签)。"""
+        window = self._waveform_window
+        if window is None:
+            return
+        effective = self.waveform_rate_hz()
+        requested = int(self._waveform_rate_hz)
+        limited = effective != requested
+        window.set_capture_status(self._capture_active, effective, limited)
+
+    def _on_waveform_config_changed(self, rate_hz: int):
+        """子窗口修改采样上传频率: 更新缓存并通知主窗口重启采集。"""
+        rate = int(rate_hz)
+        if rate == int(self._waveform_rate_hz):
+            return
+        self._waveform_rate_hz = rate
+        self._clear_pid_waveform()
+        self._refresh_waveform_status()
+        self.pid_waveform_config_changed.emit(
+            self._waveform_enabled, self.waveform_rate_hz())
+
+    def _on_waveform_source_changed(self, source: str):
+        """子窗口切换上传数据源: 换掩码并重启采集 (不影响 DEBUG source)。"""
+        key = get_waveform_source_def(str(source))[0]
+        if key == self._waveform_source:
+            return
+        self._waveform_source = key
+        self._clear_pid_waveform()
+        # 各数据源的固件采样上限不同, 切换后同步限幅并回写窗口控件
+        if self._waveform_window is not None:
+            self._waveform_window.set_rate(
+                int(self._waveform_rate_hz),
+                int(self.waveform_profile().capture_rate_hz))
+        self._refresh_waveform_status()
+        self.pid_waveform_config_changed.emit(
+            self._waveform_enabled, self.waveform_rate_hz())
 
     def _on_plot_pause_toggled(self, checked: bool):
-        """暂停/恢复 PID 页内波形刷新。"""
+        """子窗口暂停/继续: 仅记录状态, 不回推窗口 (避免信号回环)。"""
         self._plot_paused = bool(checked)
-        if hasattr(self, "_plot_pause_btn"):
-            self._plot_pause_btn.setText("继续" if checked else "暂停")
+
+    def _on_waveform_btn_clicked(self, checked: bool):
+        """波形窗口按钮点击：打开/关闭窗口，同步按钮状态。"""
+        if checked:
+            self._open_pid_waveform_window()
+        else:
+            self.close_waveform_window()
+
+    def _open_pid_waveform_window(self):
+        if self._waveform_window is None:
+            self._waveform_window = PidWaveformWindow()
+            self._waveform_window.window_closed.connect(
+                self._on_waveform_window_closed)
+            self._waveform_window.clear_requested.connect(
+                self._clear_pid_waveform)
+            self._waveform_window.pause_toggled.connect(
+                self._on_plot_pause_toggled)
+            self._waveform_window.rate_changed.connect(
+                self._on_waveform_config_changed)
+            self._waveform_window.source_changed.connect(
+                self._on_waveform_source_changed)
+            self._waveform_window.set_opts(self._waveform_window_opts)
+            # set_opts 可能恢复上次的数据源, 以窗口为准同步回面板
+            self._waveform_source = self._waveform_window.source()
+        # 数据源/采样上传频率控件都在窗口内: 同步当前值与该数据源的固件上限
+        self._waveform_window.set_source(self._waveform_source)
+        self._waveform_window.set_rate(
+            int(self._waveform_rate_hz),
+            int(self.waveform_profile().capture_rate_hz))
+        self._waveform_window.set_paused(self._plot_paused)
+        self._waveform_window.show()
+        self._waveform_window.raise_()
+        self._waveform_window.activateWindow()
+        self._refresh_pid_waveform()
+        self._refresh_waveform_status()
+        self._sync_waveform_btn(True)
+        # 打开窗口即开始采集 (与 DEBUG 无关)
+        self.pid_waveform_config_changed.emit(True, self.waveform_rate_hz())
+
+    def _on_waveform_window_closed(self):
+        if self._waveform_window is not None:
+            self._waveform_window_opts = self._waveform_window.get_opts()
+        self._waveform_window = None
+        self._sync_waveform_btn(False)
+        # 关窗即停止采集, 避免下位机继续上传无消费者数据
+        self.pid_waveform_config_changed.emit(False, self.waveform_rate_hz())
+
+    def close_waveform_window(self):
+        window = self._waveform_window
+        if window is not None:
+            try:
+                window.close()
+            except RuntimeError:
+                self._waveform_window = None
+                self.pid_waveform_config_changed.emit(
+                    False, self.waveform_rate_hz())
+        self._sync_waveform_btn(False)
+
+    def _sync_waveform_btn(self, opened: bool):
+        """同步「打开波形窗口」按钮高亮态 (已打开=高亮, 未打开=暗色)。"""
+        btn = getattr(self, "_waveform_open_btn", None)
+        if btn is None:
+            return
+        was = btn.blockSignals(True)   # 避免 setChecked 反向触发 clicked
+        btn.setChecked(bool(opened))
+        btn.blockSignals(was)
+        btn.setText("波形窗口已打开" if opened else "打开波形窗口")
 
     def _clear_pid_waveform(self):
         """清空 PID 页内波形缓存。"""
         if not hasattr(self, "_plot_points"):
             return
         self._plot_points.clear()
-        self._plot_t0 = time.monotonic()
+        self._plot_sample_index = 0
         self._refresh_pid_waveform()
 
     def _current_observation_values(self):
@@ -689,40 +880,10 @@ class PidPanel(QGroupBox):
                 return getattr(fb, ref_field, None)
         return self._pid_targets.get(field)
 
-    def _append_pid_waveform_point(self):
-        if self._plot_paused:
-            return
-        target, feedback, error, unit = self._current_observation_values()
-        if target is None and feedback is None and error is None:
-            return
-        t = time.monotonic() - self._plot_t0
-        self._plot_points.append((t, target, feedback, error))
-        if hasattr(self, "_plot_info_label"):
-            self._plot_info_label.setText(f"目标 / 反馈 / 误差  [{unit}]")
-        self._refresh_pid_waveform()
-
     def _refresh_pid_waveform(self):
-        if getattr(self, "_pid_plot", None) is None or pg is None:
+        if self._waveform_window is None:
             return
-        if not hasattr(self, "_curve_target"):
-            return
-        if not self._plot_points:
-            self._curve_target.setData([], [])
-            self._curve_feedback.setData([], [])
-            self._curve_error.setData([], [])
-            return
-        xs = [p[0] for p in self._plot_points]
-
-        def series(idx):
-            return [float("nan") if p[idx] is None else p[idx] for p in self._plot_points]
-
-        self._curve_target.setData(xs, series(1))
-        self._curve_feedback.setData(xs, series(2))
-        self._curve_error.setData(xs, series(3))
-        if xs:
-            right = xs[-1]
-            left = max(0.0, right - 10.0)
-            self._pid_plot.setXRange(left, max(10.0, right), padding=0.0)
+        self._waveform_window.set_points(self._plot_points)
 
     def _fmt_observer_value(self, value, unit: str) -> str:
         if value is None:
@@ -829,6 +990,23 @@ class PidPanel(QGroupBox):
             return
         for i in range(len(self._DEBUG_PARAM_ITEMS)):
             self.pid_param_get_requested.emit(ring, i + 1)
+
+    def _on_debug_commit_clicked(self):
+        ring = self._active_debug_ring()
+        if not self._link_active or not self.is_debug_active():
+            self._set_last_op("需连接并进入 DEBUG 模式")
+            return
+        if self._current_top_fsm != int(TopFsm.IDLE):
+            self._set_last_op("保存调试值前请先停止到 IDLE")
+            return
+        values = {ptype: value for (r, ptype), value in self._debug_values.items()
+                  if r == ring}
+        if not values:
+            self._set_last_op("尚未读到当前环参数，请先全部读取")
+            self._request_all_params(ring)
+            return
+        self.pid_debug_commit_requested.emit(ring, values)
+        self._set_last_op("正在写入工程参数并校验")
 
     def _on_slider_write_all(self, ring: int):
         """全部写入按钮: 连续发送该环所有 7 个 0xA5 请求。"""
@@ -945,6 +1123,18 @@ class PidPanel(QGroupBox):
                 f"padding:6px 12px;border-radius:4px;}}"
                 f"QPushButton:hover{{border-color:{theme.hex('accent')};}}")
 
+    def _waveform_btn_qss(self) -> str:
+        """波形窗口按钮样式：未打开时暗色，打开时高亮（checked状态）。"""
+        return (f"QPushButton{{background:{theme.hex('input_bg')};"
+                f"color:{theme.hex('text')};"
+                f"border:1px solid {theme.hex('btn_border')};"
+                f"padding:6px 12px;border-radius:4px;}}"
+                f"QPushButton:hover{{border-color:{theme.hex('accent')};}}"
+                f"QPushButton:checked{{background:{theme.hex('accent')};"
+                f"color:{theme.hex('card_top')};"
+                f"border-color:{theme.hex('accent')};"
+                f"font-weight:bold;}}")
+
     # ========================================================================
     #  按钮回调
     # ========================================================================
@@ -966,6 +1156,15 @@ class PidPanel(QGroupBox):
         cur_bw = self._cur_bw_spin.value()
         vel_bw = self._vel_bw_spin.value()
         pos_bw = self._pos_bw_spin.value()
+        cur_eff = cur_bw if cur_bw > 0 else DEFAULT_CURRENT_BW_HZ
+        vel_eff = vel_bw if vel_bw > 0 else DEFAULT_VELOCITY_BW_HZ
+        pos_eff = pos_bw if pos_bw > 0 else DEFAULT_POSITION_BW_HZ
+        if (ring_select & 0x03) == 0x03 and vel_eff > cur_eff * 0.2:
+            self._set_last_op("带宽层级无效: 速度环需不高于电流环的1/5")
+            return
+        if (ring_select & 0x06) == 0x06 and pos_eff > vel_eff * 0.2:
+            self._set_last_op("带宽层级无效: 位置环需不高于速度环的1/5")
+            return
         rings_cn = "/".join(
             _RING_CN[r] for r, c in self._autotune_ring_checks.items() if c.isChecked())
         self._add_history(
@@ -979,19 +1178,62 @@ class PidPanel(QGroupBox):
             self._add_history("[未连接] 请先连接电机")
             self._set_last_op("未连接")
             return
-        sent = 0
+        if self._source_set_pending is not None:
+            self._set_last_op("来源切换正在执行")
+            return
+        self._source_set_queue.clear()
+        selected_debug_modes = []
         for ring_id, grp in self._source_btn_groups.items():
-            src = grp.checkedId()
-            if src < 0:
+            ring = PidRing(ring_id)
+            option = self._source_option(ring, grp.checkedId())
+            if option is None:
+                continue
+            _option_id, _label, source, mode = option
+            if mode is not None:
+                selected_debug_modes.append(mode)
+            src = int(source)
+            if int(self._ring_source[ring]) == src:
                 continue
             self._add_history(
-                f"[TX] 来源切换 {_RING_CN[PidRing(ring_id)]} -> {_SOURCE_CN[PidSource(src)]}")
-            self.pid_source_set_requested.emit(ring_id, src)
-            sent += 1
-        if sent > 0:
-            self._set_last_op(f"已发送 {sent} 个来源切换请求")
+                f"[TX] 来源切换 {_RING_CN[ring]} -> {_SOURCE_CN[PidSource(src)]}")
+            self._source_set_queue.append((ring_id, src))
+        if selected_debug_modes:
+            mode = (self._selected_debug_mode
+                    if self._selected_debug_mode in selected_debug_modes
+                    else selected_debug_modes[0])
+            self.set_tuning_mode(mode)
+        if self._source_set_queue:
+            if self._current_top_fsm is None:
+                self._source_waiting_for_state = True
+                self._add_history("[等待状态] 正在读取电机状态，状态返回后自动切换")
+                self._set_last_op("状态未同步，已请求 C1 状态")
+                self.pid_state_get_requested.emit()
+                return
+            allowed = (int(TopFsm.IDLE), int(TopFsm.READY))
+            if self._current_top_fsm not in allowed:
+                state = top_fsm_name(self._current_top_fsm)
+                self._source_set_queue.clear()
+                self._source_waiting_for_state = False
+                self._add_history(
+                    f"[状态拒绝] 当前为{state}，来源切换只允许待机/就绪状态")
+                self._set_last_op(f"请先停止到待机/就绪（当前: {state}）")
+                self.pid_state_get_requested.emit()
+                return
+            self._set_last_op(f"待切换 {len(self._source_set_queue)} 个环")
+            self._source_waiting_for_state = False
+            self._send_next_source_change()
         else:
-            self._set_last_op("无来源变更")
+            if selected_debug_modes:
+                self._sync_slider_groups()
+                self._set_last_op(f"调试模式已切换: {self._mode_def()[1]}")
+            else:
+                self._set_last_op("无来源变更")
+
+    def _send_next_source_change(self):
+        if self._source_set_pending is not None or not self._source_set_queue:
+            return
+        self._source_set_pending = self._source_set_queue.popleft()
+        self.pid_source_set_requested.emit(*self._source_set_pending)
 
     # ========================================================================
     #  公共 API (主窗口调用)
@@ -1022,6 +1264,17 @@ class PidPanel(QGroupBox):
     def update_state(self, top_fsm: int, run_state: int, ctrl_mode: int, enable: int):
         self._current_top_fsm = top_fsm
         self._refresh_status()
+        if self._source_waiting_for_state and self._source_set_queue:
+            if top_fsm in (int(TopFsm.IDLE), int(TopFsm.READY)):
+                self._source_waiting_for_state = False
+                self._set_last_op(
+                    f"状态已同步，开始切换 {len(self._source_set_queue)} 个环")
+                self._send_next_source_change()
+            elif top_fsm != int(TopFsm.INIT):
+                self._source_waiting_for_state = False
+                self._source_set_queue.clear()
+                self._set_last_op(
+                    f"当前为{top_fsm_name(top_fsm)}，请先停止到待机/就绪")
 
     def on_autotune_result(self, result: dict):
         """0xA0 PID_AUTOTUNE 应答 (8字节 ACK)。"""
@@ -1052,7 +1305,25 @@ class PidPanel(QGroupBox):
             self._add_history(f"[RX] 理论估计失败: {fail_cn}")
             self._set_last_op(f"理论估计失败: {fail_cn}")
 
-    def on_source_received(self, cur_src: int, vel_src: int, pos_src: int):
+    def on_autotune_proposal(self, ring_mask: int, values: dict):
+        """把上位机理论估计结果填入 PID 参数表修改值，不写设备。"""
+        applied = 0
+        if self._params_panel is not None:
+            applied = self._params_panel.set_edit_values(values)
+        rings = [_RING_CN[ring] for ring in PidRing
+                 if ring_mask & (1 << int(ring))]
+        text = "/".join(rings)
+        self._add_history(
+            f"[理论估计] {text} 已生成 {applied} 项修改值，尚未写入设备")
+        self._set_last_op(f"理论值已填入修改值 ({text})，请检查后写入")
+
+    def on_autotune_error(self, reason: str):
+        """Show a host-side estimate failure without changing PID sources."""
+        self._add_history(f"[理论估计失败] {reason}")
+        self._set_last_op(f"理论估计失败: {reason}")
+
+    def on_source_received(self, cur_src: int, vel_src: int, pos_src: int,
+                           sync_selection: bool = True):
         """0xA2 PID_SOURCE_GET 应答 (3字节: cur/vel/pos source)。
 
         连接建立后主窗口主动查询, 回填三环 source 状态并同步单选按钮。
@@ -1063,10 +1334,21 @@ class PidPanel(QGroupBox):
                 self._ring_source[ring] = PidSource(src)
             except ValueError:
                 self._ring_source[ring] = PidSource.DEFAULT
-            # 同步来源切换区单选按钮
+            # A2 always updates confirmed device state/badges. During an
+            # unapplied draft or A1 transaction, preserve the radio selection.
             grp = self._source_btn_groups.get(int(ring))
-            if grp is not None:
-                btn = grp.button(int(self._ring_source[ring]))
+            if sync_selection and grp is not None:
+                source = self._ring_source[ring]
+                option_id = int(source)
+                if source == PidSource.DEBUG:
+                    preferred = self._tuning_mode
+                    candidates = [item for item in _SOURCE_OPTIONS[ring]
+                                  if item[2] == PidSource.DEBUG]
+                    chosen = next((item for item in candidates
+                                   if item[3] == preferred), candidates[0])
+                    option_id = chosen[0]
+                    self._selected_debug_mode = chosen[3]
+                btn = grp.button(option_id)
                 if btn is not None:
                     btn.setChecked(True)
         self._refresh_source_badges()
@@ -1082,23 +1364,37 @@ class PidPanel(QGroupBox):
         """0xA1 PID_SOURCE_SET / 0xA5 PID_PARAM_SET 成功 ACK。"""
         if cmd == int(JmCmd.PID_SOURCE_SET):
             self._add_history("[RX] 来源切换成功")
-            self._set_last_op("来源切换完成")
-            # 更新本地 source 状态 (从单选组读取)
-            for ring_id, grp in self._source_btn_groups.items():
-                src = grp.checkedId()
-                if src >= 0:
-                    self._ring_source[PidRing(ring_id)] = PidSource(src)
+            if self._source_set_pending is not None:
+                ring_id, src = self._source_set_pending
+                self._ring_source[PidRing(ring_id)] = PidSource(src)
+                self._source_set_pending = None
             self._refresh_source_badges()
-            # 同步 DEBUG 滑条面板显隐
             self._sync_slider_groups()
+            if self._source_set_queue:
+                self._set_last_op(f"继续切换，剩余 {len(self._source_set_queue)} 个环")
+                self._send_next_source_change()
+            else:
+                self._set_last_op("来源切换完成")
+                self.pid_source_get_requested.emit()
         elif cmd == int(JmCmd.PID_PARAM_SET):
             self._add_history(f"[RX] 调试参数写入成功")
 
     def on_nack(self, cmd: int, err: int):
         """0xA1 PID_SOURCE_SET / 0xA5 PID_PARAM_SET 失败 NACK。"""
         if cmd == int(JmCmd.PID_SOURCE_SET):
-            self._add_history(f"[RX] 来源切换失败 err=0x{err:02X}")
-            self._set_last_op(f"来源切换失败 (0x{err:02X})")
+            if err == 0x03:  # STATE_DENY
+                state = (top_fsm_name(self._current_top_fsm)
+                         if self._current_top_fsm is not None else "未知")
+                self._add_history(
+                    f"[RX] 来源切换失败: 当前状态不允许（{state}），请先停止运行")
+                self._set_last_op(f"来源切换需待机/就绪（当前: {state}）")
+                self.pid_state_get_requested.emit()
+            else:
+                self._add_history(f"[RX] 来源切换失败 err=0x{err:02X}")
+                self._set_last_op(f"来源切换失败 (0x{err:02X})")
+            self._source_set_pending = None
+            self._source_set_queue.clear()
+            self._source_waiting_for_state = False
         elif cmd == int(JmCmd.PID_PARAM_SET):
             if err == 0x03:  # STATE_DENY
                 self._add_history("[RX] 调试参数写入失败: 对应环未处于 DEBUG 模式")
@@ -1122,6 +1418,7 @@ class PidPanel(QGroupBox):
             val = None
         # 滑条面板更新
         if val is not None:
+            self._debug_values[(ring, param_type)] = val
             grp = self._debug_slider_groups.get(ring)
             if grp is not None:
                 grp.update_value(param_type, float(val), is_uint32=(param_type == 7))
@@ -1150,6 +1447,17 @@ class PidPanel(QGroupBox):
         # 恢复持久化的历史显隐态
         if getattr(self, "_history_visible", False):
             self._btn_history_toggle.setChecked(True)
+
+        # 波形窗口开关 — 注入到参数表下方按钮行最右 (与参数导入/导出同一行)
+        self._waveform_open_btn = QPushButton("打开波形窗口")
+        self._waveform_open_btn.setCheckable(True)
+        self._waveform_open_btn.setFixedHeight(24)
+        self._waveform_open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._waveform_open_btn.setToolTip(
+            "打开独立波形窗口; 数据源与采样上传频率在窗口顶部切换, 与调试模式无关")
+        self._waveform_open_btn.setStyleSheet(self._waveform_btn_qss())
+        self._waveform_open_btn.clicked.connect(self._on_waveform_btn_clicked)
+        panel.add_footer_widget_right(self._waveform_open_btn)
 
         self._set_last_op("参数面板已加载")
 
@@ -1197,9 +1505,6 @@ class PidPanel(QGroupBox):
             self._source_apply_btn.setStyleSheet(self._normal_btn_qss())
         if hasattr(self, '_tuning_observer_box'):
             self._tuning_observer_box.setStyleSheet(self._observer_box_qss())
-        if hasattr(self, '_mode_buttons'):
-            for btn in self._mode_buttons.values():
-                btn.setStyleSheet(self._mode_btn_qss())
         for lbl in ("_obs_mode_label", "_obs_target_label", "_obs_feedback_label", "_obs_error_label"):
             if hasattr(self, lbl):
                 getattr(self, lbl).setStyleSheet(self._metric_value_qss())
@@ -1233,10 +1538,16 @@ class PidPanel(QGroupBox):
         # DEBUG 滑条面板主题刷新
         if hasattr(self, '_slider_container'):
             self._slider_container.setStyleSheet(self._slider_container_qss())
+        if hasattr(self, '_waveform_open_btn'):
+            self._waveform_open_btn.setStyleSheet(self._waveform_btn_qss())
+        if hasattr(self, '_debug_commit_btn'):
+            self._debug_commit_btn.setStyleSheet(self._normal_btn_qss())
         if hasattr(self, '_main_scroll'):
             self._main_scroll.setStyleSheet(self._main_scroll_qss())
         for grp in self._debug_slider_groups.values():
             grp.apply_theme()
+        if self._waveform_window is not None:
+            self._waveform_window.apply_theme()
         self._refresh_source_badges()
         self._refresh_status()
         if self._params_panel and hasattr(self._params_panel, 'apply_theme'):
@@ -1253,6 +1564,12 @@ class PidPanel(QGroupBox):
             opts["tuning_mode"] = self._tuning_mode
         except Exception:
             pass
+        # 频率/数据源控件在子窗口, 但值由面板持有 (关窗后仍是下次采集的配置)
+        opts["waveform_rate_hz"] = int(self._waveform_rate_hz)
+        opts["waveform_source"] = str(self._waveform_source)
+        if self._waveform_window is not None:
+            self._waveform_window_opts = self._waveform_window.get_opts()
+        opts["waveform_window"] = dict(self._waveform_window_opts)
         if self._params_panel is not None:
             try:
                 opts["params_panel"] = self._params_panel.get_opts()
@@ -1279,6 +1596,16 @@ class PidPanel(QGroupBox):
                 self.set_tuning_mode(str(opts["tuning_mode"]))
             except Exception:
                 pass
+        if "waveform_rate_hz" in opts:
+            try:
+                self._waveform_rate_hz = max(50, min(int(opts["waveform_rate_hz"]), 5000))
+            except (TypeError, ValueError):
+                pass
+        if opts.get("waveform_source"):
+            self._waveform_source = get_waveform_source_def(
+                str(opts["waveform_source"]))[0]
+        if isinstance(opts.get("waveform_window"), dict):
+            self._waveform_window_opts = dict(opts["waveform_window"])
         if self._params_panel is not None and isinstance(opts.get("params_panel"), dict):
             try:
                 self._params_panel.set_opts(opts["params_panel"])
@@ -1294,8 +1621,9 @@ class PidPanel(QGroupBox):
             self._status_label.setStyleSheet(
                 f"font-weight:bold; color:{theme.hex('danger')};")
             return
-        if self._current_top_fsm == int(TopFsm.IDLE):
-            self._status_label.setText("已连接 · IDLE 就绪")
+        if self._current_top_fsm in (int(TopFsm.IDLE), int(TopFsm.READY)):
+            state = top_fsm_name(self._current_top_fsm)
+            self._status_label.setText(f"已连接 · {state}可切换来源")
             self._status_label.setStyleSheet(
                 f"font-weight:bold; color:{theme.hex('ok')};")
         else:

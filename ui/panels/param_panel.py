@@ -120,6 +120,14 @@ class ParamPanel(QGroupBox):
         if self._footer_after_save is not None:
             self._footer_after_save.addWidget(widget)
 
+    def add_footer_widget_right(self, widget):
+        """在按钮行最右(stretch 之后)注入一个 widget.
+
+        用于把外部按钮放到参数表下方按钮行的最右侧。
+        """
+        if self._btn_layout is not None:
+            self._btn_layout.addWidget(widget)
+
     def param_ids(self):
         """返回当前面板展示的所有 param_id (按表格顺序). 用于外部触发批量读取。"""
         return list(self._param_specs.keys())
@@ -129,6 +137,57 @@ class ParamPanel(QGroupBox):
         ids = self.param_ids()
         if ids:
             self.read_params.emit(list(ids))
+
+    def current_values_by_name(self, names=None) -> dict:
+        """返回已读回的当前值，键为 CSV code_name，未读取/非法值跳过。"""
+        wanted = set(names) if names is not None else None
+        values = {}
+        for pid, spec in self._param_specs.items():
+            if wanted is not None and spec.code_name not in wanted:
+                continue
+            item = self._current_items.get(pid)
+            text = item.text().strip() if item is not None else "--"
+            if not text or text == "--":
+                continue
+            try:
+                values[spec.code_name] = float(text)
+            except (TypeError, ValueError):
+                continue
+        return values
+
+    def param_ids_by_name(self, names) -> list[int]:
+        wanted = set(names)
+        return [int(pid) for pid, spec in self._param_specs.items()
+                if spec.code_name in wanted]
+
+    def set_edit_values(self, values_by_name: dict) -> int:
+        """把计算/导入结果填入“修改值”列，不改变当前值。"""
+        if not isinstance(values_by_name, dict):
+            return 0
+        by_name = {spec.code_name: int(pid)
+                   for pid, spec in self._param_specs.items()}
+        applied = 0
+        self._syncing_table = True
+        try:
+            for name, value in values_by_name.items():
+                pid = by_name.get(name)
+                item = self._edit_items.get(pid) if pid is not None else None
+                state = self._row_state.get(pid) if pid is not None else None
+                if item is None or state is None or not state.get('writable'):
+                    continue
+                try:
+                    text = f"{float(value):.7g}"
+                except (TypeError, ValueError):
+                    continue
+                item.setText(text)
+                current = self._current_items.get(pid)
+                current_missing = current is None or current.text().strip() == "--"
+                dirty = current_missing or self._compute_dirty(pid)
+                self._set_write_button_state(pid, dirty, False)
+                applied += 1
+        finally:
+            self._syncing_table = False
+        return applied
 
     def reload(self):
         """从 registry 重新构建表格(用于运行时 CSV 重新加载后刷新)。

@@ -57,6 +57,7 @@ class JmClient(QObject):
     pid_autotune_result_received = pyqtSignal(dict)    # 0xA0 PID理论估计应答(parse_pid_autotune_ack 结果)
     pid_source_received = pyqtSignal(int, int, int)    # 0xA2 三环source状态(cur, vel, pos)
     pid_param_received = pyqtSignal(int, int, bytes)   # 0xA6 PID参数读取结果(ring, param_type, value4)
+    pid_capture_chunk_received = pyqtSignal(object)   # 0xC9 高速采样分块
     raw_frame = pyqtSignal(int, bytes)                 # cmd, payload(RX 入口, 日志面板格式化)
     tx_frame = pyqtSignal(int, bytes)                  # cmd, payload(TX 入口, 日志面板格式化)
 
@@ -77,6 +78,7 @@ class JmClient(QObject):
         # 危险命令二次确认回调: UI 层注入, 签名 (cmd, payload) -> bool
         # None 表示无 UI 注入, 直接发送(用于脚本/无 GUI 场景)
         self._confirm_cb = None
+        self._capture_read_pending = False
 
     @property
     def registry(self):
@@ -267,6 +269,40 @@ class JmClient(QObject):
         payload = struct.pack('<BB', ring & 0xFF, param_type & 0xFF)
         return self._send(JmCmd.PID_PARAM_GET, payload)
 
+    def pid_param_batch_set(self, ring: int, values: dict):
+        """A5 原子批量写: values={param_type: float/int}。"""
+        entries = bytearray([len(values) & 0xFF])
+        for ptype, value in values.items():
+            ptype = int(ptype)
+            if ptype == 7:
+                raw = struct.pack('<I', int(value) & 0xFFFFFFFF)
+            else:
+                raw = struct.pack('<f', float(value))
+            entries.extend(bytes([ptype & 0xFF]))
+            entries.extend(raw)
+        return self._send(JmCmd.PID_PARAM_SET,
+                          bytes([int(ring) & 0xFF, 0]) + bytes(entries))
+
+    def pid_capture_start(self, channel_mask: int, rate_hz: int,
+                          sample_count: int = 256):
+        payload = struct.pack('<IIH', int(channel_mask) & 0xFFFFFFFF,
+                              int(rate_hz) & 0xFFFFFFFF,
+                              max(1, min(256, int(sample_count))))
+        sent = self._send(JmCmd.HIGH_SPEED_DAQ, payload)
+        self._capture_read_pending = bool(sent)
+        return sent
+
+    def pid_capture_stop(self):
+        self._capture_read_pending = False
+        return self._send(JmCmd.STOP_LOG)
+
+    def pid_capture_read(self, offset: int = 0, count: int = 7):
+        sent = self._send(JmCmd.READ_DEBUG,
+                          struct.pack('<HB', int(offset) & 0xFFFF,
+                                      max(0, min(255, int(count)))))
+        self._capture_read_pending = bool(sent)
+        return sent
+
     # ---- 遥测订阅 / 遥控开关 ----
     def set_telemetry(self, enable: bool, mask: int, period_ms: int = 0):
         """遥控模式开关: enable=True 启动周期上报, False 停止。
@@ -415,6 +451,31 @@ class JmClient(QObject):
 
         # READ_DEBUG(0xC9): 调试帧, 当前不解析, 避免误入 ACK 兜底分支
         if cmd == JmCmd.READ_DEBUG:
+            if self._capture_read_pending and len(payload) >= 15:
+                state = payload[0]
+                mask = codec.rd_u32(payload, 1)
+                rate = codec.rd_u32(payload, 5)
+                total = codec.rd_u16(payload, 9)
+                offset = codec.rd_u16(payload, 11)
+                count = payload[13]
+                channels = payload[14]
+                data = []
+                pos = 15
+                for _ in range(count):
+                    row = []
+                    for _ in range(channels):
+                        if pos + 4 > len(payload):
+                            break
+                        row.append(codec.rd_f32(payload, pos))
+                        pos += 4
+                    if len(row) == channels:
+                        data.append(row)
+                self.pid_capture_chunk_received.emit({
+                    'state': state, 'mask': mask, 'rate_hz': rate,
+                    'total': total, 'offset': offset, 'count': len(data),
+                    'channels': channels, 'samples': data,
+                })
+                return
             return
 
         # DEV_INFO

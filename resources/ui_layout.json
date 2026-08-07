@@ -2,25 +2,25 @@
   "version": 1,
   "settings": {
     "baud": "2000000",
-    "transport_type": "can",
+    "transport_type": "serial",
     "can_bitrate": "1000000",
     "can_motor_id": 1,
-    "can_channel_name": "PCAN_USBBUS1",
+    "can_channel_name": "",
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1754,
-      "height": 1051,
-      "x": 452,
-      "y": 79
+      "width": 1696,
+      "height": 1048,
+      "x": 388,
+      "y": 195
     },
     "right_splitter": [
-      995,
+      992,
       0
     ],
     "main_splitter": [
-      357,
-      1371
+      338,
+      1332
     ],
     "log_splitter_sizes": [
       341,
@@ -28,7 +28,7 @@
     ],
     "layout_edit": true,
     "telemetry": {
-      "mask": 3335,
+      "mask": 3391,
       "period_ms": 10
     },
     "feedback_poll": {
@@ -38,11 +38,11 @@
     "log_visible": false,
     "log_opts": {
       "ts": true,
-      "tx": false,
+      "tx": true,
       "rx": true,
       "raw": true,
-      "can_raw": true,
-      "autoscroll": true,
+      "can_raw": false,
+      "autoscroll": false,
       "lvl_debug": false,
       "lvl_info": false,
       "lvl_warn": false,
@@ -89,9 +89,10 @@
       }
     },
     "motion": {
-      "current_cmd": 20,
+      "current_cmd": 16,
       "fields": {
-        "vel_ref": 9.0
+        "ud": 1.4,
+        "uq": 0.0
       }
     },
     "motor_param": {
@@ -101,7 +102,7 @@
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 486,
+        "5": 447,
         "6": 72,
         "7": 72
       }
@@ -113,7 +114,7 @@
         "2": 120,
         "3": 200,
         "4": 125,
-        "5": 454,
+        "5": 267,
         "6": 72,
         "7": 72
       }
@@ -125,7 +126,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 543,
+        "5": 325,
         "6": 72,
         "7": 72
       }
@@ -137,17 +138,17 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 531,
+        "5": 492,
         "6": 72,
         "7": 72
       }
     },
     "calib": {
-      "task_tab_index": 2,
+      "task_tab_index": 6,
       "history_visible": false,
       "active_task": [
-        146,
-        2
+        150,
+        1
       ],
       "config_panel": {
         "column_widths": {
@@ -156,7 +157,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 543,
+          "5": 325,
           "6": 72,
           "7": 72
         }
@@ -165,6 +166,26 @@
     "pid": {
       "history_visible": false,
       "tuning_mode": "current_d",
+      "waveform_rate_hz": 1000,
+      "waveform_source": "current_d",
+      "waveform_window": {
+        "geo": [
+          921,
+          384,
+          1080,
+          701
+        ],
+        "follow": true,
+        "rate_hz": 1000,
+        "source": "current_d",
+        "buffer_max": 200000,
+        "line_width": 2,
+        "dot_size": 2,
+        "wave_style": "line+dot",
+        "stats": false,
+        "y_auto": true,
+        "err_threshold": 0.0
+      },
       "params_panel": {
         "column_widths": {
           "0": 220,
@@ -172,7 +193,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 531,
+          "5": 492,
           "6": 72,
           "7": 72
         }
@@ -188,7 +209,7 @@
     },
     "fault_info": {
       "disable_mask": 0,
-      "current_tab": 0
+      "current_tab": 2
     }
   },
   "theme": "dark",

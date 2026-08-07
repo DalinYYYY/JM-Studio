@@ -7,6 +7,7 @@
 import time
 import json
 import secrets
+import math
 from collections import deque
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from jmproto import JmCmd, cmd_name, err_name, err_name_cn, fault_mask_to_str
 from transport.serial_transport import SerialTransport
 from transport.virtual_engine import VirtualTransport
 from core.motor_client import JmClient, DANGER_CMDS
+from core.pid_debug_profile import get_pid_debug_profile
+from core.pid_autotune import estimate_pid_proposal
 
 from ui.panels.connection_panel import ConnectionPanel
 from ui.panels.control_panel import ControlPanel
@@ -35,7 +38,7 @@ from ui.panels.plot_panel import PlotPanel
 from ui.panels.log_panel import LogPanel
 from ui.panels.state_machine_panel import StateMachinePanel
 from ui.panels.calibration_panel import CalibrationPanel
-from ui.panels.pid_panel import PidPanel
+from ui.panels.pid_panel import PidPanel, PidSource
 from ui.panels.twin_param_panel import TwinParamPanel
 from ui.panels.fault_info_panel import FaultInfoPanel
 from ui.panels.debug_plot_window import DebugPlotWindow
@@ -65,6 +68,12 @@ class MainWindow(QMainWindow):
     # 电机本体参数(转发到反馈面板转子示意图), code_name 对应 CSV 参数字段
     _MOTOR_PARAM_KEYS = ("r", "ld", "lq", "flux", "kt", "ke", "pole_pairs",
                          "elec_angle_bias")
+
+    _PID_THEORY_PARAM_NAMES = (
+        "phase_resistance", "phase_inductance_d", "phase_inductance_q",
+        "torque_constant", "rotor_inertia", "current_lim",
+        "current_control_bandwidth", "peak_current",
+    )
 
     def __init__(self):
         super().__init__()
@@ -145,6 +154,19 @@ class MainWindow(QMainWindow):
         self._pid_telemetry_snapshot: dict | None = None
         self._pid_telemetry_active = False
         self._active_main_tab_widget = None
+        self._pid_capture_offset = 0
+        self._pid_capture_total = 0
+        self._pid_capture_generation = 0
+        self._pid_capture_timer = QTimer(self)
+        self._pid_capture_timer.setInterval(60)
+        self._pid_capture_timer.timeout.connect(self._poll_pid_capture)
+        self._pid_debug_heartbeat_timer = QTimer(self)
+        self._pid_debug_heartbeat_timer.setInterval(500)
+        self._pid_debug_heartbeat_timer.timeout.connect(self._send_pid_debug_heartbeat)
+        self._pid_commit_expected = {}
+        self._pid_commit_source_ring = None
+        self._pid_commit_phase = 'idle'
+        self._pid_theory_pending: dict | None = None
 
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setMinimumSize(1200, 800)
@@ -1005,6 +1027,7 @@ class MainWindow(QMainWindow):
         c.pid_autotune_result_received.connect(self._on_pid_autotune_result)
         c.pid_source_received.connect(self._on_pid_source_received)
         c.pid_param_received.connect(self._on_pid_param_received)
+        c.pid_capture_chunk_received.connect(self._on_pid_capture_chunk)
 
         # 状态机面板: 周期请求 -> 拉取 READ_STATE
         self._state_panel.poll_state.connect(self._on_poll_state)
@@ -1041,12 +1064,20 @@ class MainWindow(QMainWindow):
             lambda r, c_bw, v_bw, p_bw: self._on_pid_autotune(r, c_bw, v_bw, p_bw))
         self._pid_panel.pid_source_set_requested.connect(
             lambda r, s: self._on_pid_source_set(r, s))
+        self._pid_panel.pid_source_get_requested.connect(
+            lambda: self._client.pid_source_get() if self._client.is_open() else None)
+        self._pid_panel.pid_state_get_requested.connect(
+            lambda: self._client.query_state() if self._client.is_open() else None)
         self._pid_panel.pid_param_set_requested.connect(
             lambda ring, ptype, val: self._on_pid_param_set(ring, ptype, val))
         self._pid_panel.pid_param_get_requested.connect(
             lambda ring, ptype: self._on_pid_param_get(ring, ptype))
         self._pid_panel.pid_tuning_mode_changed.connect(
             self._on_pid_tuning_mode_changed)
+        self._pid_panel.pid_waveform_config_changed.connect(
+            self._on_pid_waveform_config_changed)
+        self._pid_panel.pid_debug_commit_requested.connect(
+            self._on_pid_debug_commit)
         # PID 参数面板: 注入 PID Tab 内嵌, 复用 motor_config 通道(0xE6/0xE7/0xEA)
         self._pid_panel.attach_params_panel(self._pid_params_panel)
         self._pid_params_panel.read_param.connect(
@@ -1587,7 +1618,9 @@ class MainWindow(QMainWindow):
         self._reconnect_attempts = 0
         if self._can_scan_active:
             self._cancel_can_scan()
-        # 断开前若仍在周期上报, 通知下位机停止, 并复位面板开关
+        # 断开前停止调试采样和周期遥测，避免下位机继续产生无消费者数据。
+        self._stop_pid_capture()
+        self._pid_panel.close_waveform_window()
         if self._client.is_open():
             self._client.set_telemetry(False, 0, 0)
         self._telemetry_panel.set_running(False)
@@ -1597,6 +1630,7 @@ class MainWindow(QMainWindow):
         self._pending_param_writes.clear()
         self._param_read_queue.clear()
         self._param_write_queue.clear()
+        self._pid_theory_pending = None
         self._cmd_watchdog.stop()
         # 清除各 ParamPanel 内部待确认写状态, 防止"等待返回"高亮卡死
         for pnl in (self._param_panel, self._config_panel,
@@ -1646,6 +1680,8 @@ class MainWindow(QMainWindow):
         self._link_connected = connected
         is_can = (self._client.transport.name == "can")
         if not connected:
+            self._pid_debug_heartbeat_timer.stop()
+            self._stop_pid_capture(send_command=False)
             self._can_commissioning_required = False
             if self._can_scan_active:
                 self._cancel_can_scan()
@@ -1682,6 +1718,7 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(50, self._start_can_scan)
             else:
                 try:
+                    self._client.query_state()
                     self._client.pid_source_get()
                 except Exception:
                     pass
@@ -1824,10 +1861,9 @@ class MainWindow(QMainWindow):
             self._pid_panel.set_pid_targets(self._pid_last_targets)
 
     def _pid_required_telemetry_mask(self) -> int:
-        """PID 调试页需要的遥测字段。当前所有模式都至少需要位置/速度、DQ 和状态。"""
-        return (jp.JmTlmBit.POS_VEL | jp.JmTlmBit.DQ |
-                jp.JmTlmBit.PHASE | jp.JmTlmBit.STATE |
-                jp.JmTlmBit.CURRENT_TARGET | jp.JmTlmBit.MOTION_TARGET)
+        """返回当前调试环真正需要的遥测分组。"""
+        mode = self._pid_panel.current_tuning_mode()
+        return get_pid_debug_profile(mode).telemetry_mask
 
     def _pid_telemetry_period(self) -> int:
         try:
@@ -1835,7 +1871,8 @@ class MainWindow(QMainWindow):
                        if self._pid_telemetry_snapshot else self._telemetry_panel.get_period())
         except Exception:
             base = 20
-        return max(1, min(base, 20))
+        profile = get_pid_debug_profile(self._pid_panel.current_tuning_mode())
+        return max(1, min(base, profile.telemetry_max_period_ms))
 
     def _activate_pid_telemetry(self):
         """进入 PID 页时临时接管遥测配置, 退出后恢复用户原设置。"""
@@ -1886,8 +1923,167 @@ class MainWindow(QMainWindow):
                 self._log_panel.log("[PID] 恢复进入前遥测: 停止")
 
     def _on_pid_tuning_mode_changed(self, _mode: str):
+        # 整定模式只决定遥测观测组; 波形采集由波形窗口自己的数据源决定。
         if self._active_main_tab_widget is self._pid_panel:
             self._apply_pid_telemetry_for_mode()
+
+    def _on_pid_waveform_config_changed(self, enabled: bool, _rate_hz: int):
+        """Apply the waveform source/rate change to the acquisition session."""
+        if not enabled:
+            self._stop_pid_capture()
+            return
+        if self._active_main_tab_widget is self._pid_panel:
+            self._restart_pid_capture()
+
+    def _stop_pid_capture(self, send_command: bool = True):
+        """停止一次采样会话并丢弃旧读取游标。"""
+        self._pid_capture_generation += 1
+        self._pid_capture_timer.stop()
+        self._pid_capture_offset = 0
+        self._pid_capture_total = 0
+        self._pid_panel.set_capture_active(False)
+        if send_command and self._client.is_open():
+            try:
+                self._client.pid_capture_stop()
+            except Exception:
+                pass
+
+    def _restart_pid_capture(self):
+        """模式变化时切换采样配置，避免新旧通道数据混合。"""
+        self._stop_pid_capture()
+        self._pid_panel._clear_pid_waveform()
+        self._start_pid_capture()
+
+    def _start_pid_capture(self):
+        # 采集只要求: 链路在、停在 PID 页、波形窗口已打开。与 DEBUG source 无关。
+        if (not self._client.is_open() or
+                self._active_main_tab_widget is not self._pid_panel or
+                not self._pid_panel.waveform_enabled()):
+            self._pid_panel.set_capture_active(False)
+            return
+        if self._pid_capture_timer.isActive():
+            return
+        self._pid_capture_offset = 0
+        self._pid_capture_total = 0
+        profile = self._pid_panel.waveform_profile()
+        if self._client.pid_capture_start(
+                profile.capture_mask,
+                self._pid_panel.waveform_rate_hz(),
+                profile.capture_samples):
+            self._pid_panel.set_capture_active(True)
+            self._pid_capture_timer.start()
+        else:
+            self._pid_panel.set_capture_active(False)
+
+    def _send_pid_debug_heartbeat(self):
+        if (self._client.is_open() and
+                self._active_main_tab_widget is self._pid_panel and
+                self._pid_panel.has_any_debug_source()):
+            self._client.pid_source_get()
+
+    def _sync_pid_debug_heartbeat(self):
+        """Run the A2 lease only while this page owns a confirmed DEBUG source."""
+        should_run = (
+            self._client.is_open() and
+            self._active_main_tab_widget is self._pid_panel and
+            self._pid_panel.has_any_debug_source())
+        if should_run:
+            if not self._pid_debug_heartbeat_timer.isActive():
+                self._pid_debug_heartbeat_timer.start()
+            return
+        self._pid_debug_heartbeat_timer.stop()
+        # 波形采集不随 DEBUG 租约结束: 只要波形窗口还开着就继续采。
+
+    def _poll_pid_capture(self):
+        if (not self._client.is_open() or
+                self._active_main_tab_widget is not self._pid_panel or
+                not self._pid_panel.waveform_enabled()):
+            self._stop_pid_capture(send_command=False)
+            return
+        self._client.pid_capture_read(self._pid_capture_offset, 24)
+
+    def _on_pid_capture_chunk(self, chunk: dict):
+        if self._active_main_tab_widget is not self._pid_panel:
+            return
+        profile = self._pid_panel.waveform_profile()
+        if int(chunk.get('mask', 0)) != profile.capture_mask:
+            # 数据源切换期间可能收到旧 C9 应答，不允许它推进新会话游标。
+            return
+        self._pid_panel.feed_capture_chunk(chunk)
+        self._pid_capture_total = int(chunk.get('total', 0))
+        count = int(chunk.get('count', 0))
+        self._pid_capture_offset = int(chunk.get('offset', self._pid_capture_offset)) + count
+        if int(chunk.get('state', 0)) == 2 and self._pid_capture_offset >= self._pid_capture_total:
+            self._pid_capture_timer.stop()
+            self._pid_panel.set_capture_active(False)
+            generation = self._pid_capture_generation
+            QTimer.singleShot(
+                0, lambda g=generation: self._continue_pid_capture(g))
+
+    def _continue_pid_capture(self, generation: int):
+        """Start the next fixed-size B7 buffer to provide a continuous plot."""
+        if generation != self._pid_capture_generation:
+            return
+        self._start_pid_capture()
+
+    def _on_pid_debug_commit(self, ring: int, values: dict):
+        """A6运行值 -> E7工程值 -> E6校验 -> A1切Flash -> EA固化。"""
+        if self._pid_commit_phase != 'idle':
+            self._log_panel.log_warn('[PID] 已有调试值固化流程正在执行，请等待完成')
+            return
+        if not self._ensure_open():
+            return
+        if (self._pending_param_reads or self._pending_param_writes or
+                self._param_read_queue or self._param_write_queue):
+            self._log_panel.log_warn('[PID] 参数通道忙，请等待当前读写完成后重试')
+            return
+        mapping = {
+            0: {1: 'kp_ld', 2: 'ki_ld', 5: 'integral_limit'},
+            1: {1: 'kp_lq', 2: 'ki_lq', 5: 'integral_limit'},
+            2: {1: 'kp_s', 2: 'ki_s', 5: 'speed_integral_limit'},
+            3: {1: 'kp_p', 5: 'position_integral_limit'},
+        }
+        by_name = {spec.code_name: pid for pid, spec in
+                   self._registry.motor_config_params.items()}
+        writes = []
+        expected = {}
+        for ptype, name in mapping.get(int(ring), {}).items():
+            if ptype not in values or name not in by_name:
+                continue
+            pid = by_name[name]
+            value = float(values[ptype])
+            writes.append((pid, f'{value:.9g}'))
+            expected[pid] = value
+        if not writes:
+            self._log_panel.log_warn('[PID] 当前环没有可持久化的已读字段')
+            return
+        self._pid_commit_expected = expected
+        self._pid_commit_source_ring = 0 if ring <= 1 else ring - 1
+        self._pid_commit_phase = 'writing'
+        self._on_param_write_many(self._pid_params_panel, writes)
+        self._log_panel.log(
+            f'[PID] 提交调试值: A6缓存 -> E7写入 {len(writes)} 项；Kd/输出限幅/滤波/flags为运行期字段，不写Flash')
+
+    def _start_pid_commit_verify(self):
+        if self._pid_commit_phase != 'writing' or not self._pid_commit_expected:
+            return
+        self._pid_commit_phase = 'verifying'
+        self._on_param_read_many(self._pid_params_panel,
+                                 list(self._pid_commit_expected.keys()))
+        self._log_panel.log('[PID] E7写入完成，开始E6逐项读回校验')
+
+    def _cancel_pid_commit(self, reason: str):
+        if self._pid_commit_phase == 'idle':
+            return
+        phase = self._pid_commit_phase
+        self._pid_commit_expected.clear()
+        self._pid_commit_source_ring = None
+        self._pid_commit_phase = 'idle'
+        if phase == 'writing':
+            self._param_write_queue.clear()
+        elif phase == 'verifying':
+            self._param_read_queue.clear()
+        self._log_panel.log_warn(f'[PID] {reason}，已取消调试值固化流程')
 
     def _on_main_tab_changed(self, index: int):
         """切到标定/PID Tab 且已连接时, 自动读一次参数。"""
@@ -1897,6 +2093,11 @@ class MainWindow(QMainWindow):
             return
         if self._active_main_tab_widget is self._pid_panel and w is not self._pid_panel:
             self._restore_pid_telemetry()
+            self._stop_pid_capture()
+            self._pid_debug_heartbeat_timer.stop()
+            if self._pid_panel.has_any_debug_source():
+                self._log_panel.log(
+                    "[PID] 已离开调试页，停止DEBUG租约；设备将在2秒内安全回滚")
         self._active_main_tab_widget = w
         if w is self._calib_panel:
             if not self._client.is_open():
@@ -1910,12 +2111,21 @@ class MainWindow(QMainWindow):
         if w is self._pid_panel:
             if not self._client.is_open():
                 return
+            # 来源切换有 IDLE/READY 状态守卫，进入页面先主动同步 C1，
+            # 避免使用上一次连接或遥测缓存中的旧状态。
+            try:
+                self._client.query_state()
+                self._client.pid_source_get()
+            except Exception:
+                pass
             self._activate_pid_telemetry()
             # 已连接: 触发 PID 参数面板批量读取 (ControlParam 段)
             try:
                 self._pid_params_panel.read_all()
             except Exception:
                 pass
+            # 波形窗口开着就恢复采集 (与是否处于 DEBUG source 无关)
+            self._start_pid_capture()
             return
 
     def _on_apply_telemetry(self, enable: bool, mask: int, period_ms: int):
@@ -2027,6 +2237,8 @@ class MainWindow(QMainWindow):
             if self._client.motor_info_read(int(param_id)):
                 self._pending_param_reads.append(panel)
                 self._cmd_watchdog.start()
+            elif self._pid_commit_phase == 'verifying':
+                self._cancel_pid_commit('E6读回命令发送失败')
         else:
             if self._client.param_read(int(param_id)):
                 self._pending_param_reads.append(panel)
@@ -2040,6 +2252,8 @@ class MainWindow(QMainWindow):
                 panel.note_write_sent(int(param_id))
                 self._pending_param_writes.append(panel)
                 self._cmd_watchdog.start()
+            elif self._pid_commit_phase == 'writing':
+                self._cancel_pid_commit('E7写入命令发送失败')
         else:
             if self._client.param_write(int(param_id), value):
                 panel.note_write_sent(int(param_id))
@@ -2455,6 +2669,31 @@ class MainWindow(QMainWindow):
         panel.set_value(param_id, disp)
         name = spec.code_name if spec else f"id={param_id}"
         self._log_panel.log(f"[RX] {panel.panel_name()} {name}(id={param_id}) = {disp}")
+        if self._pid_theory_pending is not None and panel is self._config_panel:
+            waiting = self._pid_theory_pending["waiting"]
+            waiting.discard(int(param_id))
+            if not waiting:
+                self._finish_pid_theory()
+        if (self._pid_commit_phase == 'verifying' and
+                param_id in self._pid_commit_expected):
+            expected = self._pid_commit_expected[param_id]
+            try:
+                verified = math.isclose(float(val), float(expected), rel_tol=1e-5, abs_tol=1e-6)
+            except (TypeError, ValueError):
+                verified = False
+            if not verified:
+                self._cancel_pid_commit(
+                    f'E6校验失败 {name}: expected={expected} actual={val}')
+            else:
+                self._pid_commit_expected.pop(param_id, None)
+                if not self._pid_commit_expected and self._pid_commit_source_ring is not None:
+                    source_ring = self._pid_commit_source_ring
+                    self._pid_commit_source_ring = None
+                    self._pid_commit_phase = 'switching'
+                    if self._client.pid_source_set(source_ring, int(PidSource.FLASH)):
+                        self._log_panel.log('[PID] E6校验通过，发送A1切换Flash来源')
+                    else:
+                        self._cancel_pid_commit('A1切换Flash来源发送失败')
         # P3: motor_info 导出拦截 — 收集读回值到 _export_state
         # _on_motor_info_export 触发批量读后, 每次读应答都收集到这里
         # 收集完成后由 _finalize_export 序列化为 JSON 保存
@@ -2480,6 +2719,8 @@ class MainWindow(QMainWindow):
         if self._pending_param_reads:
             panel = self._pending_param_reads.popleft()
             timed_out.append(f"读({panel.panel_name()})")
+            if panel is self._config_panel and self._pid_theory_pending is not None:
+                self._cancel_pid_theory("读取电机参数超时")
             self._pump_param_read_queue()
         elif self._pending_param_writes:
             panel = self._pending_param_writes.popleft()
@@ -2487,6 +2728,9 @@ class MainWindow(QMainWindow):
             timed_out.append(f"写({panel.panel_name()})")
             self._pump_param_write_queue()
         if timed_out:
+            if self._pid_commit_phase in ('writing', 'verifying'):
+                self._cancel_pid_commit(
+                    'E7写入超时' if self._pid_commit_phase == 'writing' else 'E6读回超时')
             self._log_panel.log_warn(f"命令超时, 弹出: {', '.join(timed_out)}")
             self.statusBar().showMessage("命令超时, 队列已自愈", 3000)
             # 若队列仍有待发项, 重启看门狗
@@ -2558,6 +2802,8 @@ class MainWindow(QMainWindow):
         self._calib_panel.on_ack(cmd)
         # PID 面板: 0xA1 来源切换 / 0xA5 调试参数写入 成功 ACK 转发(内部按 cmd 过滤)
         self._pid_panel.on_ack(cmd)
+        if cmd == JmCmd.PID_SOURCE_SET:
+            self._sync_pid_debug_heartbeat()
         # 写完成: 0xE1(运行时参数) / 0xE7(电机配置) 共用同一待应答队列
         if cmd in (JmCmd.PARAM_WRITE, JmCmd.MOTOR_INFO_WRITE):
             if not self._pending_param_writes:
@@ -2567,16 +2813,32 @@ class MainWindow(QMainWindow):
                 panel.confirm_pending_write()
                 self._cmd_watchdog.stop()
                 self._pump_param_write_queue()
+                if (cmd == JmCmd.MOTOR_INFO_WRITE and self._pid_commit_phase == 'writing'
+                        and not self._pending_param_writes and not self._param_write_queue):
+                    self._start_pid_commit_verify()
+        if cmd == JmCmd.PID_SOURCE_SET and self._pid_commit_phase == 'switching':
+            self._pid_commit_phase = 'saving'
+            if self._client.motor_info_save():
+                self._log_panel.log('[PID] A1已切到Flash来源，发送EA固化')
+            else:
+                self._cancel_pid_commit('EA固化命令发送失败')
         # 需求2: 保存到 Flash/EEPROM (0xEA) ACK -> 标定结果/电机配置面板恢复正常颜色
         if cmd == JmCmd.MOTOR_INFO_SAVE:
             for pnl in (self._calib_results_panel, self._config_panel, self._pid_params_panel):
                 fn = getattr(pnl, "clear_fresh", None)
                 if callable(fn):
                     fn()
+            if self._pid_commit_phase == 'saving':
+                self._pid_commit_phase = 'idle'
+                self._log_panel.log('[PID] 当前调试值已校验并固化到Flash')
         # 队列自愈: 若收到 PARAM_READ/MOTOR_INFO_READ 的意外 ACK(正常应走数据帧,
         # 但某些固件/仿真器可能只回 ACK), 弹出读队列防止永久死锁
         if cmd in (JmCmd.PARAM_READ, JmCmd.MOTOR_INFO_READ) and self._pending_param_reads:
-            self._pending_param_reads.popleft()
+            if cmd == JmCmd.MOTOR_INFO_READ and self._pid_commit_phase == 'verifying':
+                self._cancel_pid_commit('E6未返回参数数据')
+            panel = self._pending_param_reads.popleft()
+            if panel is self._config_panel and self._pid_theory_pending is not None:
+                self._cancel_pid_theory("设备未返回电机参数数据")
             self._cmd_watchdog.stop()
             self._pump_param_read_queue()
 
@@ -2592,13 +2854,25 @@ class MainWindow(QMainWindow):
             self._log_panel.log_warn("[遥测] 下位机拒绝 SET_TELEMETRY，已停止显示为运行中")
         if cmd == JmCmd.SET_CAN_ID:
             self._pending_can_id = None
+        if cmd == JmCmd.MOTOR_INFO_WRITE and self._pid_commit_phase == 'writing':
+            self._cancel_pid_commit('E7写入失败')
+        if cmd == JmCmd.PID_SOURCE_SET and self._pid_commit_phase == 'switching':
+            self._cancel_pid_commit('A1切换Flash来源失败，未执行EA固化')
+        if cmd == JmCmd.MOTOR_INFO_SAVE and self._pid_commit_phase == 'saving':
+            self._cancel_pid_commit('EA固化失败')
         # 标定面板: 0x90~0x98 NACK 转发(内部按 cmd 过滤)
         self._calib_panel.on_nack(cmd, err)
         # PID 面板: 0xA1 来源切换 / 0xA5 调试参数写入 失败 NACK 转发(内部按 cmd 过滤)
         self._pid_panel.on_nack(cmd, err)
+        if cmd == JmCmd.PID_SOURCE_SET:
+            self._sync_pid_debug_heartbeat()
         # 读失败: 0xE0 / 0xE6 共用同一待应答队列
         if cmd in (JmCmd.PARAM_READ, JmCmd.MOTOR_INFO_READ) and self._pending_param_reads:
-            self._pending_param_reads.popleft()
+            if cmd == JmCmd.MOTOR_INFO_READ and self._pid_commit_phase == 'verifying':
+                self._cancel_pid_commit('E6读回失败')
+            panel = self._pending_param_reads.popleft()
+            if panel is self._config_panel and self._pid_theory_pending is not None:
+                self._cancel_pid_theory("读取电机参数失败")
             self._cmd_watchdog.stop()
             self._pump_param_read_queue()
         # 写失败: 0xE1 / 0xE7 共用同一待应答队列
@@ -2649,7 +2923,10 @@ class MainWindow(QMainWindow):
         """
         self._log_panel.log(
             f"[RX] PID_SOURCE cur={cur_src} vel={vel_src} pos={pos_src}")
-        self._pid_panel.on_source_received(cur_src, vel_src, pos_src)
+        preserve_draft = self._pid_panel.has_unapplied_source_selection()
+        self._pid_panel.on_source_received(
+            cur_src, vel_src, pos_src, sync_selection=not preserve_draft)
+        self._sync_pid_debug_heartbeat()
 
     def _on_pid_param_received(self, ring: int, param_type: int, value4: bytes):
         """0xA6 PID_PARAM_GET 应答 (JmClient.pid_param_received 信号)。
@@ -2659,13 +2936,69 @@ class MainWindow(QMainWindow):
         self._pid_panel.on_pid_param_received(ring, param_type, value4)
 
     def _on_pid_autotune(self, ring_select: int, cur_bw: float, vel_bw: float, pos_bw: float):
-        """PID 面板请求理论估计 -> 调用 client.pid_autotune (0xA0)。"""
+        """Read motor_info and generate editable PID values on the host."""
         if not self._ensure_open():
             return
+        if self._pid_theory_pending is not None:
+            self._pid_panel.on_autotune_error("理论估计正在读取电机参数")
+            return
+
+        names = set()
+        if ring_select & 0x01:
+            names.update((
+                "phase_resistance", "phase_inductance_d",
+                "phase_inductance_q", "current_lim",
+                "current_control_bandwidth", "peak_current"))
+        if ring_select & 0x02:
+            names.update((
+                "torque_constant", "rotor_inertia",
+                "current_lim", "peak_current"))
+
+        param_ids = self._config_panel.param_ids_by_name(names)
+        if names and not param_ids:
+            self._pid_panel.on_autotune_error(
+                "motor_info.csv 缺少理论估计所需参数")
+            return
+        self._pid_theory_pending = {
+            "ring_select": int(ring_select),
+            "cur_bw": float(cur_bw),
+            "vel_bw": float(vel_bw),
+            "pos_bw": float(pos_bw),
+            "waiting": set(param_ids),
+        }
+        if not param_ids:
+            self._finish_pid_theory()
+            return
+        self._log_panel.log(
+            f"[PID] 理论估计读取 motor_info: {len(param_ids)} 项")
+        self._on_param_read_many(self._config_panel, param_ids)
+
+    def _finish_pid_theory(self):
+        pending = self._pid_theory_pending
+        if pending is None:
+            return
+        self._pid_theory_pending = None
+        values = self._config_panel.current_values_by_name(
+            self._PID_THEORY_PARAM_NAMES)
         try:
-            self._client.pid_autotune(ring_select, cur_bw, vel_bw, pos_bw)
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"发送异常: {e}")
+            proposal = estimate_pid_proposal(
+                values, pending["ring_select"], pending["cur_bw"],
+                pending["vel_bw"], pending["pos_bw"])
+        except (TypeError, ValueError) as exc:
+            self._pid_panel.on_autotune_error(str(exc))
+            self._log_panel.log_warn(f"[PID] 理论估计失败: {exc}")
+            return
+        self._pid_panel.on_autotune_proposal(
+            pending["ring_select"], proposal)
+        self._log_panel.log(
+            f"[PID] 理论估计生成 {len(proposal)} 项修改值，未写入设备")
+
+    def _cancel_pid_theory(self, reason: str):
+        if self._pid_theory_pending is None:
+            return
+        self._pid_theory_pending = None
+        self._pid_panel.on_autotune_error(reason)
+        self._log_panel.log_warn(f"[PID] 理论估计取消: {reason}")
 
     def _on_pid_source_set(self, ring_select: int, source: int):
         """PID 面板请求来源切换 -> 调用 client.pid_source_set (0xA1)。"""
@@ -2715,7 +3048,8 @@ class MainWindow(QMainWindow):
             layout_store.set_meta("settings", self._collect_settings())
         except Exception:
             pass
-        # 退出前若仍在周期上报, 通知下位机停止, 避免串口关闭后下位机继续发
+        # 退出前停止调试采样和周期遥测，避免串口关闭后下位机继续发送。
+        self._stop_pid_capture()
         if self._client.is_open():
             self._client.set_telemetry(False, 0, 0)
         self._stats_timer.stop()

@@ -111,6 +111,16 @@ class TwinResponder:
         self._extra_params: dict = {}
         # 电机配置(motor_info)写入存储(非 MotorParam 内置字段)
         self._motor_config_store: dict = {}
+        self._pid_sources = [0, 0, 0]
+        self._pid_profiles = {
+            0: {1: 5.5, 2: 1500.0, 3: 0.0, 4: 24.0, 5: 200.0, 6: 1.0, 7: 1},
+            1: {1: 5.5, 2: 1500.0, 3: 0.0, 4: 24.0, 5: 200.0, 6: 1.0, 7: 1},
+            2: {1: 0.08, 2: 0.8, 3: 0.0, 4: 20.0, 5: 200.0, 6: 1.0, 7: 3},
+            3: {1: 10.0, 2: 0.0, 3: 0.0, 4: 30.0, 5: 0.0, 6: 1.0, 7: 0},
+        }
+        self._capture_samples = []
+        self._capture_mask = 0
+        self._capture_rate = 0
 
     # ================= 命令入口 =================
     def on_command(self, cmd: int, payload: bytes):
@@ -192,6 +202,55 @@ class TwinResponder:
         if cmd == int(JmCmd.PID_AUTOTUNE):
             # status=0(OK), fail_reason=0, ring_select_done=0, reserved×5=0
             return [(int(JmCmd.PID_AUTOTUNE), bytes(8))]
+        if cmd == int(JmCmd.PID_SOURCE_SET) and len(payload) >= 2:
+            ring, source = payload[0], payload[1]
+            if ring > 2 or source > 3:
+                return [self._nack(cmd, int(JmErr.OUT_OF_RANGE))]
+            if self._top_fsm() not in (int(TopFsm.IDLE), int(TopFsm.READY)):
+                return [self._nack(cmd, int(JmErr.STATE_DENY))]
+            self._pid_sources[ring] = source
+            return [self._ack(cmd)]
+        if cmd == int(JmCmd.PID_SOURCE_GET):
+            return [(cmd, bytes(self._pid_sources))]
+        if cmd == int(JmCmd.PID_PARAM_SET) and len(payload) >= 6:
+            ring, ptype = payload[0], payload[1]
+            if ring > 3 or self._pid_sources[0 if ring < 2 else ring - 1] != 3:
+                return [self._nack(cmd, int(JmErr.STATE_DENY))]
+            if ptype == 0:
+                count = payload[2]
+                if len(payload) != 3 + count * 5:
+                    return [self._nack(cmd, int(JmErr.LENGTH))]
+                for i in range(count):
+                    typ = payload[3 + i * 5]
+                    self._pid_profiles[ring][typ] = struct.unpack_from('<f', payload, 4 + i * 5)[0] if typ != 7 else struct.unpack_from('<I', payload, 4 + i * 5)[0]
+            else:
+                self._pid_profiles[ring][ptype] = struct.unpack_from('<f', payload, 2)[0] if ptype != 7 else struct.unpack_from('<I', payload, 2)[0]
+            return [self._ack(cmd)]
+        if cmd == int(JmCmd.PID_PARAM_GET) and len(payload) >= 2:
+            ring, ptype = payload[0], payload[1]
+            value = self._pid_profiles.get(ring, {}).get(ptype, 0.0)
+            raw = struct.pack('<I', int(value)) if ptype == 7 else struct.pack('<f', float(value))
+            return [(cmd, bytes([ring, ptype]) + raw)]
+        if cmd == int(JmCmd.HIGH_SPEED_DAQ) and len(payload) >= 8:
+            self._capture_mask, self._capture_rate = struct.unpack_from('<II', payload, 0)
+            count = struct.unpack_from('<H', payload, 8)[0] if len(payload) >= 10 else 256
+            t = self._tlm()
+            vals = [t.get('id_ref', 0.0), t.get('id', 0.0), t.get('iq_ref', 0.0), t.get('iq', 0.0),
+                    t.get('vel_ref', 0.0), t.get('vel', 0.0), t.get('pos_ref', 0.0), t.get('pos', 0.0)]
+            self._capture_samples = [[vals[i] for i in range(8) if self._capture_mask & (1 << i)] for _ in range(max(1, min(256, count)))]
+            return [self._ack(cmd)]
+        if cmd == int(JmCmd.STOP_LOG):
+            return [self._ack(cmd)]
+        if cmd == int(JmCmd.READ_DEBUG) and len(payload) == 3 and self._capture_samples:
+            offset, count = struct.unpack_from('<HB', payload, 0)
+            channels = sum(1 for i in range(8) if self._capture_mask & (1 << i))
+            rows = self._capture_samples[offset:offset + count]
+            out = bytearray([2]) + codec.wr_u32(self._capture_mask) + codec.wr_u32(self._capture_rate)
+            out += codec.wr_u16(len(self._capture_samples)) + codec.wr_u16(offset) + bytes([len(rows), channels])
+            for row in rows:
+                for value in row:
+                    out += codec.wr_f32(value)
+            return [(cmd, bytes(out))]
 
         # ---- 参数读写 ----
         if cmd == int(JmCmd.PARAM_READ):
