@@ -67,7 +67,6 @@ window._on_pid_autotune(0x07, 500.0, 50.0, 10.0)
 assert applied and "kp_ld" in applied[0] and "kp_p" in applied[0]
 assert window._pid_theory_pending is None
 
-window._pid_capture_timer.stop()
 window._pid_debug_heartbeat_timer.stop()
 window._stats_timer.stop()
 window._ui_timer.stop()

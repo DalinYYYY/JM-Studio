@@ -93,17 +93,14 @@ class PidPanel(QGroupBox):
     pid_state_get_requested = pyqtSignal()                         # C1 refresh before guarded operations
     pid_param_set_requested = pyqtSignal(int, int, float)          # ring, param_type, value (0xA5)
     pid_param_get_requested = pyqtSignal(int, int)                 # ring, param_type (0xA6)
-    pid_capture_start_requested = pyqtSignal(int, int, int)       # mask, rate_hz, samples
-    pid_capture_stop_requested = pyqtSignal()
-    pid_capture_read_requested = pyqtSignal(int, int)             # offset, count
     pid_debug_commit_requested = pyqtSignal(int, object)          # active profile ring, values
     pid_tuning_mode_changed = pyqtSignal(str)                     # current_d/current_q/velocity/position
     pid_waveform_config_changed = pyqtSignal(bool, int)           # enabled, requested sample/upload rate
+    pid_waveform_buffer_changed = pyqtSignal(int)                 # host history capacity in points
 
     _HISTORY_MAX = 200
-    # 波形存储: 按时间跨度(秒)配置, 而非固定点数。内存上限用于高频自动抽稀。
-    _WAVEFORM_SPAN_SEC = 20.0
-    _WAVEFORM_MAX_POINTS = 200000
+    # 波形历史由窗口“存储深度”控制；此上限只防止异常配置耗尽主机内存。
+    _WAVEFORM_MAX_POINTS = 2000000
 
     def __init__(self, registry=None, parent=None):
         super().__init__("", parent)
@@ -129,12 +126,17 @@ class PidPanel(QGroupBox):
         # 波形显示与 DEBUG 整定解耦: 采哪路数据由波形窗口顶部切换
         self._waveform_source = PID_WAVEFORM_DEFAULT_SOURCE
         self._waveform_rate_hz = 1000
-        # 波形存储缓冲: 按时间跨度(秒)×采样率决定容量, 高频时自动抽稀
-        self._plot_points = deque(
-            maxlen=self._waveform_buffer_size(self._waveform_rate_hz))
+        # 波形历史点由窗口存储深度控制；窗口创建后同步实际容量。
+        self._waveform_buffer_max = 200000
+        self._plot_points = deque(maxlen=self._waveform_buffer_max)
         self._waveform_window = None
         self._waveform_window_opts = {}
         self._capture_active = False
+        self._device_capture_rate_hz = 0
+        self._transport_capture_rate_hz = 0.0
+        self._capture_status_message = ""
+        self._capture_lost_packets = 0
+        self._capture_overflow_count = 0
         self._debug_values = {}
         # 写入后延迟回读定时器: 每个 (ring, param_type) 一个单次 QTimer
         self._readback_timers = {}
@@ -655,61 +657,56 @@ class PidPanel(QGroupBox):
             self._last_feedback = feedback
         self._refresh_observer_labels()
 
-    def _waveform_buffer_size(self, rate_hz: int) -> int:
-        """存储缓冲点数 = 时间跨度(秒)×有效采样率, 最少保留若干点。"""
-        return max(2, int(self._WAVEFORM_SPAN_SEC * max(50, int(rate_hz))))
+    def set_waveform_buffer_max(self, points: int):
+        """设置主窗口历史容量；只裁剪最早点，不影响 TRACE 接收。"""
+        limit = max(1000, min(int(points), self._WAVEFORM_MAX_POINTS))
+        self._waveform_buffer_max = limit
+        self._plot_points = deque(self._plot_points, maxlen=limit)
+        if self._waveform_window is not None:
+            self._waveform_window.set_history_points(self._plot_points)
 
-    def feed_capture_chunk(self, chunk: dict):
-        """把 C9 高速采样分块转换成所选数据源的目标/反馈曲线。
-
-        数据层: 存储缓冲按时间跨度(秒)配置, 高频时自动抽稀降采样,
-        保证时间跨度并限制内存; 新点只做增量追加, 不触发全量重绘。
-        采集与 DEBUG source 无关: 只要波形窗口在采, 数据就照常显示。
-        """
-        if (not isinstance(chunk, dict) or not self._waveform_enabled or
-                self._plot_paused):
+    def feed_trace_data(self, packet: dict):
+        """把 TRACE_DATA 批量帧按设备 sample index 转换为波形点。"""
+        if (not isinstance(packet, dict) or not self._waveform_enabled):
             return
-        mask = int(chunk.get('mask', 0))
-        rows = chunk.get('samples') or []
+        mask = int(packet.get('channel_mask', 0))
+        rows = packet.get('samples') or []
         bit_map = [i for i in range(8) if mask & (1 << i)]
         pair = get_pid_debug_profile(self._waveform_source).capture_channels
         try:
             ti, fi = bit_map.index(pair[0]), bit_map.index(pair[1])
         except ValueError:
             return
-        # 高频自动降采样: 需要的点数超上限时, 每 stride 存 1 点, 跨度不缩水
-        target_size = self._waveform_buffer_size(int(chunk.get('rate_hz', 0) or 0))
+        # 历史容量由用户设置决定；不按固定时间跨度自动抽稀，保证长时间数据可回看。
+        target_size = self._waveform_buffer_max
         decimate = 1
-        if target_size > self._WAVEFORM_MAX_POINTS:
-            decimate = target_size // self._WAVEFORM_MAX_POINTS + 1
-            target_size = self._WAVEFORM_MAX_POINTS
-        if self._plot_points.maxlen != target_size:
-            keep = list(self._plot_points)
-            self._plot_points = deque(keep, maxlen=target_size)
-
-        # 只追加新点并增量推给可视窗口; 横坐标 = 采样点编号 (含抽稀跳过的点)
+        first_index = int(packet.get('first_sample_index', 0))
         new_points = []
         for idx, row in enumerate(rows):
             if ti >= len(row) or fi >= len(row):
                 continue
-            sample_no = self._plot_sample_index
-            self._plot_sample_index += 1
+            sample_no = first_index + idx
             if decimate > 1 and idx % decimate != 0:
                 continue
-            target = float(row[ti]); feedback = float(row[fi])
+            target = float(row[ti])
+            feedback = float(row[fi])
             pt = (sample_no, target, feedback, target - feedback)
             self._plot_points.append(pt)
             new_points.append(pt)
-        if new_points:
+        if new_points and self._waveform_window is not None:
             self._waveform_window.append_points(new_points)
 
     @property
     def _waveform_enabled(self) -> bool:
-        """波形采集只由波形窗口是否打开决定 (面板上无独立开关)。"""
-        return self._waveform_window is not None
+        """波形数据接收开关状态。"""
+        return self.waveform_enabled()
 
     def waveform_enabled(self) -> bool:
-        return bool(self._waveform_enabled)
+        return bool(self._waveform_window is not None and
+                    self._waveform_window.receiving())
+
+    def waveform_window_open(self) -> bool:
+        return self._waveform_window is not None
 
     def waveform_source(self) -> str:
         """当前波形上传数据源 (与 DEBUG 整定模式无关)。"""
@@ -728,15 +725,37 @@ class PidPanel(QGroupBox):
         self._capture_active = bool(active)
         self._refresh_waveform_status()
 
+    def set_capture_metrics(self, device_hz: int = 0,
+                            transport_hz: float = 0.0,
+                            message: str = "",
+                            lost_packets: int = 0,
+                            overflow_count: int = 0):
+        self._device_capture_rate_hz = max(0, int(device_hz or 0))
+        self._transport_capture_rate_hz = max(0.0, float(transport_hz or 0.0))
+        self._capture_lost_packets = max(0, int(lost_packets or 0))
+        self._capture_overflow_count = max(0, int(overflow_count or 0))
+        self._capture_status_message = str(message or "")
+        self._refresh_waveform_status()
+
+    def _on_waveform_receive_toggled(self, receiving: bool):
+        self._capture_status_message = ""
+        self._clear_pid_waveform()
+        self.pid_waveform_config_changed.emit(
+            bool(receiving), self.waveform_rate_hz())
+        self._refresh_waveform_status()
+
     def _refresh_waveform_status(self):
         """把采集状态推送到波形子窗口 (面板上不再有状态标签)。"""
         window = self._waveform_window
         if window is None:
             return
-        effective = self.waveform_rate_hz()
-        requested = int(self._waveform_rate_hz)
-        limited = effective != requested
-        window.set_capture_status(self._capture_active, effective, limited)
+        requested = self.waveform_rate_hz()
+        limited = requested != int(self._waveform_rate_hz)
+        window.set_capture_status(
+            self._capture_active, requested, self._device_capture_rate_hz,
+            self._transport_capture_rate_hz, limited,
+            self._capture_status_message, self._capture_lost_packets,
+            self._capture_overflow_count)
 
     def _on_waveform_config_changed(self, rate_hz: int):
         """子窗口修改采样上传频率: 更新缓存并通知主窗口重启采集。"""
@@ -755,6 +774,9 @@ class PidPanel(QGroupBox):
         if key == self._waveform_source:
             return
         self._waveform_source = key
+        self._device_capture_rate_hz = 0
+        self._transport_capture_rate_hz = 0.0
+        self._capture_status_message = ""
         self._clear_pid_waveform()
         # 各数据源的固件采样上限不同, 切换后同步限幅并回写窗口控件
         if self._waveform_window is not None:
@@ -766,8 +788,9 @@ class PidPanel(QGroupBox):
             self._waveform_enabled, self.waveform_rate_hz())
 
     def _on_plot_pause_toggled(self, checked: bool):
-        """子窗口暂停/继续: 仅记录状态, 不回推窗口 (避免信号回环)。"""
+        """子窗口暂停/继续: 只暂停显示，不停止设备采集。"""
         self._plot_paused = bool(checked)
+        self._refresh_waveform_status()
 
     def _on_waveform_btn_clicked(self, checked: bool):
         """波形窗口按钮点击：打开/关闭窗口，同步按钮状态。"""
@@ -785,6 +808,8 @@ class PidPanel(QGroupBox):
                 self._clear_pid_waveform)
             self._waveform_window.pause_toggled.connect(
                 self._on_plot_pause_toggled)
+            self._waveform_window.receive_toggled.connect(
+                self._on_waveform_receive_toggled)
             self._waveform_window.rate_changed.connect(
                 self._on_waveform_config_changed)
             self._waveform_window.source_changed.connect(
@@ -792,28 +817,33 @@ class PidPanel(QGroupBox):
             self._waveform_window.set_opts(self._waveform_window_opts)
             # set_opts 可能恢复上次的数据源, 以窗口为准同步回面板
             self._waveform_source = self._waveform_window.source()
+            self._waveform_window.buffer_changed.connect(
+                self.set_waveform_buffer_max)
         # 数据源/采样上传频率控件都在窗口内: 同步当前值与该数据源的固件上限
         self._waveform_window.set_source(self._waveform_source)
         self._waveform_window.set_rate(
             int(self._waveform_rate_hz),
             int(self.waveform_profile().capture_rate_hz))
+        self.set_waveform_buffer_max(self._waveform_window.buffer_max())
         self._waveform_window.set_paused(self._plot_paused)
         self._waveform_window.show()
         self._waveform_window.raise_()
         self._waveform_window.activateWindow()
+        self._waveform_window.set_receiving(False)
+        self._waveform_window.set_history_points(self._plot_points)
         self._refresh_pid_waveform()
         self._refresh_waveform_status()
         self._sync_waveform_btn(True)
-        # 打开窗口即开始采集 (与 DEBUG 无关)
-        self.pid_waveform_config_changed.emit(True, self.waveform_rate_hz())
 
     def _on_waveform_window_closed(self):
         if self._waveform_window is not None:
             self._waveform_window_opts = self._waveform_window.get_opts()
+        was_receiving = self._waveform_window.receiving()
         self._waveform_window = None
         self._sync_waveform_btn(False)
         # 关窗即停止采集, 避免下位机继续上传无消费者数据
-        self.pid_waveform_config_changed.emit(False, self.waveform_rate_hz())
+        if was_receiving:
+            self.pid_waveform_config_changed.emit(False, self.waveform_rate_hz())
 
     def close_waveform_window(self):
         window = self._waveform_window
@@ -1259,7 +1289,12 @@ class PidPanel(QGroupBox):
         self._link_active = active
         if not active:
             self._cancel_all_readback()
+            if self.waveform_enabled():
+                self._capture_status_message = "链路未连接"
+        elif self._capture_status_message == "链路未连接":
+            self._capture_status_message = ""
         self._refresh_status()
+        self._refresh_waveform_status()
 
     def update_state(self, top_fsm: int, run_state: int, ctrl_mode: int, enable: int):
         self._current_top_fsm = top_fsm

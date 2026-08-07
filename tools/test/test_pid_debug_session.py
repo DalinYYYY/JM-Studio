@@ -1,4 +1,4 @@
-"""Main-window PID capture lifecycle tests."""
+"""Main-window PID TRACE lifecycle and session isolation tests."""
 
 import os
 import sys
@@ -11,7 +11,6 @@ from PyQt6.QtWidgets import QApplication
 
 from core.pid_debug_profile import get_pid_debug_profile
 from ui.main_window import MainWindow
-from ui.panels.pid_panel import PidRing, PidSource
 
 
 class SpyClient:
@@ -21,16 +20,30 @@ class SpyClient:
     def is_open(self):
         return True
 
+    def trace_config(self, enable, session_id=0, channel_mask=0,
+                     rate_hz=1000, packet_samples=4, flags=0):
+        self.calls.append(("trace_config", bool(enable), int(session_id),
+                           int(channel_mask), int(rate_hz), int(packet_samples)))
+        return True
+
+    def trace_stop(self, session_id=0):
+        self.calls.append(("trace_stop", int(session_id)))
+        return True
+
     def set_telemetry(self, enable, mask, period_ms):
         self.calls.append(("telemetry", enable, mask, period_ms))
         return True
 
-    def pid_capture_stop(self):
-        self.calls.append(("stop",))
+    def pid_source_get(self):
+        self.calls.append(("source_get",))
         return True
 
-    def pid_capture_start(self, mask, rate_hz, samples):
-        self.calls.append(("start", mask, rate_hz, samples))
+    def pid_source_set(self, ring, source):
+        self.calls.append(("source_set", int(ring), int(source)))
+        return True
+
+    def pid_param_get(self, ring, param_type):
+        self.calls.append(("param_get", int(ring), int(param_type)))
         return True
 
     def stop(self):
@@ -40,72 +53,92 @@ class SpyClient:
 app = QApplication.instance() or QApplication(sys.argv)
 window = MainWindow()
 window._client.stop()
+window._stats_timer.stop()
+window._ui_timer.stop()
+window._reconnect_timer.stop()
 spy = SpyClient()
 window._client = spy
 window._active_main_tab_widget = window._pid_panel
-window._pid_telemetry_active = True
 panel = window._pid_panel
+panel.set_link_active(True)
+panel.update_state(3, 0, 0, 0)
 
-# 波形采集与 DEBUG 无关: 全环 DEFAULT source 下开窗也要起采集。
-assert not panel.is_debug_active()
+assert not panel.waveform_enabled()
 spy.calls.clear()
 panel._open_pid_waveform_window()
-assert spy.calls[-1] == (
-    "start", panel.waveform_profile().capture_mask,
-    panel.waveform_rate_hz(), panel.waveform_profile().capture_samples)
+assert not spy.calls
+plot_window = panel._waveform_window
+plot_window._receive_btn.setChecked(True)
+profile = panel.waveform_profile()
+assert spy.calls[-1][0] == "trace_config"
+assert spy.calls[-1][1] is True
+assert spy.calls[-1][3] == profile.capture_mask
 assert panel.waveform_enabled()
 
-# 顶部数据源切换 -> 停旧会话, 用新掩码/新限幅重开。
-plot_window = panel._waveform_window
-for source in ("current_q", "velocity", "position", "current_d"):
-    spy.calls.clear()
-    plot_window._source_combo.setCurrentIndex(
-        plot_window._source_combo.findData(source))
-    profile = get_pid_debug_profile(source)
-    assert panel.waveform_source() == source
-    assert spy.calls[-2:] == [
-        ("stop",),
-        ("start", profile.capture_mask, panel.waveform_rate_hz(),
-         profile.capture_samples),
-    ]
-
-# 整定模式只切遥测组, 不再动采集会话。
-for mode, ring in (("current_d", PidRing.CURRENT),
-                   ("current_q", PidRing.CURRENT),
-                   ("velocity", PidRing.VELOCITY),
-                   ("position", PidRing.POSITION)):
-    panel._tuning_mode = mode
-    panel._ring_source[ring] = PidSource.DEBUG
-    spy.calls.clear()
-    window._on_pid_tuning_mode_changed(mode)
-    profile = get_pid_debug_profile(mode)
-    telemetry = [call for call in spy.calls if call[0] == "telemetry"]
-    assert telemetry and telemetry[0][2] == profile.telemetry_mask
-    assert not any(call[0] in ("stop", "start") for call in spy.calls)
-
-# A delayed chunk from the previous source must not advance the new read cursor.
+# 数据源切换必须先使旧 session 失效，再用新 mask 开启新 session。
+spy.calls.clear()
 plot_window._source_combo.setCurrentIndex(
     plot_window._source_combo.findData("velocity"))
-window._pid_capture_offset = 19
-window._on_pid_capture_chunk({
-    "mask": get_pid_debug_profile("current_q").capture_mask,
-    "offset": 0,
-    "count": 7,
-    "total": 256,
-    "state": 1,
-    "samples": [],
-})
-assert window._pid_capture_offset == 19
+profile = get_pid_debug_profile("velocity")
+assert [call[0] for call in spy.calls[-2:]] == ["trace_stop", "trace_config"]
+assert spy.calls[-1][3] == profile.capture_mask
 
-# 关窗停止采集。
+# 同一缺口只按 sequence 统计一次，样本索引不再重复累加。
+window._on_trace_data({
+    "session_id": window._trace_session_id,
+    "sequence": 0,
+    "first_sample_index": 0,
+    "actual_rate_hz": 1000,
+    "channel_mask": profile.capture_mask,
+    "sample_count": 2,
+    "channels": 2,
+    "flags": 0,
+    "overflow_count": 0,
+    "samples": [[1.0, 0.8], [1.1, 0.9]],
+})
+window._on_trace_data({
+    "session_id": window._trace_session_id,
+    "sequence": 2,
+    "first_sample_index": 4,
+    "actual_rate_hz": 1000,
+    "channel_mask": profile.capture_mask,
+    "sample_count": 2,
+    "channels": 2,
+    "flags": 2,
+    "overflow_count": 1,
+    "samples": [[1.2, 1.0], [1.3, 1.1]],
+})
+assert window._trace_lost_packets == 1
+assert window._trace_overflow_count == 1
+
+# 乱序旧包不得推进游标或污染统计；旧 session 直接丢弃。
+window._on_trace_data({
+    "session_id": window._trace_session_id,
+    "sequence": 1,
+    "first_sample_index": 2,
+    "actual_rate_hz": 1000,
+    "channel_mask": profile.capture_mask,
+    "sample_count": 1,
+    "channels": 2,
+    "flags": 0,
+    "overflow_count": 0,
+    "samples": [[9.0, 9.0]],
+})
+assert window._trace_lost_packets == 1
+assert window._trace_last_sample_index == 6
+
+old_session = window._trace_session_id
+window._on_trace_config_received({"session_id": (old_session - 1) & 0xFFFF,
+                                  "actual_rate_hz": 10})
+assert window._trace_device_rate_hz == 1000
+
 spy.calls.clear()
 panel.close_waveform_window()
-assert spy.calls[-1] == ("stop",)
+assert spy.calls and spy.calls[-1][0] == "trace_stop"
 assert not panel.waveform_enabled()
 
-window._pid_capture_timer.stop()
 window._pid_debug_heartbeat_timer.stop()
 window._stats_timer.stop()
 window._ui_timer.stop()
 window._reconnect_timer.stop()
-print("PID debug session: PASS")
+print("PID TRACE session: PASS")

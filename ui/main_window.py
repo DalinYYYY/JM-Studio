@@ -154,12 +154,16 @@ class MainWindow(QMainWindow):
         self._pid_telemetry_snapshot: dict | None = None
         self._pid_telemetry_active = False
         self._active_main_tab_widget = None
-        self._pid_capture_offset = 0
-        self._pid_capture_total = 0
-        self._pid_capture_generation = 0
-        self._pid_capture_timer = QTimer(self)
-        self._pid_capture_timer.setInterval(60)
-        self._pid_capture_timer.timeout.connect(self._poll_pid_capture)
+        self._trace_session_id = 0
+        self._trace_expected_sequence = None
+        self._trace_last_sample_index = None
+        self._trace_received_points = 0
+        self._trace_lost_packets = 0
+        self._trace_overflow_count = 0
+        self._trace_session_start_time = 0.0
+        self._trace_device_rate_hz = 0
+        self._trace_effective_rate_hz = 0.0
+        self._trace_last_data_time = 0.0
         self._pid_debug_heartbeat_timer = QTimer(self)
         self._pid_debug_heartbeat_timer.setInterval(500)
         self._pid_debug_heartbeat_timer.timeout.connect(self._send_pid_debug_heartbeat)
@@ -1027,7 +1031,8 @@ class MainWindow(QMainWindow):
         c.pid_autotune_result_received.connect(self._on_pid_autotune_result)
         c.pid_source_received.connect(self._on_pid_source_received)
         c.pid_param_received.connect(self._on_pid_param_received)
-        c.pid_capture_chunk_received.connect(self._on_pid_capture_chunk)
+        c.trace_config_received.connect(self._on_trace_config_received)
+        c.trace_data_received.connect(self._on_trace_data)
 
         # 状态机面板: 周期请求 -> 拉取 READ_STATE
         self._state_panel.poll_state.connect(self._on_poll_state)
@@ -1619,7 +1624,7 @@ class MainWindow(QMainWindow):
         if self._can_scan_active:
             self._cancel_can_scan()
         # 断开前停止调试采样和周期遥测，避免下位机继续产生无消费者数据。
-        self._stop_pid_capture()
+        self._stop_trace()
         self._pid_panel.close_waveform_window()
         if self._client.is_open():
             self._client.set_telemetry(False, 0, 0)
@@ -1681,7 +1686,7 @@ class MainWindow(QMainWindow):
         is_can = (self._client.transport.name == "can")
         if not connected:
             self._pid_debug_heartbeat_timer.stop()
-            self._stop_pid_capture(send_command=False)
+            self._stop_trace(send_command=False)
             self._can_commissioning_required = False
             if self._can_scan_active:
                 self._cancel_can_scan()
@@ -1927,104 +1932,143 @@ class MainWindow(QMainWindow):
         if self._active_main_tab_widget is self._pid_panel:
             self._apply_pid_telemetry_for_mode()
 
+    def _send_pid_debug_heartbeat(self):
+        if (self._active_main_tab_widget is self._pid_panel and
+                self._client.is_open() and
+                self._pid_panel.has_any_debug_source()):
+            self._client.pid_source_get()
+        else:
+            self._pid_debug_heartbeat_timer.stop()
+
+    def _sync_pid_debug_heartbeat(self):
+        active = (self._active_main_tab_widget is self._pid_panel and
+                  self._client.is_open() and
+                  self._pid_panel.has_any_debug_source())
+        if active:
+            if not self._pid_debug_heartbeat_timer.isActive():
+                self._pid_debug_heartbeat_timer.start()
+        else:
+            self._pid_debug_heartbeat_timer.stop()
+
     def _on_pid_waveform_config_changed(self, enabled: bool, _rate_hz: int):
-        """Apply the waveform source/rate change to the acquisition session."""
+        """应用波形窗口的 TRACE 接收开关或配置变化。"""
         if not enabled:
-            self._stop_pid_capture()
+            self._stop_trace()
             return
         if self._active_main_tab_widget is self._pid_panel:
-            self._restart_pid_capture()
+            self._restart_trace()
 
-    def _stop_pid_capture(self, send_command: bool = True):
-        """停止一次采样会话并丢弃旧读取游标。"""
-        self._pid_capture_generation += 1
-        self._pid_capture_timer.stop()
-        self._pid_capture_offset = 0
-        self._pid_capture_total = 0
+    def _reset_trace_metrics(self):
+        self._trace_expected_sequence = None
+        self._trace_last_sample_index = None
+        self._trace_received_points = 0
+        self._trace_lost_packets = 0
+        self._trace_overflow_count = 0
+        self._trace_session_start_time = time.monotonic()
+        self._trace_device_rate_hz = 0
+        self._trace_effective_rate_hz = 0.0
+        self._trace_last_data_time = 0.0
+        self._pid_panel.set_capture_metrics(0, 0.0, "", 0, 0)
+
+    def _stop_trace(self, send_command: bool = True):
+        """停止 TRACE，并使已在链路中的旧帧失效。"""
+        self._trace_session_id = (self._trace_session_id + 1) & 0xFFFF
+        self._reset_trace_metrics()
         self._pid_panel.set_capture_active(False)
         if send_command and self._client.is_open():
             try:
-                self._client.pid_capture_stop()
+                self._client.trace_stop(self._trace_session_id)
             except Exception:
                 pass
 
-    def _restart_pid_capture(self):
-        """模式变化时切换采样配置，避免新旧通道数据混合。"""
-        self._stop_pid_capture()
+    def _restart_trace(self):
+        self._stop_trace()
         self._pid_panel._clear_pid_waveform()
-        self._start_pid_capture()
+        self._start_trace()
 
-    def _start_pid_capture(self):
-        # 采集只要求: 链路在、停在 PID 页、波形窗口已打开。与 DEBUG source 无关。
+    def _start_trace(self):
         if (not self._client.is_open() or
                 self._active_main_tab_widget is not self._pid_panel or
                 not self._pid_panel.waveform_enabled()):
             self._pid_panel.set_capture_active(False)
             return
-        if self._pid_capture_timer.isActive():
-            return
-        self._pid_capture_offset = 0
-        self._pid_capture_total = 0
+        self._reset_trace_metrics()
+        self._trace_session_id = (self._trace_session_id + 1) & 0xFFFF
+        if self._trace_session_id == 0:
+            self._trace_session_id = 1
         profile = self._pid_panel.waveform_profile()
-        if self._client.pid_capture_start(
-                profile.capture_mask,
-                self._pid_panel.waveform_rate_hz(),
-                profile.capture_samples):
+        if self._client.trace_config(
+                True, self._trace_session_id, profile.capture_mask,
+                self._pid_panel.waveform_rate_hz(), 4):
             self._pid_panel.set_capture_active(True)
-            self._pid_capture_timer.start()
         else:
+            self._pid_panel.set_capture_metrics(0, 0.0, "TRACE 配置发送失败")
             self._pid_panel.set_capture_active(False)
 
-    def _send_pid_debug_heartbeat(self):
-        if (self._client.is_open() and
-                self._active_main_tab_widget is self._pid_panel and
-                self._pid_panel.has_any_debug_source()):
-            self._client.pid_source_get()
+    def _on_trace_config_received(self, status: dict):
+        # 停止命令只返回空ACK；停止旧会话的异步应答不能改变当前会话状态。
+        if not status:
+            return
+        session = int(status.get('session_id', 0))
+        if session != self._trace_session_id:
+            return
+        rate = int(status.get('actual_rate_hz', 0))
+        self._trace_device_rate_hz = rate
+        self._pid_panel.set_capture_metrics(
+            rate, self._trace_effective_rate_hz, "",
+            self._trace_lost_packets, self._trace_overflow_count)
 
-    def _sync_pid_debug_heartbeat(self):
-        """Run the A2 lease only while this page owns a confirmed DEBUG source."""
-        should_run = (
-            self._client.is_open() and
-            self._active_main_tab_widget is self._pid_panel and
-            self._pid_panel.has_any_debug_source())
-        if should_run:
-            if not self._pid_debug_heartbeat_timer.isActive():
-                self._pid_debug_heartbeat_timer.start()
+    def _on_trace_data(self, packet: dict):
+        if (self._active_main_tab_widget is not self._pid_panel or
+                not self._pid_panel.waveform_enabled() or
+                not isinstance(packet, dict)):
             return
-        self._pid_debug_heartbeat_timer.stop()
-        # 波形采集不随 DEBUG 租约结束: 只要波形窗口还开着就继续采。
-
-    def _poll_pid_capture(self):
-        if (not self._client.is_open() or
-                self._active_main_tab_widget is not self._pid_panel or
-                not self._pid_panel.waveform_enabled()):
-            self._stop_pid_capture(send_command=False)
+        if int(packet.get('session_id', -1)) != self._trace_session_id:
             return
-        self._client.pid_capture_read(self._pid_capture_offset, 24)
-
-    def _on_pid_capture_chunk(self, chunk: dict):
-        if self._active_main_tab_widget is not self._pid_panel:
+        sequence = int(packet.get('sequence', 0))
+        first_index = int(packet.get('first_sample_index', 0))
+        count = int(packet.get('sample_count', 0))
+        if count <= 0:
             return
-        profile = self._pid_panel.waveform_profile()
-        if int(chunk.get('mask', 0)) != profile.capture_mask:
-            # 数据源切换期间可能收到旧 C9 应答，不允许它推进新会话游标。
-            return
-        self._pid_panel.feed_capture_chunk(chunk)
-        self._pid_capture_total = int(chunk.get('total', 0))
-        count = int(chunk.get('count', 0))
-        self._pid_capture_offset = int(chunk.get('offset', self._pid_capture_offset)) + count
-        if int(chunk.get('state', 0)) == 2 and self._pid_capture_offset >= self._pid_capture_total:
-            self._pid_capture_timer.stop()
-            self._pid_panel.set_capture_active(False)
-            generation = self._pid_capture_generation
-            QTimer.singleShot(
-                0, lambda g=generation: self._continue_pid_capture(g))
-
-    def _continue_pid_capture(self, generation: int):
-        """Start the next fixed-size B7 buffer to provide a continuous plot."""
-        if generation != self._pid_capture_generation:
-            return
-        self._start_pid_capture()
+        discontinuity = bool(int(packet.get('flags', 0)) & 0x02)
+        expected = self._trace_expected_sequence
+        if expected is not None:
+            sequence_delta = (sequence - expected) & 0xFFFFFFFF
+            if sequence_delta >= 0x80000000:
+                return  # 乱序/回绕前的旧包，不得污染当前会话统计
+            if sequence_delta != 0:
+                self._trace_lost_packets += sequence_delta
+                discontinuity = True
+        last_index = self._trace_last_sample_index
+        if last_index is not None:
+            index_delta = (first_index - last_index) & 0xFFFFFFFF
+            if index_delta >= 0x80000000:
+                return  # 样本索引倒退，按乱序包丢弃
+            if index_delta != 0:
+                discontinuity = True
+        self._trace_expected_sequence = (sequence + 1) & 0xFFFFFFFF
+        self._trace_last_sample_index = (first_index + count) & 0xFFFFFFFF
+        if discontinuity:
+            packet = dict(packet)
+            packet['flags'] = int(packet.get('flags', 0)) | 0x02
+        self._trace_received_points += count
+        self._trace_overflow_count = max(
+            self._trace_overflow_count, int(packet.get('overflow_count', 0)))
+        now = time.monotonic()
+        elapsed = now - self._trace_session_start_time
+        if elapsed > 0.0:
+            self._trace_effective_rate_hz = self._trace_received_points / elapsed
+        rate = int(packet.get('actual_rate_hz', 0))
+        if rate > 0:
+            self._trace_device_rate_hz = rate
+        flags = int(packet.get('flags', 0))
+        message = "数据不连续" if flags & 0x02 else ""
+        if flags & 0x01:
+            message = "设备缓冲溢出"
+        self._pid_panel.set_capture_metrics(
+            self._trace_device_rate_hz, self._trace_effective_rate_hz, message,
+            self._trace_lost_packets, self._trace_overflow_count)
+        self._pid_panel.feed_trace_data(packet)
 
     def _on_pid_debug_commit(self, ring: int, values: dict):
         """A6运行值 -> E7工程值 -> E6校验 -> A1切Flash -> EA固化。"""
@@ -2093,7 +2137,7 @@ class MainWindow(QMainWindow):
             return
         if self._active_main_tab_widget is self._pid_panel and w is not self._pid_panel:
             self._restore_pid_telemetry()
-            self._stop_pid_capture()
+            self._stop_trace()
             self._pid_debug_heartbeat_timer.stop()
             if self._pid_panel.has_any_debug_source():
                 self._log_panel.log(
@@ -2125,7 +2169,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             # 波形窗口开着就恢复采集 (与是否处于 DEBUG source 无关)
-            self._start_pid_capture()
+            self._start_trace()
             return
 
     def _on_apply_telemetry(self, enable: bool, mask: int, period_ms: int):
@@ -3049,7 +3093,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         # 退出前停止调试采样和周期遥测，避免串口关闭后下位机继续发送。
-        self._stop_pid_capture()
+        self._stop_trace()
         if self._client.is_open():
             self._client.set_telemetry(False, 0, 0)
         self._stats_timer.stop()

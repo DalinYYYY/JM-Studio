@@ -8,10 +8,11 @@
 """
 
 from bisect import bisect_left
+from collections import deque
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QMenu,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QMenu,
     QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
@@ -82,16 +83,19 @@ class PidWaveformWindow(QWidget):
     window_closed = pyqtSignal()
     clear_requested = pyqtSignal()
     pause_toggled = pyqtSignal(bool)   # 暂停/继续 (面板据此停更缓存)
+    receive_toggled = pyqtSignal(bool) # 波形接收开关
     rate_changed = pyqtSignal(int)     # 采样上传频率(Hz) 变更
     source_changed = pyqtSignal(str)   # 上传数据源变更
+    buffer_changed = pyqtSignal(int)  # 主机历史存储深度变更
 
     # 误差曲线颜色(比 warn 更浅的琥珀色, 置于最底层)
     _ERROR_COLOR = "#E8B04B"
     _ERROR_HOT_COLOR = "#E8463A"       # 误差超限高亮
-    # 可视区默认点数(横坐标为采样点编号)与单次渲染的点数上限
+    # 实时跟随时的默认视口跨度；关闭跟随后 X 轴完全由用户交互控制。
     _VIEW_SPAN_POINTS = 2000
     _MAX_DISPLAY_POINTS = 20000
-    # 窗口自身显示缓冲上限 (可通过"存储"控件配置), 防止长时间采集无限增长
+    _MIN_BUFFER_POINTS = 1000
+    _MAX_BUFFER_POINTS = 2000000
     _DEFAULT_BUFFER_POINTS = 200000
 
     def __init__(self, parent=None):
@@ -101,16 +105,21 @@ class PidWaveformWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self.setMinimumSize(900, 520)
         self._paused = False
+        self._receiving = False
         self._follow = True
         self._y_auto = True
-        self._points = []
+        self._buffer_max = self._DEFAULT_BUFFER_POINTS
+        self._history_rate_hz = 0.0
+        self._x_view_initialized = False
+        self._suppress_view_signal = False
+        self._points = deque(maxlen=self._buffer_max)
         self._source = PID_WAVEFORM_DEFAULT_SOURCE
         self._rate_ceiling = 5000
+        self._status_color_key = "muted"
         self._err_threshold = 0.0
         self._wave_style = "line"        # line / line+dot / scatter
         self._scatter = False
         self._sym_opt = {}
-        self._buffer_max = self._DEFAULT_BUFFER_POINTS
         self._line_width = 2           # 目标/反馈曲线线宽 (右键菜单可调)
         self._dot_size = 4             # 点线/散点模式点大小 (右键菜单可调)
         self._render_timer = None      # 由 _build 创建, 先置 None 供 _schedule_render 守卫
@@ -124,12 +133,22 @@ class PidWaveformWindow(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
+        def add_separator(row: QHBoxLayout):
+            separator = QFrame()
+            separator.setFrameShape(QFrame.Shape.VLine)
+            separator.setFrameShadow(QFrame.Shadow.Plain)
+            separator.setFixedHeight(22)
+            separator.setStyleSheet(f"color:{theme.hex('border')};")
+            row.addWidget(separator)
+
+        def fit_numeric_input(spin, sample_text: str):
+            # 预留左右内边距和步进按钮宽度，保证最大值仍完整可见。
+            text_width = spin.fontMetrics().horizontalAdvance(sample_text)
+            spin.setFixedWidth(max(spin.sizeHint().width(), text_width + 46))
+            spin.setAlignment(Qt.AlignmentFlag.AlignRight)
+
         bar = QHBoxLayout()
         bar.setSpacing(8)
-        title = QLabel("PID 波形显示")
-        title.setStyleSheet(
-            f"color:{theme.hex('text_strong')}; font-weight:bold;")
-        bar.addWidget(title)
 
         # 上传数据源
         source_title = QLabel("数据源:")
@@ -141,74 +160,84 @@ class PidWaveformWindow(QWidget):
             "选择上传并显示的目标/反馈通道；与 PID 调试模式相互独立")
         for key, label, unit in PID_WAVEFORM_SOURCES:
             self._source_combo.addItem(f"{label} [{unit}]", key)
+        source_width = max(
+            self._source_combo.fontMetrics().horizontalAdvance(
+                self._source_combo.itemText(index))
+            for index in range(self._source_combo.count()))
+        self._source_combo.setMinimumWidth(max(120, source_width + 36))
         self._source_combo.currentIndexChanged.connect(self._on_source_index_changed)
         bar.addWidget(self._source_combo)
-        bar.addStretch()
+        add_separator(bar)
 
-        # 存储总量 (可配置最大存储点数, 放在采样上传前面)
-        buf_title = QLabel("存储:")
-        buf_title.setStyleSheet(f"color:{theme.hex('muted')};")
-        bar.addWidget(buf_title)
-        self._buf_spin = QSpinBox()
-        self._buf_spin.setRange(1000, 1000000)
-        self._buf_spin.setSingleStep(10000)
-        self._buf_spin.setSuffix(" 点")
-        self._buf_spin.setValue(self._buffer_max)
-        self._buf_spin.setToolTip(
-            "窗口内可存储的最大数据点总量；超出后丢弃最早的数据")
-        self._buf_spin.valueChanged.connect(self._on_buffer_changed)
-        bar.addWidget(self._buf_spin)
-
-        # 采样上传频率
-        rate_title = QLabel("采样上传:")
+        # 接收开关与采样上传频率组成连续的采集操作组。
+        self._receive_btn = QPushButton("接收波形")
+        self._receive_btn.setCheckable(True)
+        self._receive_btn.setToolTip("开始/停止 TRACE 高速波形主动上传")
+        self._receive_btn.toggled.connect(self._on_receive_toggled)
+        bar.addWidget(self._receive_btn)
+        rate_title = QLabel("上传频率:")
         rate_title.setStyleSheet(f"color:{theme.hex('muted')};")
         bar.addWidget(rate_title)
         self._rate_spin = QSpinBox()
         self._rate_spin.setRange(50, 5000)
         self._rate_spin.setSingleStep(50)
-        self._rate_spin.setSuffix(" Hz")
         self._rate_spin.setValue(1000)
         self._rate_spin.setToolTip(
             "高速采样及波形数据上传频率；会按当前控制环上限自动限幅")
+        fit_numeric_input(self._rate_spin, "5000")
         self._rate_spin.valueChanged.connect(self._on_rate_changed)
         bar.addWidget(self._rate_spin)
-        self._status_label = QLabel()
-        self._status_label.setStyleSheet(f"color:{theme.hex('muted')};")
-        bar.addWidget(self._status_label)
+        self._rate_unit_label = QLabel("Hz")
+        self._rate_unit_label.setStyleSheet(f"color:{theme.hex('muted')};")
+        bar.addWidget(self._rate_unit_label)
+        add_separator(bar)
 
-        self._pause_btn = QPushButton("暂停")
-        self._pause_btn.setCheckable(True)
-        self._pause_btn.toggled.connect(self._on_pause_toggled)
-        bar.addWidget(self._pause_btn)
-        self._follow_check = QCheckBox("跟随")
-        self._follow_check.setChecked(True)
-        self._follow_check.toggled.connect(self._on_follow_toggled)
-        bar.addWidget(self._follow_check)
-        self._y_auto_check = QCheckBox("Y自适应")
-        self._y_auto_check.setChecked(True)
-        self._y_auto_check.toggled.connect(self._on_y_auto_toggled)
-        bar.addWidget(self._y_auto_check)
-        # 统计显示开关 (放在 Y 轴自适应后面)
-        self._stats_check = QCheckBox("统计")
-        self._stats_check.setChecked(True)
-        self._stats_check.toggled.connect(self._on_stats_toggled)
-        bar.addWidget(self._stats_check)
-        self._clear_btn = QPushButton("清空")
-        self._clear_btn.clicked.connect(self.clear_requested.emit)
-        bar.addWidget(self._clear_btn)
+        # 存储总量放在接收开关和采样上传频率之后。
+        buf_title = QLabel("存储深度:")
+        buf_title.setStyleSheet(f"color:{theme.hex('muted')};")
+        bar.addWidget(buf_title)
+        self._buf_spin = QSpinBox()
+        self._buf_spin.setRange(self._MIN_BUFFER_POINTS, self._MAX_BUFFER_POINTS)
+        self._buf_spin.setSingleStep(10000)
+        self._buf_spin.setValue(self._buffer_max)
+        self._buf_spin.setToolTip(
+            "窗口内可存储的最大数据点总量；超出后丢弃最早的数据")
+        fit_numeric_input(self._buf_spin, "1000000")
+        self._buf_spin.valueChanged.connect(self._on_buffer_changed)
+        bar.addWidget(self._buf_spin)
+        self._buf_unit_label = QLabel("点")
+        self._buf_unit_label.setStyleSheet(f"color:{theme.hex('muted')};")
+        bar.addWidget(self._buf_unit_label)
+        bar.addStretch()
+
         layout.addLayout(bar)
 
-        # 第二控制行: 显示方式 / 误差阈值 / 适配全量 / 双击测量提示
+        # 第二控制行: 显示控制 / 显示方式 / 误差阈值 / 辅助操作
         row2 = QHBoxLayout()
         row2.setSpacing(8)
+
+        # 显示选项
         row2.addWidget(QLabel("显示方式:"))
         self._style_combo = QComboBox()
         self._style_combo.addItem("折线", "line")
         self._style_combo.addItem("点线", "line+dot")
         self._style_combo.addItem("散点", "scatter")
+        self._style_combo.setMinimumWidth(
+            self._style_combo.fontMetrics().horizontalAdvance("显示方式") + 36)
         self._style_combo.setToolTip("波形曲线的绘制方式: 折线 / 点线 / 散点")
         self._style_combo.currentIndexChanged.connect(self._on_style_changed)
         row2.addWidget(self._style_combo)
+        self._follow_check = QCheckBox("跟随")
+        self._follow_check.setChecked(True)
+        self._follow_check.toggled.connect(self._on_follow_toggled)
+        row2.addWidget(self._follow_check)
+        self._y_auto_check = QCheckBox("Y自适应")
+        self._y_auto_check.setChecked(True)
+        self._y_auto_check.toggled.connect(self._on_y_auto_toggled)
+        row2.addWidget(self._y_auto_check)
+        add_separator(row2)
+
+        # 分析选项
         row2.addWidget(QLabel("误差阈值:"))
         self._err_thr_spin = QDoubleSpinBox()
         self._err_thr_spin.setRange(0.0, 1e6)
@@ -216,23 +245,91 @@ class PidWaveformWindow(QWidget):
         self._err_thr_spin.setValue(0.0)
         self._err_thr_spin.setSpecialValueText("关")
         self._err_thr_spin.setToolTip("误差绝对值超过该值则误差曲线高亮(红色)")
+        fit_numeric_input(self._err_thr_spin, "1000000.000")
         self._err_thr_spin.valueChanged.connect(self._on_err_threshold_changed)
         row2.addWidget(self._err_thr_spin)
+        self._stats_check = QCheckBox("统计")
+        self._stats_check.setChecked(True)
+        self._stats_check.toggled.connect(self._on_stats_toggled)
+        row2.addWidget(self._stats_check)
+        add_separator(row2)
+
+        # 操作按钮
+        self._pause_btn = QPushButton("暂停")
+        self._pause_btn.setCheckable(True)
+        self._pause_btn.toggled.connect(self._on_pause_toggled)
+        row2.addWidget(self._pause_btn)
         self._fit_all_btn = QPushButton("适配全量")
         self._fit_all_btn.setToolTip("Y 轴适配当前全部已存储数据")
         self._fit_all_btn.clicked.connect(self._on_fit_all)
         row2.addWidget(self._fit_all_btn)
+        self._latest_btn = QPushButton("回到最新")
+        self._latest_btn.setToolTip("恢复跟随最新数据，并保留当前 X 轴缩放跨度")
+        self._latest_btn.clicked.connect(self._on_latest_clicked)
+        row2.addWidget(self._latest_btn)
+        self._clear_btn = QPushButton("清空")
+        self._clear_btn.clicked.connect(self.clear_requested.emit)
+        row2.addWidget(self._clear_btn)
         row2.addStretch()
-        # 双击测量提示 (测量结果以虚线+标签显示在图上, 不在菜单栏)
-        self._meas_hint_label = QLabel("双击选点测量 · 再次双击清除")
-        self._meas_hint_label.setStyleSheet(f"color:{theme.hex('muted')};")
-        row2.addWidget(self._meas_hint_label)
         layout.addLayout(row2)
 
-        # 信号统计行 (受统计开关控制)
-        self._stats_label = QLabel("统计: --")
-        self._stats_label.setStyleSheet(f"color:{theme.hex('muted')};")
-        layout.addWidget(self._stats_label)
+        # 底部状态区。以最长预期文本计算固定宽度，避免实时数据刷新时抖动或截断。
+        def fixed_label(text: str, width_sample: str) -> QLabel:
+            label = QLabel(text)
+            width = label.fontMetrics().horizontalAdvance(width_sample) + 16
+            label.setFixedWidth(width)
+            label.setToolTip(text)
+            return label
+
+        self._bottom_bar = QFrame()
+        self._bottom_bar.setObjectName("pidWaveformBottomBar")
+        bottom_layout = QVBoxLayout(self._bottom_bar)
+        bottom_layout.setContentsMargins(6, 4, 6, 4)
+        bottom_layout.setSpacing(4)
+
+        self._bottom_status_layout = QHBoxLayout()
+        self._bottom_status_layout.setSpacing(8)
+        self._status_source_label = fixed_label(
+            "D轴电流 Id", "Q轴电流 Iq")
+        self._status_state_label = fixed_label(
+            "未接收", "接收中 · 显示已暂停")
+        # 兼容既有诊断代码；状态标签已从顶部移至底部状态区。
+        self._status_label = self._status_state_label
+        self._status_request_label = fixed_label(
+            "请求 --", "请求 5000 Hz")
+        self._status_device_label = fixed_label(
+            "设备 --", "设备 5000 Hz")
+        self._status_transport_label = fixed_label(
+            "上位机 --", "上位机接收 5000.0 Hz")
+        for label in (
+                self._status_source_label, self._status_state_label,
+                self._status_request_label, self._status_device_label,
+                self._status_transport_label):
+            self._bottom_status_layout.addWidget(label)
+        self._meas_hint_label = fixed_label(
+            "双击选点测量 · 再次双击清除",
+            "双击选点测量 · 再次双击清除")
+        self._bottom_status_layout.addWidget(self._meas_hint_label)
+        self._bottom_status_layout.addStretch()
+        bottom_layout.addLayout(self._bottom_status_layout)
+
+        self._bottom_stats_layout = QHBoxLayout()
+        self._bottom_stats_layout.setSpacing(8)
+        self._stats_title_label = fixed_label("统计", "统计")
+        stat_width_sample = "反馈 min -1.23e+05 · max -1.23e+05 · mean -1.23e+05"
+        self._stats_target_label = fixed_label("目标 --", stat_width_sample)
+        self._stats_feedback_label = fixed_label("反馈 --", stat_width_sample)
+        self._stats_error_label = fixed_label("误差 --", stat_width_sample)
+        self._history_label = fixed_label(
+            "历史 --", "历史 200000/200000 点 · 200.0 s")
+        for label in (
+                self._stats_title_label, self._stats_target_label,
+                self._stats_feedback_label, self._stats_error_label,
+                self._history_label):
+            self._bottom_stats_layout.addWidget(label)
+        self._bottom_stats_layout.addStretch()
+        bottom_layout.addLayout(self._bottom_stats_layout)
+        self._apply_bottom_bar_style()
 
         if pg is None:
             hint = QLabel("当前环境缺少 pyqtgraph，无法显示 PID 波形。")
@@ -240,10 +337,12 @@ class PidWaveformWindow(QWidget):
             hint.setStyleSheet(f"color:{theme.hex('muted')}; padding:20px;")
             layout.addWidget(hint, 1)
             self._plot = None
+            layout.addWidget(self._bottom_bar)
             return
 
         self._build_plot()
         layout.addWidget(self._plot, 1)
+        layout.addWidget(self._bottom_bar)
         self._apply_style()
 
         # 节流渲染: 增量追加后只在一段时间后真正重绘一次
@@ -252,6 +351,32 @@ class PidWaveformWindow(QWidget):
         self._render_timer.setInterval(40)
         self._render_timer.timeout.connect(self._render)
         self._apply_source_axis()
+
+    def _apply_bottom_bar_style(self):
+        """刷新底部状态区及各字段颜色。"""
+        self._bottom_bar.setStyleSheet(
+            f"QFrame#pidWaveformBottomBar {{"
+            f"background:{theme.hex('panel_bg')};"
+            f"border-top:1px solid {theme.hex('border')};"
+            "}")
+        muted_style = f"color:{theme.hex('muted')};"
+        for label in (
+                self._status_source_label, self._status_request_label,
+                self._status_device_label, self._status_transport_label,
+                self._meas_hint_label, self._stats_title_label,
+                self._stats_target_label, self._stats_feedback_label,
+                self._stats_error_label, self._history_label):
+            label.setStyleSheet(muted_style)
+        status_style = f"color:{theme.hex(self._status_color_key)};"
+        for label in (
+                self._status_state_label, self._status_request_label,
+                self._status_device_label, self._status_transport_label):
+            label.setStyleSheet(status_style)
+
+    @staticmethod
+    def _set_fixed_label_text(label: QLabel, text: str):
+        label.setText(text)
+        label.setToolTip(text)
 
     def _build_plot(self):
         """构建绘图: 左轴目标/反馈, 右轴误差, 差值填充, 十字光标与测量游标。"""
@@ -310,6 +435,7 @@ class PidWaveformWindow(QWidget):
             self._vb2.linkedViewChanged(pi.vb, self._vb2.XAxis)
         _update_vb2()
         pi.vb.sigResized.connect(_update_vb2)
+        pi.vb.sigRangeChanged.connect(lambda *_: self._schedule_render())
 
         # 十字光标 (跟随鼠标)
         self._cursor_v = pg.InfiniteLine(
@@ -446,18 +572,20 @@ class PidWaveformWindow(QWidget):
     # ========================================================================
     def set_points(self, points):
         """面板全量重置 (清空/换源/换率时调用)。"""
-        self._points = list(points or [])
+        self._points = deque(points or [], maxlen=self._buffer_max)
+        self._schedule_render()
+
+    def set_history_points(self, points):
+        """同步面板历史到窗口，不改变当前 X 轴视口。"""
+        self._points = deque(points or [], maxlen=self._buffer_max)
         self._schedule_render()
 
     def append_points(self, points):
-        """面板增量推送新点, 只追加尾部, 避免全量重绘。"""
+        """面板增量推送新点，保持有界历史，避免每包复制头部列表。"""
         pts = list(points or [])
         if not pts:
             return
         self._points.extend(pts)
-        # 裁剪到可配置的存储上限, 避免无限增长拖慢光标逐点扫描
-        if len(self._points) > self._buffer_max:
-            del self._points[:len(self._points) - self._buffer_max]
         self._schedule_render()
 
     def clear(self):
@@ -477,26 +605,83 @@ class PidWaveformWindow(QWidget):
     # ========================================================================
     #  渲染
     # ========================================================================
+    def _visible_points(self):
+        if not self._points:
+            return []
+        points = list(self._points)
+        first, last = points[0][0], points[-1][0]
+        view = self._plot.viewRange()[0] if self._plot is not None else (first, last)
+        span = max(1.0, float(view[1] - view[0]))
+        if self._follow:
+            left = max(first, last - span)
+            right = last
+        else:
+            left = float(view[0])
+            right = float(view[1])
+            if right <= first:
+                left, right = first, first + span
+            elif left >= last:
+                right = last
+                left = max(first, last - span)
+            else:
+                left = max(first, left)
+                right = min(last, right)
+        lo = max(0, bisect_left(points, (left,)) - 1)
+        hi = min(len(points), bisect_left(points, (right,)) + 1)
+        return points[lo:hi]
+
+    @staticmethod
+    def _envelope(points, pixel_width, max_points=None):
+        """按像素桶保留三条曲线的首/末/极值点，确定性保留尖峰。"""
+        pixel_width = max(1, int(pixel_width))
+        if max_points is not None:
+            max_points = max(12, int(max_points))
+            pixel_width = min(pixel_width, max(1, max_points // 12))
+        if len(points) <= pixel_width:
+            return points
+        x0, x1 = points[0][0], points[-1][0]
+        span = max(1.0, float(x1 - x0))
+        buckets = {}
+        for point in points:
+            bucket = min(pixel_width - 1, max(0, int(
+                (point[0] - x0) / span * pixel_width)))
+            entry = buckets.setdefault(bucket, {
+                "first": point, "last": point,
+                "min": [point, point, point],
+                "max": [point, point, point],
+            })
+            entry["last"] = point
+            for col in range(3):
+                if point[col + 1] < entry["min"][col][col + 1]:
+                    entry["min"][col] = point
+                if point[col + 1] > entry["max"][col][col + 1]:
+                    entry["max"][col] = point
+        selected = []
+        for bucket in sorted(buckets):
+            entry = buckets[bucket]
+            candidates = [entry["first"]]
+            candidates.extend(entry["min"])
+            candidates.extend(entry["max"])
+            candidates.append(entry["last"])
+            for point in sorted(candidates, key=lambda item: item[0]):
+                if not selected or point[0] != selected[-1][0]:
+                    selected.append(point)
+        return selected
+
     def _render(self):
+        self._update_history_label()
         if self._plot is None or not self._points:
             return
-        xs = [p[0] for p in self._points]
-        tgt = [p[1] for p in self._points]
-        fb = [p[2] for p in self._points]
-        err = [p[3] for p in self._points]
-
-        # 可视区: 跟随模式只取最近 _VIEW_SPAN_POINTS 点; 否则用全量(供回看/手动平移)
-        if self._follow:
-            n_last = xs[-1]
-            n_min = n_last - self._VIEW_SPAN_POINTS
-            lo = bisect_left(xs, n_min)
-            xs, tgt, fb, err = xs[lo:], tgt[lo:], fb[lo:], err[lo:]
-        # 降采样: 点太多时按步长抽稀, 保证重绘流畅
-        n = len(xs)
-        if n > self._MAX_DISPLAY_POINTS:
-            stride = n // self._MAX_DISPLAY_POINTS + 1
-            xs = xs[::stride]; tgt = tgt[::stride]
-            fb = fb[::stride]; err = err[::stride]
+        visible = self._visible_points()
+        if not visible:
+            return
+        width = max(64, int(self._plot.width()))
+        visible = self._envelope(
+            visible, width, max_points=self._MAX_DISPLAY_POINTS)
+        xs = [p[0] for p in visible]
+        tgt = [p[1] for p in visible]
+        fb = [p[2] for p in visible]
+        err = [p[3] for p in visible]
 
         scatter = self._scatter
         kw = self._curve_kwargs()
@@ -515,9 +700,11 @@ class PidWaveformWindow(QWidget):
             symbolBrush=pg.mkBrush(self._ERROR_COLOR), **kw)
 
         if self._follow and xs:
+            view = self._plot.viewRange()[0]
+            span = max(1.0, float(view[1] - view[0]))
             self._plot.setXRange(
-                max(0, xs[-1] - self._VIEW_SPAN_POINTS),
-                max(self._VIEW_SPAN_POINTS // 10, xs[-1]), padding=0)
+                max(0, xs[-1] - span), max(span / 10.0, xs[-1]),
+                padding=0)
 
         self._update_error_highlight(err)
         self._update_stats(xs, tgt, fb, err)
@@ -535,10 +722,27 @@ class PidWaveformWindow(QWidget):
             self._error_curve.setPen(
                 pg.mkPen(color, width=max(1, self._line_width - 1)))
 
+    def _update_history_label(self):
+        """显示历史实际存储量、采样点范围和按设备频率估算的时长。"""
+        count = len(self._points)
+        if count:
+            start = int(self._points[0][0])
+            end = int(self._points[-1][0])
+        else:
+            start = end = 0
+        rate = max(0.0, float(getattr(self, "_history_rate_hz", 0.0)))
+        span = count / rate if rate > 0.0 else 0.0
+        self._set_fixed_label_text(
+            self._history_label,
+            f"历史 {count}/{self._buffer_max} 点 · {span:.1f} s · "
+            f"{start}~{end}")
+
     def _update_stats(self, xs, tgt, fb, err):
         """基于当前(可视)数据计算 目标/反馈/误差 的 min·max·mean。"""
         if not xs or not self._stats_check.isChecked():
-            self._stats_label.setText("统计: --")
+            self._set_fixed_label_text(self._stats_target_label, "目标 --")
+            self._set_fixed_label_text(self._stats_feedback_label, "反馈 --")
+            self._set_fixed_label_text(self._stats_error_label, "误差 --")
             return
 
         def stat(vals):
@@ -551,9 +755,12 @@ class PidWaveformWindow(QWidget):
             return "--" if s is None else (
                 f"min {s[0]:.3g} · max {s[1]:.3g} · mean {s[2]:.3g}")
 
-        self._stats_label.setText(
-            f"统计  目标[{fmt(stat(tgt))}]  反馈[{fmt(stat(fb))}]  "
-            f"误差[{fmt(stat(err))}]")
+        self._set_fixed_label_text(
+            self._stats_target_label, f"目标 {fmt(stat(tgt))}")
+        self._set_fixed_label_text(
+            self._stats_feedback_label, f"反馈 {fmt(stat(fb))}")
+        self._set_fixed_label_text(
+            self._stats_error_label, f"误差 {fmt(stat(err))}")
 
     # ========================================================================
     #  交互: 就近点坐标提示 + 双击选点测量
@@ -682,7 +889,11 @@ class PidWaveformWindow(QWidget):
         return dict(self._sym_opt)
 
     def _on_stats_toggled(self, on: bool):
-        self._stats_label.setVisible(bool(on))
+        for label in (
+                self._stats_title_label, self._stats_target_label,
+                self._stats_feedback_label, self._stats_error_label):
+            label.setVisible(bool(on))
+        self._update_history_label()
 
     def _on_err_threshold_changed(self, value: float):
         self._err_threshold = float(value or 0.0)
@@ -702,6 +913,14 @@ class PidWaveformWindow(QWidget):
         self._plot.enableAutoRange(axis="x", enable=True)
         self._plot.enableAutoRange(enable=True)
 
+    def _on_latest_clicked(self):
+        """回到历史尾部，同时保留用户当前 X 轴缩放跨度。"""
+        self._follow = True
+        was = self._follow_check.blockSignals(True)
+        self._follow_check.setChecked(True)
+        self._follow_check.blockSignals(was)
+        self._schedule_render()
+
     # ========================================================================
     #  数据源 / 采样 / 暂停 / 跟随
     # ========================================================================
@@ -716,6 +935,8 @@ class PidWaveformWindow(QWidget):
         self._source_combo.setCurrentIndex(index)
         self._source_combo.blockSignals(was)
         self._apply_source_axis()
+        if hasattr(self, "_status_state_label"):
+            self.set_capture_status(False, self.rate_hz())
 
     def source(self) -> str:
         return str(self._source)
@@ -739,32 +960,88 @@ class PidWaveformWindow(QWidget):
         if ceiling_hz:
             self._rate_ceiling = max(50, int(ceiling_hz))
         was = self._rate_spin.blockSignals(True)
-        self._rate_spin.setValue(max(50, min(int(rate_hz), self._rate_spin.maximum())))
+        self._rate_spin.setMaximum(self._rate_ceiling)
+        self._rate_spin.setValue(max(50, min(int(rate_hz), self._rate_ceiling)))
         self._rate_spin.blockSignals(was)
 
     def rate_hz(self) -> int:
         return int(self._rate_spin.value())
 
-    def set_capture_status(self, active: bool, effective_hz: int,
-                           limited: bool = False):
-        """显示采集状态: 采集中 / 等待采集, 被环路上限限幅时给出提示。"""
-        if active:
-            text = f"采集中 · {int(effective_hz)} Hz"
-            color = theme.hex("ok")
+    def set_capture_status(self, active: bool, requested_hz: int,
+                           device_hz: int = 0, transport_hz: float = 0.0,
+                           limited: bool = False, message: str = "",
+                           lost_packets: int = 0, overflow_count: int = 0):
+        """显示 TRACE 状态、请求/设备/接收频率及丢包统计。"""
+        _key, source_label, _unit = get_waveform_source_def(self._source)
+        if device_hz > 0:
+            self._history_rate_hz = float(device_hz)
+        if message:
+            state_text, color_key = message, "danger"
+        elif not self._receiving:
+            state_text, color_key = "未接收", "muted"
+        elif self._paused:
+            state_text, color_key = "接收中 · 显示已暂停", "warn"
+        elif not active:
+            state_text, color_key = "等待设备数据", "warn"
         else:
-            tail = f" · 环路上限 {int(effective_hz)} Hz" if limited else ""
-            text, color = f"等待采集{tail}", theme.hex("muted")
-        self._status_label.setText(text)
-        self._status_label.setStyleSheet(f"color:{color};")
+            state_text = "接收中 · 已限幅" if limited else "接收中"
+            color_key = "ok"
+
+        request_text = (
+            f"请求 {int(requested_hz)} Hz" if requested_hz > 0 else "请求 --")
+        device_text = (
+            f"设备 {int(device_hz)} Hz" if device_hz > 0 else "设备 --")
+        transport_text = (
+            f"上位机接收 {transport_hz:.1f} Hz"
+            if transport_hz > 0 else "上位机接收率计算中")
+        if lost_packets > 0:
+            transport_text += f" · 丢包 {int(lost_packets)}"
+        if overflow_count > 0:
+            transport_text += f" · 溢出 {int(overflow_count)}"
+        self._set_fixed_label_text(self._status_source_label, source_label)
+        self._set_fixed_label_text(self._status_state_label, state_text)
+        self._set_fixed_label_text(self._status_request_label, request_text)
+        self._set_fixed_label_text(self._status_device_label, device_text)
+        self._set_fixed_label_text(
+            self._status_transport_label, transport_text)
+        self._status_color_key = color_key
+        status_style = f"color:{theme.hex(color_key)};"
+        for label in (
+                self._status_state_label, self._status_request_label,
+                self._status_device_label, self._status_transport_label):
+            label.setStyleSheet(status_style)
+        was = self._receive_btn.blockSignals(True)
+        self._receive_btn.setChecked(bool(self._receiving))
+        self._receive_btn.setText("停止接收" if self._receiving else "接收波形")
+        self._receive_btn.blockSignals(was)
+
+    def set_receiving(self, receiving: bool):
+        was = self._receive_btn.blockSignals(True)
+        self._receiving = bool(receiving)
+        self._receive_btn.setChecked(self._receiving)
+        self._receive_btn.setText("停止接收" if self._receiving else "接收波形")
+        self._receive_btn.blockSignals(was)
+
+    def receiving(self) -> bool:
+        return bool(self._receiving)
+
+    def buffer_max(self) -> int:
+        return int(self._buffer_max)
+
+    def _on_receive_toggled(self, receiving: bool):
+        self._receiving = bool(receiving)
+        self._receive_btn.setText("停止接收" if self._receiving else "接收波形")
+        self.receive_toggled.emit(self._receiving)
 
     def _on_rate_changed(self, rate_hz: int):
         self.rate_changed.emit(int(rate_hz))
 
     def _on_buffer_changed(self, points: int):
         """存储总量变化: 立即裁剪旧数据。"""
-        self._buffer_max = max(1000, int(points))
-        if len(self._points) > self._buffer_max:
-            del self._points[:len(self._points) - self._buffer_max]
+        self._buffer_max = max(self._MIN_BUFFER_POINTS,
+                               min(int(points), self._MAX_BUFFER_POINTS))
+        self._points = deque(self._points, maxlen=self._buffer_max)
+        self.buffer_changed.emit(self._buffer_max)
         self._schedule_render()
 
     def _on_source_index_changed(self, index: int):
@@ -785,6 +1062,7 @@ class PidWaveformWindow(QWidget):
         self._schedule_render()
 
     def apply_theme(self):
+        self._apply_bottom_bar_style()
         if self._plot is None:
             return
         self._plot.setBackground(theme.hex("plot_bg"))

@@ -36,13 +36,6 @@ class SpyClient:
         self.calls.append(("param_get", int(ring), int(param_type)))
         return True
 
-    def pid_capture_stop(self):
-        self.calls.append(("capture_stop",))
-        return True
-
-    def pid_capture_start(self, mask, rate_hz, samples):
-        self.calls.append(("capture_start", mask, rate_hz, samples))
-        return True
 
     def query_state(self):
         self.calls.append(("state_get",))
@@ -128,7 +121,6 @@ window._on_ack(int(JmCmd.PID_SOURCE_SET))
 assert window._pid_panel._ring_source[PidRing.CURRENT] == PidSource.DEFAULT
 assert not window._pid_debug_heartbeat_timer.isActive()
 
-window._pid_capture_timer.stop()
 window._pid_debug_heartbeat_timer.stop()
 window._stats_timer.stop()
 window._ui_timer.stop()

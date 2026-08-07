@@ -1,4 +1,4 @@
-"""PID DEBUG 兼容扩展：A1/A2/A5/A6/B7/B6/C9。"""
+"""PID DEBUG 与 TRACE 协议回归测试。"""
 
 import os
 import struct
@@ -40,16 +40,21 @@ assert r.on_command(int(JmCmd.PID_PARAM_SET), batch)[0][1] == b'\x00'
 assert abs(r._pid_profiles[0][1] - 8.0) < 1e-6
 assert abs(r._pid_profiles[0][2] - 1200.0) < 1e-6
 
-# B7 采样 + C9 分块，并验证客户端解析信号。
-assert r.on_command(int(JmCmd.HIGH_SPEED_DAQ), struct.pack('<IIH', 0xFF, 1000, 16))[0][1] == b'\x00'
-chunk_payload = r.on_command(int(JmCmd.READ_DEBUG), struct.pack('<HB', 0, 7))[0][1]
-assert len(chunk_payload) == 15 + 7 * 8 * 4
+# TRACE 配置应答 + 主动批量数据，并验证客户端严格解析。
+config = struct.pack('<BHII BB', 1, 7, 0x03, 1000, 4, 0)
+config_reply = r.on_command(int(JmCmd.TRACE_CONFIG), config)[0][1]
+assert len(config_reply) == 9
 client = JmClient(DummyTransport())
-chunks = []
-client.pid_capture_chunk_received.connect(chunks.append)
-client._capture_read_pending = True
-client._on_frame(int(JmCmd.READ_DEBUG), chunk_payload)
-assert chunks and chunks[0]['mask'] == 0xFF
-assert chunks[0]['count'] == 7 and chunks[0]['channels'] == 8
+status = []
+packets = []
+client.trace_config_received.connect(status.append)
+client.trace_data_received.connect(packets.append)
+client._on_frame(int(JmCmd.TRACE_CONFIG), config_reply)
+assert status[0]['session_id'] == 7
+packet = r.on_tick()[-1][1]
+assert len(packet) == 25 + 4 * 2 * 4
+client._on_frame(int(JmCmd.TRACE_DATA), packet)
+assert packets and packets[0]['channel_mask'] == 0x03
+assert packets[0]['sample_count'] == 4
 
-print('PID debug protocol: PASS')
+print('PID debug/TRACE protocol: PASS')
