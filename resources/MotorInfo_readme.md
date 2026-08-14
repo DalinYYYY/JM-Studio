@@ -58,12 +58,11 @@
 
 ```C
 #define __ALIGNED_4 __attribute__((aligned(4)))
+#define __ALIGNED_8 __attribute__((aligned(8)))
 
-// 魔数："SERVO_V2"
-#define PARAM_MAGIC 0x53455256
 // 总参数区大小（固定1024B）
 #define PARAM_AREA_SIZE 1024
-// 最大子块数量（头部 64B 限制：12B 基础字段 + 6*8B 索引 + 4B pad = 64B）
+// 最大子块数量（头部 64B 限制：8B 版本/CRC + 6*8B 索引 + 8B pad = 64B）
 #define MAX_BLOCK_COUNT 6
 
 // 子块索引项（8B）
@@ -74,14 +73,15 @@ typedef struct __ALIGNED_4 {
 
 // 全局头部（64B）
 typedef struct __ALIGNED_4 {
-    uint32_t magic;            // 4B
     uint16_t version_major;    // 2B
     uint16_t version_minor;    // 2B
     uint32_t crc32;            // 4B
     BlockIndex_t blocks[MAX_BLOCK_COUNT]; // 6*8 = 48B
-    uint32_t reserved;         // 4B pad → 共 64B
+    uint32_t reserved[2];      // 8B pad → 共 64B
 } ParamHeader_t;
 ```
+> 说明：已移除魔数 `PARAM_MAGIC`。数据有效性由 `config_version` + CRC32 + 字段范围三重校验保证。
+> 主联合体 `motor_info_t` 采用 `__ALIGNED_8` 8 字节对齐，确保被 `(u64*)` 强转传给 Flash 读写时，u64 访问不产生未对齐故障。
 
 ### 3.2 各子块数据结构
 

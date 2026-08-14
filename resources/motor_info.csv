@@ -4,6 +4,7 @@ enable_uart,接口使能,SystemParam,RW,uint32_t,0,0,15,,0x0040,1,bit0:UART bit1
 enable_bus_sensor,总线传感器使能,SystemParam,RW,uint32_t,1,0,1,,0x0040,2,0:禁用 1:启用
 safety_limit,安全限制使能,SystemParam,RW,uint32_t,1,0,1,,0x0040,3,0:禁用 1:启用 调试期建议关闭
 total_runtime_s,累计运行时间,SystemParam,RW,uint32_t,0,0,4294967295,s,0x0040,4,掉电保存 运维数据 定期写入避免频繁擦写
+flash_write_count,Flash写入次数,SystemParam,RO,uint32_t,0,0,4294967295,,0x0040,5,固化有效命令累计次数 每次0xEA保存成功自增 超过寿命阈值拒绝写入
 is_calibrated,电机是否校准,MotorCalibParam,RW,uint32_t,0,0,1,,0x0080,16,0:未校准 1:已校准 [MotorCalibParam段16-47 本表占用16-42]
 pole_pairs,电机极对数,MotorCalibParam,RW,uint32_t,7,1,128,pairs,0x0080,17,电机极对数 影响电角度=机械角×极对数
 motor_type,电机类型,MotorCalibParam,RW,uint32_t,0,0,2,,0x0080,18,0:SPMSM 1:IPMSM 2:BLDC

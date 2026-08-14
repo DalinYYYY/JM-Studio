@@ -85,38 +85,40 @@ Invoke-Step "Check PyInstaller" {
     }
 }
 
-$PyiArgs = @(
-    "--noconfirm",
-    "--windowed",
-    "--name", $BuildName,
-    "--distpath", "dist",
-    "--workpath", "build",
-    "--specpath", "build",
-    "--paths", ".",
-    "--add-data", $AddData,
-    "--collect-all", "PyQt6",
-    "--collect-all", "pyqtgraph",
-    "--collect-submodules", "serial",
-    "--collect-submodules", "transport.virtual_engine",
-    "--hidden-import", "serial.tools.list_ports"
-)
+$SpecFile = Join-Path $ScriptDir "JointMotorController.spec"
 
-if ($Clean) {
-    $PyiArgs += "--clean"
-}
-if ($OneFile) {
-    $PyiArgs += "--onefile"
+if ($OneFile -and (Test-Path $SpecFile)) {
+    # 单文件构建走 spec: 内含 hiddenimports/excludes, 并对 binaries/datas 二次过滤
+    # (剔除未用 Qt DLL/插件、精简翻译), 产物体积最小。
+    $SpecArgs = @($SpecFile, "--noconfirm", "--distpath", "dist", "--workpath", "build")
+    if ($Clean) { $SpecArgs += "--clean" }
+    Invoke-Step "Build EXE (spec)" {
+        & $PythonExe -m PyInstaller @SpecArgs
+    }
 } else {
-    $PyiArgs += "--onedir"
-}
-if (Test-Path $IconIco) {
-    $PyiArgs += @("--icon", $IconIco)
-}
-
-$PyiArgs += $Entry
-
-Invoke-Step "Build EXE" {
-    & $PythonExe -m PyInstaller @PyiArgs
+    $PyiArgs = @(
+        "--noconfirm",
+        "--windowed",
+        "--name", $BuildName,
+        "--distpath", "dist",
+        "--workpath", "build",
+        "--specpath", "build",
+        "--paths", ".",
+        "--add-data", $AddData,
+        "--collect-submodules", "pyqtgraph",
+        "--collect-submodules", "serial",
+        "--collect-submodules", "transport.virtual_engine",
+        "--hidden-import", "serial.tools.list_ports",
+        "--hidden-import", "PyQt6.sip",
+        "--hidden-import", "PyQt6.QtOpenGLWidgets"
+    )
+    if ($Clean) { $PyiArgs += "--clean" }
+    if ($OneFile) { $PyiArgs += "--onefile" } else { $PyiArgs += "--onedir" }
+    if (Test-Path $IconIco) { $PyiArgs += @("--icon", $IconIco) }
+    $PyiArgs += $Entry
+    Invoke-Step "Build EXE" {
+        & $PythonExe -m PyInstaller @PyiArgs
+    }
 }
 
 $Output = $null

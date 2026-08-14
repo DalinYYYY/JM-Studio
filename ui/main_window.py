@@ -2875,6 +2875,9 @@ class MainWindow(QMainWindow):
             if self._pid_commit_phase == 'saving':
                 self._pid_commit_phase = 'idle'
                 self._log_panel.log('[PID] 当前调试值已校验并固化到Flash')
+            # 固化成功弹窗提醒 + 刷新写入次数(0xE6 读 flash_write_count=5, 固件每次固化自增)
+            QMessageBox.information(self, "参数固化", "电机配置已成功固化到 Flash/EEPROM。")
+            self._on_param_read(self._config_panel, 5)
         # 队列自愈: 若收到 PARAM_READ/MOTOR_INFO_READ 的意外 ACK(正常应走数据帧,
         # 但某些固件/仿真器可能只回 ACK), 弹出读队列防止永久死锁
         if cmd in (JmCmd.PARAM_READ, JmCmd.MOTOR_INFO_READ) and self._pending_param_reads:
@@ -2904,6 +2907,11 @@ class MainWindow(QMainWindow):
             self._cancel_pid_commit('A1切换Flash来源失败，未执行EA固化')
         if cmd == JmCmd.MOTOR_INFO_SAVE and self._pid_commit_phase == 'saving':
             self._cancel_pid_commit('EA固化失败')
+        # 固化失败弹窗提醒(0xEA NACK)
+        if cmd == JmCmd.MOTOR_INFO_SAVE:
+            QMessageBox.warning(
+                self, "参数固化失败",
+                f"电机配置未能固化到 Flash/EEPROM。\n\n错误: {cn} (0x{err:02X})")
         # 标定面板: 0x90~0x98 NACK 转发(内部按 cmd 过滤)
         self._calib_panel.on_nack(cmd, err)
         # PID 面板: 0xA1 来源切换 / 0xA5 调试参数写入 失败 NACK 转发(内部按 cmd 过滤)
