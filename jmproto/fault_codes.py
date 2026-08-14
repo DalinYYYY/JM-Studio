@@ -178,6 +178,10 @@ _JMERR_CN = {
     JmErr.FLASH_WRITE:   'Flash写入失败',
     JmErr.FLASH_VERIFY:  'Flash校验失败(读回不匹配)',
     JmErr.NOT_SUPPORTED: '命令未实现(预留命令如OTA/SYNC)',
+    # 新增 0x14~0x16
+    JmErr.SAVE_LIMIT:     '固化次数超限(寿命保护)',
+    JmErr.EEPROM_WRITE:   'EEPROM写入失败',
+    JmErr.EEPROM_VERIFY:  'EEPROM回读校验失败',
 }
 
 

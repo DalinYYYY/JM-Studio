@@ -12,6 +12,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 import jmproto as jp
 from jmproto import JmCmd, JmErr, codec
+from jmproto.cmd_def import MOTOR_INFO_SAVE_FLAG_FLASH
 from transport.base import Transport
 
 # 危险操作命令集合: 发送前需 UI 二次确认
@@ -228,9 +229,10 @@ class JmClient(QObject):
             payload += v
         return self._send(JmCmd.MOTOR_INFO_WRITE_BULK, payload)
 
-    def motor_info_save(self):
-        """把motor_info整块写入Flash(0xEA)。"""
-        return self._send(JmCmd.MOTOR_INFO_SAVE)
+    def motor_info_save(self, flags: int = 0):
+        """固化motor_info(0xEA): {flags:u8}。默认(flags=0)仅写EEPROM;
+        flags=MOTOR_INFO_SAVE_FLAG_FLASH 追加写Flash备份。"""
+        return self._send(JmCmd.MOTOR_INFO_SAVE, codec.wr_u8(flags & 0xFF))
 
     def motor_info_reset(self, param_id: int = 0xFFFF):
         """电机配置恢复默认(0xEB): param_id=0xFFFF 全部恢复。"""

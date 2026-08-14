@@ -22,6 +22,7 @@ from PyQt6.QtCore import Qt, QTimer
 
 import jmproto as jp
 from jmproto import JmCmd, cmd_name, err_name, err_name_cn, fault_mask_to_str
+from jmproto.cmd_def import MOTOR_INFO_SAVE_FLAG_FLASH
 from transport.serial_transport import SerialTransport
 from transport.virtual_engine import VirtualTransport
 from core.motor_client import JmClient, DANGER_CMDS
@@ -1167,7 +1168,10 @@ class MainWindow(QMainWindow):
             extra = "此操作将清除所有用户配置和标定数据, 不可恢复!"
         elif cmd in (JmCmd.PARAM_SAVE, JmCmd.MOTOR_INFO_SAVE):
             risk = "高"
-            extra = "此操作将写入 Flash, 频繁擦写会降低 Flash 寿命。"
+            if payload and payload[0] & MOTOR_INFO_SAVE_FLAG_FLASH:
+                extra = "已勾选写Flash备份, 频繁擦写会降低 Flash 寿命。"
+            else:
+                extra = "将写入 EEPROM(默认), 不消耗 Flash 寿命。"
         elif cmd in (JmCmd.CALIB_LEVEL1, JmCmd.CALIB_LEVEL2, JmCmd.CALIB_LEVEL3,
                      JmCmd.CALIB_LEVEL4, JmCmd.CALIB_LEVEL5, JmCmd.CALIB_LEVEL6,
                      JmCmd.CALIB_LEVEL7):
@@ -2361,13 +2365,17 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _on_config_save(self):
+    def _on_config_save(self, flags: int = 0):
         if not self._panel_remote_supported(self._config_panel):
             return
         if self._ensure_open():
             # 电机配置走 0xEA (motor_info_save), 区别于运行时参数的 0xE4
-            self._client.motor_info_save()
-            self._log_panel.log("[TX] 保存电机配置到Flash/EEPROM (0xEA)")
+            # flags bit0=1 追加写Flash备份(默认仅写EEPROM)
+            self._client.motor_info_save(flags)
+            if flags & MOTOR_INFO_SAVE_FLAG_FLASH:
+                self._log_panel.log("[TX] 保存电机配置到EEPROM+Flash备份 (0xEA)")
+            else:
+                self._log_panel.log("[TX] 保存电机配置到EEPROM (0xEA)")
 
     def _load_motor_presets(self):
         """加载内置 motor_presets.json + 用户 user_motor_presets.json
@@ -2862,8 +2870,9 @@ class MainWindow(QMainWindow):
                     self._start_pid_commit_verify()
         if cmd == JmCmd.PID_SOURCE_SET and self._pid_commit_phase == 'switching':
             self._pid_commit_phase = 'saving'
-            if self._client.motor_info_save():
-                self._log_panel.log('[PID] A1已切到Flash来源，发送EA固化')
+            # PID 固化是显式写Flash流程(A1已切Flash来源), 故带 FLASH 标志
+            if self._client.motor_info_save(MOTOR_INFO_SAVE_FLAG_FLASH):
+                self._log_panel.log('[PID] A1已切到Flash来源，发送EA固化(EEPROM+Flash)')
             else:
                 self._cancel_pid_commit('EA固化命令发送失败')
         # 需求2: 保存到 Flash/EEPROM (0xEA) ACK -> 标定结果/电机配置面板恢复正常颜色
@@ -2875,7 +2884,7 @@ class MainWindow(QMainWindow):
             if self._pid_commit_phase == 'saving':
                 self._pid_commit_phase = 'idle'
                 self._log_panel.log('[PID] 当前调试值已校验并固化到Flash')
-            # 固化成功弹窗提醒 + 刷新写入次数(0xE6 读 flash_write_count=5, 固件每次固化自增)
+            # 固化成功弹窗提醒 + 刷新固化次数(0xE6 读 save_count=5, 固件每次固化自增)
             QMessageBox.information(self, "参数固化", "电机配置已成功固化到 Flash/EEPROM。")
             self._on_param_read(self._config_panel, 5)
         # 队列自愈: 若收到 PARAM_READ/MOTOR_INFO_READ 的意外 ACK(正常应走数据帧,

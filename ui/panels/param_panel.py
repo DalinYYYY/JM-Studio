@@ -7,6 +7,7 @@
 
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QFileDialog,
     QFrame,
     QGroupBox,
@@ -68,7 +69,7 @@ class ParamPanel(QGroupBox):
     write_param = pyqtSignal(int, str)
     read_params = pyqtSignal(object)
     write_params = pyqtSignal(object)
-    save_all = pyqtSignal()
+    save_all = pyqtSignal(int)  # flags: bit0=1 追加写Flash备份
 
     def __init__(self, registry, parent=None, title="电机参数",
                  source="motor_param", show_save=False, save_text="保存到Flash",
@@ -260,10 +261,18 @@ class ParamPanel(QGroupBox):
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.setSpacing(6)
 
-        self._btn_save = QPushButton(self._save_text)
-        self._btn_save.clicked.connect(self.save_all)
+        # "同时写Flash备份"复选框: 默认仅写EEPROM, 勾选后追加写Flash备份(0xEA flags bit0)。
+        # 置于保存按钮之前(用户先勾选备份目标, 再点击固化)。
+        self._chk_flash_backup = QCheckBox("同时写Flash备份")
+        self._chk_flash_backup.setToolTip(
+            "默认仅写EEPROM(上电优先加载)。勾选后追加写Flash备份, 频繁勾选会降低Flash寿命。")
         # 先 addWidget 父级化, 再 setVisible; 否则 widget 无 parent 时被设为可见
         # 会作为独立小窗口在 Windows 上短暂弹出
+        btn_layout.addWidget(self._chk_flash_backup)
+        self._chk_flash_backup.setVisible(self._show_save)
+
+        self._btn_save = QPushButton(self._save_text)
+        self._btn_save.clicked.connect(self._on_save_clicked)
         btn_layout.addWidget(self._btn_save)
         self._btn_save.setVisible(self._show_save)
         # 全读/全写按钮: 先创建, 位置由下方模式决定(保存后 或 最右)
@@ -642,6 +651,14 @@ class ParamPanel(QGroupBox):
     def _on_write_all_clicked(self):
         """需求3: 底部全写按钮 — 收集当前面板所有 dirty 行批量写。"""
         self._on_write_group_clicked(list(self._param_specs.keys()))
+
+    def _on_save_clicked(self):
+        """保存按钮: 按复选框状态拼装 flags 发出 save_all。
+        flags bit0=1 追加写Flash备份(0xEA), 默认仅写EEPROM。"""
+        flags = 0
+        if self._chk_flash_backup.isChecked():
+            flags |= 1 << 0  # MOTOR_INFO_SAVE_FLAG_FLASH
+        self.save_all.emit(flags)
 
     def _set_write_button_state(self, param_id: int, dirty: bool, pending: bool = False):
         btn = self._write_buttons.get(int(param_id))

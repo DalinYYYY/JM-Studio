@@ -9,18 +9,18 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1696,
-      "height": 1048,
-      "x": 388,
-      "y": 195
+      "width": 1743,
+      "height": 1055,
+      "x": 607,
+      "y": 220
     },
     "right_splitter": [
-      992,
-      0
+      837,
+      150
     ],
     "main_splitter": [
-      338,
-      1332
+      393,
+      1324
     ],
     "log_splitter_sizes": [
       341,
@@ -28,33 +28,33 @@
     ],
     "layout_edit": true,
     "telemetry": {
-      "mask": 3391,
-      "period_ms": 10
+      "mask": 3583,
+      "period_ms": 1
     },
     "feedback_poll": {
-      "enabled": false,
-      "period_ms": 50
+      "enabled": true,
+      "period_ms": 500
     },
-    "log_visible": false,
+    "log_visible": true,
     "log_opts": {
       "ts": true,
       "tx": true,
-      "rx": true,
-      "raw": true,
+      "rx": false,
+      "raw": false,
       "can_raw": false,
       "autoscroll": false,
-      "lvl_debug": false,
-      "lvl_info": false,
-      "lvl_warn": false,
+      "lvl_debug": true,
+      "lvl_info": true,
+      "lvl_warn": true,
       "lvl_error": true
     },
     "virtual_motor_mode": false,
     "csv_paths": {
-      "motor_config": "D:\\AAWorkSpace\\001_JointMotor\\SW\\JointMotor\\User\\Tools\\pyqt_gui\\resources\\motor_info.csv",
+      "motor_config": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/motor_info_gen/motor_info.csv",
       "motor_param": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/motor_param.csv"
     },
     "plot": {
-      "window_points": 20000,
+      "window_points": 5000,
       "follow": true,
       "auto_y": true,
       "current_visibility": {
@@ -89,10 +89,9 @@
       }
     },
     "motion": {
-      "current_cmd": 16,
+      "current_cmd": 21,
       "fields": {
-        "ud": 1.4,
-        "uq": 0.0
+        "pos_ref": 6.0
       }
     },
     "motor_param": {
@@ -102,7 +101,7 @@
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 447,
+        "5": 439,
         "6": 72,
         "7": 72
       }
@@ -114,7 +113,7 @@
         "2": 120,
         "3": 200,
         "4": 125,
-        "5": 267,
+        "5": 407,
         "6": 72,
         "7": 72
       }
@@ -126,7 +125,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 325,
+        "5": 496,
         "6": 72,
         "7": 72
       }
@@ -138,7 +137,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 492,
+        "5": 484,
         "6": 72,
         "7": 72
       }
@@ -157,7 +156,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 325,
+          "5": 496,
           "6": 72,
           "7": 72
         }
@@ -165,20 +164,20 @@
     },
     "pid": {
       "history_visible": false,
-      "tuning_mode": "current_d",
-      "waveform_rate_hz": 1000,
+      "tuning_mode": "current_q",
+      "waveform_rate_hz": 700,
       "waveform_source": "current_d",
       "waveform_window": {
         "geo": [
-          921,
-          384,
-          1080,
-          701
+          1085,
+          305,
+          1366,
+          810
         ],
         "follow": true,
-        "rate_hz": 1000,
+        "rate_hz": 700,
         "source": "current_d",
-        "buffer_max": 200000,
+        "buffer_max": 400000,
         "line_width": 2,
         "dot_size": 2,
         "wave_style": "line+dot",
@@ -193,7 +192,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 492,
+          "5": 484,
           "6": 72,
           "7": 72
         }

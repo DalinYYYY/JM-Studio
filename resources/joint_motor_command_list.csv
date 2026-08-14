@@ -104,7 +104,7 @@
 103,写电机配置,0xE7,Host->Motor,电机配置,{param_id:u16;value:u32},ACK{param_id:u16;status:u8},6,小端混合,见motor_info.csv,0xE700|ID,pid[0:2]val[2:6],写motor_info单参 RAM生效 固定4字节值 需0xEA固化 依赖USE_DEV_FLASH 未启用时返回NACK(UNSUPPORTED)
 104,批量读电机配置,0xE8,Host->Motor,电机配置,{start_id:u16;count:u16},{start_id:u16;count:u8;value:u32[]},4,小端u16,见motor_info.csv,0xE800|ID,CAN需分包,块内连续ID批量读 固定4B/值 跨块间隔返回BAD_PARAM_ID 依赖USE_DEV_FLASH 未启用时返回NACK(UNSUPPORTED)
 105,批量写电机配置,0xE9,Host->Motor,电机配置,{start_id:u16;count:u16;value:u32[]},ACK{status:u8},变长,小端混合,见motor_info.csv,0xE900|ID,CAN需分包,块内连续ID批量写 固定4B/值 依赖USE_DEV_FLASH 未启用时返回NACK(UNSUPPORTED)
-106,电机配置存Flash,0xEA,Host->Motor,电机配置,无,ACK{status:u8},0,-,-,0xEA00|ID,无,把motor_info整块1024B写入Flash/EEPROM 依赖USE_DEV_FLASH 未启用时返回NACK(UNSUPPORTED)
+106,电机配置固化,0xEA,Host->Motor,电机配置,{flags:u8 可选},ACK{status:u8},0~1,-,-,0xEA00|ID,无,把motor_info整块1024B固化 默认仅写EEPROM bit0=1追加写Flash备份 依赖USE_DEV_FLASH 未启用时返回NACK(UNSUPPORTED)
 107,电机配置恢复默认,0xEB,Host->Motor,电机配置,{param_id:u16=0xFFFF全部},ACK{status:u8},2,小端u16,-,0xEB00|ID,pid[0:2],单参或全部恢复默认motor_info 依赖USE_DEV_FLASH 未启用时返回NACK(UNSUPPORTED)
 108,电机配置重新标定复位,0xEC,Host->Motor,电机配置,无,ACK{status:u8},0,-,-,0xEC00|ID,无,清除is_calibrated+编码器字段(enc_offset/elec_angle_bias/enc_direction) 保留电气字段和限幅字段 仅清RAM需随后发0xEA固化 依赖USE_DEV_FLASH
 109,设置CAN_ID,0xF0,Host->Motor,CAN管理,{new_id:u8},ACK{new_id:u8;restart_required:u8},1,u8,1~127,0xF000|ID,nid[0],原子写入motor_info Flash ACK仍使用旧ID 重启后生效

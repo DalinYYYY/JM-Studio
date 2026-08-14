@@ -95,11 +95,12 @@ if queue:
     check(queue[-1] == (results, 16),
           f"队列末项应为 (results, 16), 实际 {queue[-1]}")
 
-# 4. save_all 信号应可触发(连接到 mock)
+# 4. save_all 信号应可触发(连接到 mock), 载荷为 flags(u8)
 saved = []
-results.save_all.connect(lambda: saved.append(True))
-results.save_all.emit()
-check(saved == [True], "save_all emit 应触发回调")
+results.save_all.connect(lambda flags: saved.append(flags))
+results.save_all.emit(0)   # 默认仅写EEPROM
+results.save_all.emit(1)   # bit0=1 追加写Flash备份
+check(saved == [0, 1], f"save_all emit 应携带 flags, 实际 {saved}")
 
 print(f"\nPASS={PASS} FAIL={FAIL}")
 sys.exit(0 if FAIL == 0 else 1)

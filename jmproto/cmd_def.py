@@ -8,6 +8,11 @@ CMD 0x00~0xB8 段数值与 state_define.h 的 ctrl_mode_e 一致。
 from enum import IntEnum
 
 
+# 0xEA MOTOR_INFO_SAVE 载荷 flags 位定义(与固件 jm_cmd_def.h 一致):
+# 默认(flags=0)仅写 EEPROM(上电优先加载); FLASH 位=1 追加写 Flash 备份。
+MOTOR_INFO_SAVE_FLAG_FLASH = 1 << 0
+
+
 class JmCmd(IntEnum):
     """关节电机命令码"""
     # 系统控制 0x00~0x0F
@@ -161,7 +166,7 @@ class JmCmd(IntEnum):
     MOTOR_INFO_WRITE = 0xE7       # 写单个电机配置(RAM, 需0xEA固化)
     MOTOR_INFO_READ_BULK = 0xE8   # 批量读(块内连续ID, 固定4B/值)
     MOTOR_INFO_WRITE_BULK = 0xE9  # 批量写(块内连续ID, 固定4B/值)
-    MOTOR_INFO_SAVE = 0xEA        # 把motor_info整块写入Flash
+    MOTOR_INFO_SAVE = 0xEA        # 固化motor_info: {flags:u8可选}, bit0=1追加写Flash备份(默认仅EEPROM)
     MOTOR_INFO_RESET = 0xEB       # 恢复默认(param_id=0xFFFF全部)
     MOTOR_INFO_RECALIB_RESET = 0xEC  # 清除标定状态以便重新标定(保留电机本体参数)
 
@@ -202,6 +207,10 @@ class JmErr(IntEnum):
     FLASH_VERIFY = 0x12    # Flash 校验失败(读回不匹配)
     # 新增 0x13 (预留命令专用)
     NOT_SUPPORTED = 0x13   # 命令码已定义但当前固件未实现(预留命令如 OTA/SYNC)
+    # 新增 0x14~0x16 (存储详细错误码, 与固件 jm_cmd_def.h 一致)
+    SAVE_LIMIT = 0x14      # 固化次数超限(寿命保护)
+    EEPROM_WRITE = 0x15    # EEPROM 写入失败
+    EEPROM_VERIFY = 0x16   # EEPROM 回读校验失败
 
 
 class CalibState(IntEnum):

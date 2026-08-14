@@ -38,8 +38,8 @@ class SpyClient:
         self.calls.append(("A2",))
         return True
 
-    def motor_info_save(self):
-        self.calls.append(("EA",))
+    def motor_info_save(self, flags=0):
+        self.calls.append(("EA", int(flags)))
         return True
 
     def set_telemetry(self, enable, mask, period_ms):
@@ -76,7 +76,7 @@ assert not [call for call in client.calls if call[0] == "EA"]
 
 window._on_ack(int(JmCmd.PID_SOURCE_SET))
 assert window._pid_commit_phase == "saving"
-assert [call for call in client.calls if call[0] == "EA"] == [("EA",)]
+assert [call for call in client.calls if call[0] == "EA"] == [("EA", 1)]  # 显式Flash固化带FLASH标志
 
 window._on_ack(int(JmCmd.MOTOR_INFO_SAVE))
 assert window._pid_commit_phase == "idle"
