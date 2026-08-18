@@ -973,7 +973,7 @@ class TwinParamPanel(QGroupBox):
         period_ns = 1e9 / mb.pwm_freq_hz
         dt_ratio = mb.dead_time_ns / period_ns * 100
         rows.append(("PWM 周期", period_ns, "ns", "1e9 / fpwm",
-                     "载波周期; 20kHz → 50μs"))
+                     "载波周期; 10kHz → 100μs"))
         rows.append(("死区占比", dt_ratio, "%", "td / Tpwm × 100",
                      "<5% 为佳; 过大影响低压精度与线性度"))
 
@@ -988,7 +988,7 @@ class TwinParamPanel(QGroupBox):
         # ===== 17. FOC 控制周期 =====
         foc_period_us = 1e6 / mb.foc_freq_hz
         rows.append(("FOC 周期", foc_period_us, "μs", "1e6 / fFOC",
-                     "FOC 控制周期; 20kHz → 50μs; 越小电流环带宽越高"))
+                     "FOC 控制周期; 10kHz → 100μs; 越小电流环带宽越高"))
 
         # ===== 18. 跟随误差与位置环带宽匹配 =====
         if pl.position_kp > 0 and mb.max_speed > 0:

@@ -11,12 +11,12 @@
     "main_window": {
       "width": 1743,
       "height": 1055,
-      "x": 607,
-      "y": 220
+      "x": 720,
+      "y": 134
     },
     "right_splitter": [
-      837,
-      150
+      999,
+      0
     ],
     "main_splitter": [
       393,
@@ -28,14 +28,14 @@
     ],
     "layout_edit": true,
     "telemetry": {
-      "mask": 3583,
-      "period_ms": 1
+      "mask": 3551,
+      "period_ms": 2
     },
     "feedback_poll": {
       "enabled": true,
       "period_ms": 500
     },
-    "log_visible": true,
+    "log_visible": false,
     "log_opts": {
       "ts": true,
       "tx": true,
@@ -54,7 +54,7 @@
       "motor_param": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/motor_param.csv"
     },
     "plot": {
-      "window_points": 5000,
+      "window_points": 10000,
       "follow": true,
       "auto_y": true,
       "current_visibility": {
@@ -77,7 +77,7 @@
           "legend": true
         },
         "current": {
-          "auto_y": false,
+          "auto_y": true,
           "legend": true
         },
         "angle": {
@@ -89,9 +89,10 @@
       }
     },
     "motion": {
-      "current_cmd": 21,
+      "current_cmd": 17,
       "fields": {
-        "pos_ref": 6.0
+        "id_ref": 0.0,
+        "iq_ref": 0.0
       }
     },
     "motor_param": {
