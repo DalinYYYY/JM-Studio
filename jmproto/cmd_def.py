@@ -8,6 +8,21 @@ CMD 0x00~0xB8 段数值与 state_define.h 的 ctrl_mode_e 一致。
 from enum import IntEnum
 
 
+class SweepTestMode(IntEnum):
+    TORQUE_TO_VELOCITY = 0
+    CURRENT_TO_VELOCITY = 1
+    CURRENT_TO_CURRENT = 2
+    VELOCITY_TO_POSITION = 3
+    VELOCITY_TO_VELOCITY = 4
+    POSITION_TO_POSITION = 5
+
+
+class SweepMode(IntEnum):
+    LINEAR = 0
+    LOG = 1
+    STEP = 2  # 1Hz固定步进, 频点数由起止频率决定
+
+
 # 0xEA MOTOR_INFO_SAVE 载荷 flags 位定义(与固件 jm_cmd_def.h 一致):
 # 默认(flags=0)仅写 EEPROM(上电优先加载); FLASH 位=1 追加写 Flash 备份。
 MOTOR_INFO_SAVE_FLAG_FLASH = 1 << 0

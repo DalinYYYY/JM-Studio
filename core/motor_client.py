@@ -60,6 +60,7 @@ class JmClient(QObject):
     pid_param_received = pyqtSignal(int, int, bytes)   # 0xA6 PID参数读取结果(ring, param_type, value4)
     trace_config_received = pyqtSignal(object)      # 0xB9 TRACE 配置应答
     trace_data_received = pyqtSignal(object)         # 0xBA TRACE 主动批量数据
+    bode_sweep_ack_received = pyqtSignal(object)    # 0x76 启动/停止应答
     raw_frame = pyqtSignal(int, bytes)                 # cmd, payload(RX 入口, 日志面板格式化)
     tx_frame = pyqtSignal(int, bytes)                  # cmd, payload(TX 入口, 日志面板格式化)
 
@@ -77,6 +78,9 @@ class JmClient(QObject):
         # 合并反馈状态: 各 READ_*/TELEMETRY 帧按 filled_fields 增量合并,
         # 让 UI 拿到的是累积完整的 FeedbackData (避免部分帧字段覆盖为默认0)
         self._last_feedback = jp.FeedbackData()
+        # 固件协议版本 (major, minor): 0xD0 28B 扩展应答携带, 旧固件/未查询为 None。
+        # v1.4+ 才支持 0x76 十二B偏置扫频载荷与速度闭环扫频模式。
+        self.fw_proto_version = None
         # 危险命令二次确认回调: UI 层注入, 签名 (cmd, payload) -> bool
         # None 表示无 UI 注入, 直接发送(用于脚本/无 GUI 场景)
         self._confirm_cb = None
@@ -300,6 +304,36 @@ class JmClient(QObject):
     def trace_stop(self, session_id: int = 0):
         return self.trace_config(False, session_id=session_id)
 
+    def sweep_start(self, test_mode: int, sweep_mode: int,
+                    point_cfg: int, f_start_hz: float,
+                    f_end_hz: float, amp: float,
+                    bias: float = 0.0) -> bool:
+        """发送 0x76 12B整数格式: 扫频幅值+直流偏置+格式标记。"""
+        test_mode = int(test_mode)
+        sweep_mode = int(sweep_mode)
+        point_cfg = int(point_cfg)
+        if not (0 <= test_mode <= 5 and 0 <= sweep_mode <= 2 and
+                1 <= point_cfg <= 255):
+            return False
+        f_start_x10 = int(round(float(f_start_hz) * 10.0))
+        f_end_x10 = int(round(float(f_end_hz) * 10.0))
+        amp_scale = 100.0 if test_mode >= 3 else 1000.0
+        amp_raw = int(round(float(amp) * amp_scale))
+        bias_raw = int(round(float(bias) * amp_scale))
+        if not (1 <= f_start_x10 <= f_end_x10 <= 65535 and
+                1 <= amp_raw <= 65535 and -32768 <= bias_raw <= 32767):
+            return False
+        control = 0x80 | ((test_mode & 0x07) << 4) | ((sweep_mode & 0x03) << 2)
+        payload = bytes([control, point_cfg & 0xFF])
+        payload += codec.wr_u16(f_start_x10) + codec.wr_u16(f_end_x10)
+        payload += codec.wr_u16(amp_raw) + codec.wr_i16(bias_raw)
+        payload += codec.wr_u16(0xB076)
+        return self._send(JmCmd.TEST_SWEEP_FREQ, payload)
+
+    def sweep_stop(self) -> bool:
+        """发送 0x76 短格式停止请求。"""
+        return self._send(JmCmd.TEST_SWEEP_FREQ, b'\x00')
+
     # ---- 遥测订阅 / 遥控开关 ----
     def set_telemetry(self, enable: bool, mask: int, period_ms: int = 0):
         """遥控模式开关: enable=True 启动周期上报, False 停止。
@@ -421,6 +455,22 @@ class JmClient(QObject):
                 self.pid_param_received.emit(payload[0], payload[1], payload[2:6])
             return
 
+        # TEST_SWEEP_FREQ(0x76): 启动 ACK{session:u16,point_count:u16,duration_x100:u32};
+        # 停止 ACK 为空。NACK 已在函数开头统一处理。
+        if cmd == JmCmd.TEST_SWEEP_FREQ:
+            if len(payload) == 8:
+                self.bode_sweep_ack_received.emit({
+                    'running': True,
+                    'session_id': codec.rd_u16(payload, 0),
+                    'point_count': codec.rd_u16(payload, 2),
+                    'duration_x100': codec.rd_u32(payload, 4),
+                })
+                self.ack_received.emit(cmd)
+            elif len(payload) == 0:
+                self.bode_sweep_ack_received.emit({'running': False})
+                self.ack_received.emit(cmd)
+            return
+
         # TRACE_CONFIG 应答: session:u16 + actual_rate:u32 + packet:u8 + capacity:u16。
         if cmd == JmCmd.TRACE_CONFIG:
             if len(payload) == 9:
@@ -476,11 +526,22 @@ class JmClient(QObject):
             if (rate == 0 or mask == 0 or (mask & ~0xFF) != 0 or
                     channels == 0 or channels != int(mask).bit_count()):
                 return
-            expected = 25 + count * channels * 4
+            sweep_point = None
+            phase_inc = None
+            freq_mhz = None
+            data_offset = 25
+            if flags & 0x08:
+                if len(payload) < 35:
+                    return
+                sweep_point = codec.rd_u16(payload, 25)
+                phase_inc = codec.rd_u32(payload, 27)
+                freq_mhz = codec.rd_u32(payload, 31)
+                data_offset = 35
+            expected = data_offset + count * channels * 4
             if count == 0 or expected != len(payload):
                 return
             samples = []
-            pos = 25
+            pos = data_offset
             for _ in range(count):
                 row = [codec.rd_f32(payload, pos + i * 4)
                        for i in range(channels)]
@@ -492,14 +553,18 @@ class JmClient(QObject):
                 'channel_mask': mask, 'sample_count': count,
                 'channels': channels, 'flags': flags,
                 'overflow_count': overflow, 'samples': samples,
+                'sweep_point': sweep_point, 'phase_inc': phase_inc,
+                'f_actual_mhz': freq_mhz,
             })
             return
 
-        # DEV_INFO
+        # DEV_INFO: 28B 扩展格式 [21]proto_major [22]proto_minor(旧固件仅 20B)
         if cmd == JmCmd.READ_DEV_INFO and len(payload) >= 20:
             hw = codec.rd_u32(payload, 0)
             fw = codec.rd_u32(payload, 4)
             uid = bytes(payload[8:20])
+            if len(payload) >= 23:
+                self.fw_proto_version = (payload[21], payload[22])
             self.dev_info_received.emit(hw, fw, uid)
             return
 
@@ -603,4 +668,6 @@ class JmClient(QObject):
         fw = codec.rd_u32(payload, 4)
         uid = bytes(payload[8:20])
         reported_id = payload[20] if len(payload) >= 21 else node_id
+        if len(payload) >= 23:
+            self.fw_proto_version = (payload[21], payload[22])
         self.can_node_discovered.emit(node_id, hw, fw, uid, reported_id)

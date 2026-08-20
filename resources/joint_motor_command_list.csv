@@ -50,7 +50,7 @@
 49,点动,0x73,Host->Motor,特殊应用,{dir:i8;speed:f32},ACK,5,小端混合,方向/rad·s⁻¹,0x7300|ID,dir[0]spd[1:5],CONTROL_MODE_JOG
 50,安全示教,0x74,Host->Motor,特殊应用,无,ACK,0,-,-,0x7400|ID,无,CONTROL_MODE_SAFE_TEACH
 51,老化测试,0x75,Host->Motor,测试,{cycles:u32},ACK,4,小端u32,次数,0x7500|ID,cyc[0:4],CONTROL_MODE_TEST_AGING
-52,扫频测试,0x76,Host->Motor,测试,{f_start:f32;f_end:f32;amp:f32},ACK,12,小端float,Hz/Hz/幅值,0x7600|ID,CAN需分包,CONTROL_MODE_TEST_SWEEP_FREQ
+52,扫频测试,0x76,Host->Motor,测试,{control:u8;point_cfg:u8;f_start_x10:u16;f_end_x10:u16;amp_raw:u16;bias_raw:i16;format_tag:u16},{session_id:u16;point_count:u16;duration_x100:u32},12,小端整数,模式相关,0x7600|ID,12B整数格式;bias为直流偏置;UART优先;经典CAN走分包;8B格式兼容;可选旧12B浮点,CONTROL_MODE_TEST_SWEEP_FREQ
 53,齿槽测试,0x77,Host->Motor,测试,无,ACK,0,-,-,0x7700|ID,无,CONTROL_MODE_TEST_COGGING
 54,摩擦测试,0x78,Host->Motor,测试,无,ACK,0,-,-,0x7800|ID,无,CONTROL_MODE_TEST_FRICTION
 55,惯量测试,0x79,Host->Motor,测试,无,ACK,0,-,-,0x7900|ID,无,CONTROL_MODE_TEST_INERTIA
