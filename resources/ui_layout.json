@@ -9,18 +9,18 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1743,
-      "height": 1055,
-      "x": 720,
-      "y": 134
+      "width": 2560,
+      "height": 1369,
+      "x": 8,
+      "y": -8
     },
     "right_splitter": [
-      999,
+      1313,
       0
     ],
     "main_splitter": [
-      393,
-      1324
+      316,
+      2218
     ],
     "log_splitter_sizes": [
       341,
@@ -29,7 +29,7 @@
     "layout_edit": true,
     "telemetry": {
       "mask": 3551,
-      "period_ms": 2
+      "period_ms": 10
     },
     "feedback_poll": {
       "enabled": true,
@@ -39,7 +39,7 @@
     "log_opts": {
       "ts": true,
       "tx": true,
-      "rx": false,
+      "rx": true,
       "raw": false,
       "can_raw": false,
       "autoscroll": false,
@@ -54,7 +54,7 @@
       "motor_param": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/motor_param.csv"
     },
     "plot": {
-      "window_points": 10000,
+      "window_points": 3000,
       "follow": true,
       "auto_y": true,
       "current_visibility": {
@@ -102,7 +102,7 @@
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 439,
+        "5": 327,
         "6": 72,
         "7": 72
       }
@@ -114,7 +114,7 @@
         "2": 120,
         "3": 200,
         "4": 125,
-        "5": 407,
+        "5": 322,
         "6": 72,
         "7": 72
       }
@@ -126,7 +126,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 496,
+        "5": 384,
         "6": 72,
         "7": 72
       }
@@ -138,17 +138,17 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 484,
+        "5": 372,
         "6": 72,
         "7": 72
       }
     },
     "calib": {
-      "task_tab_index": 6,
+      "task_tab_index": 2,
       "history_visible": false,
       "active_task": [
-        150,
-        1
+        146,
+        2
       ],
       "config_panel": {
         "column_widths": {
@@ -157,7 +157,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 496,
+          "5": 384,
           "6": 72,
           "7": 72
         }
@@ -193,7 +193,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 484,
+          "5": 372,
           "6": 72,
           "7": 72
         }
@@ -210,6 +210,15 @@
     "fault_info": {
       "disable_mask": 0,
       "current_tab": 2
+    },
+    "bode_sweep": {
+      "test_mode": 0,
+      "sweep_mode": 2,
+      "point_cfg": 100,
+      "f_start": 1.0,
+      "f_end": 200.0,
+      "amp": 0.001,
+      "bias": 0.0
     }
   },
   "theme": "dark",

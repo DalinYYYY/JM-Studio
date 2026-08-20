@@ -20,6 +20,7 @@ _DEFAULTS = {
     "feedback_chart": True,
     "state_machine": True,
     "waveform_plot": True,
+    "bode_sweep": True,
     "fault_info": True,
     "virtual_twin": True,
     "log_panel": True,
