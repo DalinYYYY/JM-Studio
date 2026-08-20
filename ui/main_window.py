@@ -42,6 +42,7 @@ from ui.panels.calibration_panel import CalibrationPanel
 from ui.panels.pid_panel import PidPanel, PidSource
 from ui.panels.twin_param_panel import TwinParamPanel
 from ui.panels.fault_info_panel import FaultInfoPanel
+from ui.panels.bode_sweep_panel import BodeSweepPanel
 from ui.panels.debug_plot_window import DebugPlotWindow
 from ui.csv_load_dialog import CsvLoadDialog
 from ui.can_device_manager import CanDeviceManagerDialog
@@ -317,6 +318,7 @@ class MainWindow(QMainWindow):
             show_bulk_rw=False, show_import_export=True)
         self._twin_param_panel = TwinParamPanel()
         self._fault_info_panel = FaultInfoPanel()
+        self._bode_panel = BodeSweepPanel(self._client)
         self._log_panel = LogPanel()
         self._log_panel_visible = True
 
@@ -353,6 +355,8 @@ class MainWindow(QMainWindow):
             tabs.addTab(self._fault_info_panel, "故障信息")
         if ff.is_enabled("waveform_plot"):
             tabs.addTab(self._plot_panel, "实时曲线")
+        if ff.is_enabled("bode_sweep"):
+            tabs.addTab(self._bode_panel, "Bode 扫频")
         self._tabs = tabs
         # 虚拟电机模式默认关闭: 初始隐藏孪生参数 Tab (故障信息面板内部子表/屏蔽区自行隐藏)
         if ff.is_enabled("virtual_twin"):
@@ -599,6 +603,7 @@ class MainWindow(QMainWindow):
             ("pid", self._pid_panel),
             ("twin_param", self._twin_param_panel),
             ("fault_info", self._fault_info_panel),
+            ("bode_sweep", self._bode_panel),
         ):
             try:
                 s[key] = panel.get_opts()
@@ -743,6 +748,7 @@ class MainWindow(QMainWindow):
             ("pid", self._pid_panel),
             ("twin_param", self._twin_param_panel),
             ("fault_info", self._fault_info_panel),
+            ("bode_sweep", self._bode_panel),
         ):
             opts = d.get(key)
             if isinstance(opts, dict):
@@ -972,7 +978,7 @@ class MainWindow(QMainWindow):
         for panel in (self._feedback_panel, self._state_panel, self._plot_panel,
                       self._log_panel, self._param_panel, self._config_panel,
                       self._calib_panel, self._pid_panel, self._twin_param_panel,
-                      self._fault_info_panel):
+                      self._fault_info_panel, self._bode_panel):
             fn = getattr(panel, "apply_theme", None)
             if callable(fn):
                 fn()
@@ -2023,6 +2029,9 @@ class MainWindow(QMainWindow):
             self._trace_lost_packets, self._trace_overflow_count)
 
     def _on_trace_data(self, packet: dict):
+        # 扫频 TRACE 由 BodeSession 接收；不让 PID 波形窗口误消费带扩展元数据的帧。
+        if isinstance(packet, dict) and (int(packet.get('flags', 0)) & 0x08):
+            return
         if (self._active_main_tab_widget is not self._pid_panel or
                 not self._pid_panel.waveform_enabled() or
                 not isinstance(packet, dict)):

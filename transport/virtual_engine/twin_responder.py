@@ -10,6 +10,7 @@
   - 参数: 直接读写 MotorParam 的嵌套 dataclass 字段
 """
 
+import math
 import struct
 from typing import Optional
 
@@ -124,6 +125,14 @@ class TwinResponder:
         self._trace_packet_samples = 0
         self._trace_sequence = 0
         self._trace_sample_index = 0
+        self._sweep_active = False
+        self._sweep_session = 0
+        self._sweep_test_mode = 0
+        self._sweep_bias = 0.0
+        self._sweep_freqs_hz: list[float] = []
+        self._sweep_point = 0
+        self._sweep_point_sample = 0
+        self._sweep_point_total = 0
 
     # ================= 命令入口 =================
     def on_command(self, cmd: int, payload: bytes):
@@ -157,7 +166,8 @@ class TwinResponder:
         spec = self.reg.get_command(cmd)
         is_motion = (spec is not None and
                      spec.category in ("运动控制", "高级力控", "轨迹同步", "特殊应用与测试") and
-                     cmd <= int(JmCmd.SINGLE_STEP))
+                     cmd <= int(JmCmd.SINGLE_STEP) and
+                     cmd != int(JmCmd.TEST_SWEEP_FREQ))
         if is_motion:
             top = self._top_fsm()
             # 允许 READY/RUN/SAFETY 接收运动命令:
@@ -190,6 +200,71 @@ class TwinResponder:
         if cmd == int(JmCmd.HEARTBEAT):
             self.engine.update_comm_heartbeat()
             return [self._ack(cmd)]
+
+        # ---- Bode 扫频(0x76): 虚拟机生成带扩展元数据的合成 TRACE ----
+        if cmd == int(JmCmd.TEST_SWEEP_FREQ):
+            if len(payload) == 1 and (payload[0] & 0x80) == 0:
+                self._sweep_active = False
+                self._trace_mask = 0
+                self._trace_packet_samples = 0
+                return [(cmd, b'')]
+            if len(payload) not in (8, 12) or (payload[0] & 0x80) == 0:
+                return [self._nack(cmd, int(JmErr.LENGTH))]
+            control, point_cfg = payload[0], payload[1]
+            test_mode = (control >> 4) & 0x07
+            sweep_mode = (control >> 2) & 0x03
+            if (control & 0x03) or test_mode > 5 or sweep_mode > 2 or not 1 <= point_cfg <= 255:
+                return [self._nack(cmd, int(JmErr.OUT_OF_RANGE))]
+            f_start_x10, f_end_x10, amp_raw = struct.unpack_from('<HHH', payload, 2)
+            bias_raw = 0
+            if len(payload) == 12:
+                if struct.unpack_from('<H', payload, 10)[0] != 0xB076:
+                    return [self._nack(cmd, int(JmErr.LENGTH))]
+                bias_raw = struct.unpack_from('<h', payload, 8)[0]
+            if not (1 <= f_start_x10 <= f_end_x10 <= 65535 and amp_raw > 0):
+                return [self._nack(cmd, int(JmErr.OUT_OF_RANGE))]
+            if self._top_fsm() != int(TopFsm.READY) or self._trace_mask:
+                return [self._nack(cmd, int(JmErr.BUSY))]
+            f_start = f_start_x10 * 0.1
+            f_end = f_end_x10 * 0.1
+            if f_start == f_end:
+                freqs = [f_start]
+            elif sweep_mode == 0:
+                freqs = [f_start + (f_end - f_start) * i / (point_cfg - 1)
+                         for i in range(point_cfg)] if point_cfg > 1 else []
+            elif sweep_mode == 2:
+                # 1Hz固定步进: 频点数由起止频率决定, 与固件
+                # motor_mode_test_sweep.c 的 ceil(f_end-f_start)+1 规则一致。
+                count = math.ceil(f_end - f_start) + 1
+                freqs = [min(f_start + i, f_end) for i in range(count)]
+                freqs[-1] = f_end
+            else:
+                count = math.ceil(math.log10(f_end / f_start) * point_cfg) + 1
+                freqs = [min(f_end, f_start * (10.0 ** (i / point_cfg)))
+                         for i in range(count)]
+                freqs[-1] = f_end
+            if not freqs or len(freqs) > 1024:
+                return [self._nack(cmd, int(JmErr.OUT_OF_RANGE))]
+            self._sweep_session = (self._sweep_session + 1) & 0xFFFF or 1
+            self._sweep_active = True
+            self._sweep_test_mode = test_mode
+            self._sweep_bias = bias_raw * (0.01 if test_mode >= 3 else 0.001)
+            self._sweep_freqs_hz = freqs
+            self._sweep_point = 0
+            self._sweep_point_sample = 0
+            self._sweep_point_total = 0
+            self._trace_session = self._sweep_session
+            self._trace_mask = ((1 << 2) | (1 << 3)) if test_mode == 2 else ((1 << 4) | (1 << 7)) if test_mode == 3 else ((1 << 4) | (1 << 5)) if test_mode == 4 else ((1 << 6) | (1 << 7)) if test_mode == 5 else ((1 << 2) | (1 << 5))
+            # 采样率策略与固件 jm_proto_ops.c 对齐: 电流环对象≥5kHz,
+            # 速度/位置对象≥2kHz, 保底 f_end×20, 上限钳制到控制频率10kHz。
+            rate_min = 5000 if test_mode == 2 else 2000
+            self._trace_rate = min(max(int(f_end * 20.0), rate_min), 10000)
+            self._trace_packet_samples = 24
+            self._trace_sequence = 0
+            self._trace_sample_index = 0
+            duration_x100 = int(sum((3 + 8) / max(f, 0.1) * 100 for f in freqs) + 0.5)
+            return [(cmd, codec.wr_u16(self._sweep_session) +
+                     codec.wr_u16(len(freqs)) + codec.wr_u32(duration_x100))]
 
         # ---- 遥测订阅 ----
         if cmd == int(JmCmd.SET_TELEMETRY):
@@ -281,12 +356,93 @@ class TwinResponder:
         return [self._nack(cmd, int(JmErr.UNSUPPORTED))]
 
     # ================= 周期回调 =================
+    @staticmethod
+    def _plant_h(test_mode: int, freq: float) -> complex:
+        """按测试模式合成传递函数 H(jω), 供辨识/验证两个方向做端到端验证。
+
+        - mode 0/1(辨识·机械对象): 一阶 1/(J·s+B), 转折 8Hz
+        - mode 3(辨识·位置对象): 速度闭环(一阶 30Hz) + 积分器
+        - mode 2(验证·电流环): 一阶闭环 200Hz
+        - mode 4(验证·速度环): 一阶闭环 30Hz
+        - mode 5(验证·位置环): 二阶闭环 ωn=2π·8Hz, ζ=0.7
+        """
+        w = 2.0 * math.pi * freq
+        if test_mode in (0, 1):
+            return 1.0 / (1.0 + 1j * freq / 8.0)
+        if test_mode == 3:
+            return 1.0 / (1j * w * (1.0 + 1j * freq / 30.0))
+        if test_mode == 2:
+            return 1.0 / (1.0 + 1j * freq / 200.0)
+        if test_mode == 4:
+            return 1.0 / (1.0 + 1j * freq / 30.0)
+        # mode 5: 标准二阶闭环
+        wn = 2.0 * math.pi * 8.0
+        jw = 1j * w
+        return wn * wn / (jw * jw + 2.0 * 0.7 * wn * jw + wn * wn)
+
     def on_tick(self, live_due=True, trace_due=True):
         """周期回调；LIVE/TRACE 是否到期由调用方分别调度。"""
         frames = []
         if live_due and self.tlm_enabled and self.tlm_mask:
             frames.append(self._telemetry_frame(self.tlm_mask))
-        if trace_due and self._trace_mask and self._trace_packet_samples:
+        if trace_due and self._sweep_active:
+            freq = self._sweep_freqs_hz[self._sweep_point]
+            rate = max(1, self._trace_rate)
+            # 每频点按“整数周期”生成测量段样本, 保证上位机同步解调有完整周期、
+            # 且 phase_inc/f_actual 元数据与生成频率一致(避免频谱泄漏导致 SNR 偏低)。
+            # 周期策略与固件 sweep_measure_cycles 对齐: clamp(2*freq, 1, 8),
+            # 低频单周期, 高频逐渐过渡到 8 周期。
+            if self._sweep_point_total <= 0:
+                cycles = max(1, min(8, int(round(2.0 * freq))))
+                total = max(rate // 10, int(round(cycles * rate / freq)))
+                f_gen = cycles * rate / total
+                self._sweep_point_total = total
+                self._sweep_point_fgen = f_gen
+                self._sweep_point_phase_inc = int(round(f_gen * 4294967296.0 / rate))
+                self._sweep_point_f_mhz = int(round(f_gen * 1000.0))
+            f_gen = self._sweep_point_fgen
+            count = min(self._trace_packet_samples,
+                        self._sweep_point_total - self._sweep_point_sample)
+            h = self._plant_h(self._sweep_test_mode, freq)
+            gain = abs(h)
+            phase = math.atan2(h.imag, h.real)
+            rows = []
+            for i in range(count):
+                n = self._sweep_point_sample + i
+                x = self._sweep_bias + math.sin(2.0 * math.pi * f_gen * n / rate)
+                y = gain * math.sin(2.0 * math.pi * f_gen * n / rate + phase)
+                rows.append([x, y])
+            flags = 0x08
+            if self._sweep_point_sample == 0:
+                flags |= 0x10
+            if self._sweep_point_sample + count >= self._sweep_point_total:
+                flags |= 0x20
+            if flags & 0x20 and self._sweep_point == len(self._sweep_freqs_hz) - 1:
+                flags |= 0x04
+            out = bytearray(codec.wr_u16(self._trace_session))
+            out += codec.wr_u32(self._trace_sequence)
+            out += codec.wr_u32(self._trace_sample_index)
+            out += codec.wr_u32(rate) + codec.wr_u32(self._trace_mask)
+            out += bytes([count, 2, flags]) + codec.wr_u32(0)
+            out += codec.wr_u16(self._sweep_point)
+            out += codec.wr_u32(self._sweep_point_phase_inc)
+            out += codec.wr_u32(self._sweep_point_f_mhz)
+            for row in rows:
+                out += codec.wr_f32(row[0]) + codec.wr_f32(row[1])
+            self._trace_sequence = (self._trace_sequence + 1) & 0xFFFFFFFF
+            self._trace_sample_index += count
+            self._sweep_point_sample += count
+            if flags & 0x20:
+                if flags & 0x04:
+                    self._sweep_active = False
+                    self._trace_mask = 0
+                    self._trace_packet_samples = 0
+                else:
+                    self._sweep_point += 1
+                    self._sweep_point_sample = 0
+                    self._sweep_point_total = 0
+            frames.append((int(JmCmd.TRACE_DATA), bytes(out)))
+        elif trace_due and self._trace_mask and self._trace_packet_samples:
             rows = []
             for i in range(self._trace_packet_samples):
                 t = self._tlm()
