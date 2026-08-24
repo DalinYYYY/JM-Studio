@@ -6,10 +6,10 @@
     "calibration": true,
     "pid_tuning": true,
     "feedback_chart": true,
-    "state_machine": true,
+    "state_machine": false,
     "waveform_plot": true,
-    "bode_sweep": true,
-    "fault_info": true,
+    "bode_sweep": false,
+    "fault_info": false,
     "virtual_twin": false,
     "log_panel": true
   }

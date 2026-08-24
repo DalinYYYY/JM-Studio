@@ -9,18 +9,18 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 2560,
-      "height": 1369,
-      "x": 8,
-      "y": -8
+      "width": 1641,
+      "height": 984,
+      "x": 546,
+      "y": 155
     },
     "right_splitter": [
-      1313,
+      928,
       0
     ],
     "main_splitter": [
-      316,
-      2218
+      348,
+      1267
     ],
     "log_splitter_sizes": [
       341,
@@ -28,8 +28,8 @@
     ],
     "layout_edit": true,
     "telemetry": {
-      "mask": 3551,
-      "period_ms": 10
+      "mask": 4063,
+      "period_ms": 5
     },
     "feedback_poll": {
       "enabled": true,
@@ -40,7 +40,7 @@
       "ts": true,
       "tx": true,
       "rx": true,
-      "raw": false,
+      "raw": true,
       "can_raw": false,
       "autoscroll": false,
       "lvl_debug": true,
@@ -89,10 +89,9 @@
       }
     },
     "motion": {
-      "current_cmd": 17,
+      "current_cmd": 96,
       "fields": {
-        "id_ref": 0.0,
-        "iq_ref": 0.0
+        "t_set": 0.05
       }
     },
     "motor_param": {
@@ -102,19 +101,19 @@
         "2": 120,
         "3": 120,
         "4": 194,
-        "5": 327,
+        "5": 382,
         "6": 72,
         "7": 72
       }
     },
     "motor_config": {
       "column_widths": {
-        "0": 220,
+        "0": 236,
         "1": 60,
         "2": 120,
         "3": 200,
         "4": 125,
-        "5": 322,
+        "5": 334,
         "6": 72,
         "7": 72
       }
@@ -126,7 +125,7 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 384,
+        "5": 439,
         "6": 72,
         "7": 72
       }
@@ -138,17 +137,17 @@
         "2": 120,
         "3": 120,
         "4": 120,
-        "5": 372,
+        "5": 427,
         "6": 72,
         "7": 72
       }
     },
     "calib": {
-      "task_tab_index": 2,
+      "task_tab_index": 3,
       "history_visible": false,
       "active_task": [
-        146,
-        2
+        147,
+        1
       ],
       "config_panel": {
         "column_widths": {
@@ -157,7 +156,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 384,
+          "5": 439,
           "6": 72,
           "7": 72
         }
@@ -193,7 +192,7 @@
           "2": 120,
           "3": 120,
           "4": 120,
-          "5": 372,
+          "5": 427,
           "6": 72,
           "7": 72
         }
@@ -212,12 +211,12 @@
       "current_tab": 2
     },
     "bode_sweep": {
-      "test_mode": 0,
-      "sweep_mode": 2,
-      "point_cfg": 100,
+      "test_mode": 1,
+      "sweep_mode": 0,
+      "point_cfg": 215,
       "f_start": 1.0,
-      "f_end": 200.0,
-      "amp": 0.001,
+      "f_end": 1000.0,
+      "amp": 0.1,
       "bias": 0.0
     }
   },
@@ -574,5 +573,18 @@
         0.405
       ]
     }
+  },
+  "tester_settings": {
+    "baud": "2000000",
+    "motion": {
+      "current_cmd": 20,
+      "fields": {
+        "vel_ref": 2.0
+      }
+    },
+    "window": [
+      1588,
+      963
+    ]
   }
 }
