@@ -46,6 +46,7 @@ class ControlMode(IntEnum):
     VOLTAGE = 5
     DUTY = 6
     IMPEDANCE = 7
+    PASSIVE_TORQUE = 8   # 被动恒转矩加载(对拖台 0x60): 方向跟随转速
 
 
 # ==================== 故障标志位 ====================
@@ -118,6 +119,7 @@ class MotorCmd:
     set_kd: Optional[float] = None     # MIT阻尼
     set_torque_ff: Optional[float] = None  # 力矩前馈
     set_vel_ff: Optional[float] = None     # 速度前馈
+    set_load_torque: Optional[float] = None  # 被动恒转矩幅值 Nm(方向跟随转速)
 
     # 故障屏蔽(可选): None=不修改, int=设置 disable_mask
     set_fault_disable: Optional[int] = None
@@ -297,6 +299,7 @@ class SystemStateMachine:
         self.target_kd = 0.0
         self.target_torque_ff = 0.0
         self.target_vel_ff = 0.0
+        self.target_load = 0.0   # 被动恒转矩幅值(恒正, 方向运行时跟随转速)
         # 命令目标(用户/上位机直接写入, 斜坡过渡到 target_xxx)
         self.cmd_target_pos = 0.0
         self.cmd_target_vel = 0.0
@@ -305,6 +308,7 @@ class SystemStateMachine:
         self.cmd_target_iq = 0.0
         self.cmd_target_voltage = 0.0
         self.cmd_target_duty = 0.0
+        self.cmd_target_load = 0.0
         # 目标斜坡速率(每秒变化量, 物理意义: 加速度/加加速度限制)
         # 位置 50 rad/s, 速度 200 rad/s², 力矩 50 Nm/s, 电流 100 A/s, 电压 200 V/s, 占空比 5 /s
         self.ramp_rate_pos = 50.0
@@ -555,6 +559,8 @@ class SystemStateMachine:
             # 取当前模式的目标幅值
             if mode == ControlMode.TORQUE:
                 tgt = abs(self.target_torque)
+            elif mode == ControlMode.PASSIVE_TORQUE:
+                tgt = self.target_load  # 被动恒转矩: 外部驱动下幅值即目标
             elif mode == ControlMode.CURRENT:
                 tgt = max(abs(self.target_id), abs(self.target_iq))
             elif mode == ControlMode.VOLTAGE:
@@ -595,6 +601,8 @@ class SystemStateMachine:
             self.cmd_target_voltage = cmd.set_voltage
         if cmd.set_duty is not None:
             self.cmd_target_duty = cmd.set_duty
+        if cmd.set_load_torque is not None:
+            self.cmd_target_load = cmd.set_load_torque
         # kp/kd/torque_ff/vel_ff 不做斜坡(配置参数, 非控制目标)
         if cmd.set_kp is not None:
             self.target_kp = cmd.set_kp
@@ -614,6 +622,7 @@ class SystemStateMachine:
         self.target_iq = self.cmd_target_iq
         self.target_voltage = self.cmd_target_voltage
         self.target_duty = self.cmd_target_duty
+        self.target_load = self.cmd_target_load
 
     def _ramp_step(self, current: float, target: float, rate: float, dt: float) -> float:
         """单值斜坡: 向 target 逼近, 每拍变化量 <= rate*dt。"""
@@ -639,6 +648,8 @@ class SystemStateMachine:
             self.target_voltage, self.cmd_target_voltage, self.ramp_rate_voltage, dt)
         self.target_duty = self._ramp_step(
             self.target_duty, self.cmd_target_duty, self.ramp_rate_duty, dt)
+        self.target_load = self._ramp_step(
+            self.target_load, self.cmd_target_load, self.ramp_rate_torque, dt)
 
     def _ramp_down_during_transition(self, dt: float):
         """模式切换过渡: 把当前生效目标衰减向0(经斜坡), 避免突变。
@@ -662,6 +673,8 @@ class SystemStateMachine:
                                               self.ramp_rate_voltage * fast, dt)
         self.target_duty = self._ramp_step(self.target_duty, 0.0,
                                            self.ramp_rate_duty * fast, dt)
+        self.target_load = self._ramp_step(self.target_load, 0.0,
+                                           self.ramp_rate_torque * fast, dt)
 
     def _build_motor_ref(self, fb: dict):
         """根据当前模式生成 MotorRef。"""
@@ -683,6 +696,20 @@ class SystemStateMachine:
             ref.ctrl_type = RefCtrlType.TORQUE
             ref.torque = self.target_torque
             ref.torque_ff = self.target_torque_ff
+        elif m == ControlMode.PASSIVE_TORQUE:
+            # 被动恒转矩加载(对拖台 0x60), 对齐固件 motor_mode_load_sim.c:
+            # T = -dir(ω)·t_set, 死区内严格零输出(速度噪声不放大, 根除静止微抖)。
+            # 被动模式电机不会被本机驱动, 旋转须由外部(手转/被测电机)提供。
+            omega_m = fb.get('omega_m', fb.get('vel', 0.0))
+            dead = 0.5  # 低速死区 rad/s(对齐固件 load_sim_dead_zone_rad_s 默认)
+            if omega_m > dead:
+                dirv = 1.0
+            elif omega_m < -dead:
+                dirv = -1.0
+            else:
+                dirv = 0.0
+            ref.ctrl_type = RefCtrlType.TORQUE
+            ref.torque = -dirv * self.target_load
         elif m == ControlMode.CURRENT:
             ref.ctrl_type = RefCtrlType.CURRENT
             ref.id = self.target_id
@@ -732,6 +759,7 @@ class SystemStateMachine:
         self.target_iq = 0.0
         self.target_voltage = 0.0
         self.target_duty = 0.0
+        self.target_load = 0.0
         self.target_kp = 0.0
         self.target_kd = 0.0
         self.target_torque_ff = 0.0
@@ -744,6 +772,7 @@ class SystemStateMachine:
         self.cmd_target_iq = 0.0
         self.cmd_target_voltage = 0.0
         self.cmd_target_duty = 0.0
+        self.cmd_target_load = 0.0
         # 清除模式切换过渡状态
         self._mode_transition = False
         self._transition_cnt = 0

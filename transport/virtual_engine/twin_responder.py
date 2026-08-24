@@ -41,6 +41,7 @@ _CTRL_TO_RUN = {
     ControlMode.POSITION:   int(RunState.POSITION),
     ControlMode.DUTY:       int(RunState.DUTY_CYCLE),
     ControlMode.VOLTAGE:    int(RunState.VOLTAGE_VECTOR),
+    ControlMode.PASSIVE_TORQUE: int(RunState.PASSIVE_TORQUE),  # 对拖台 0x60, 对齐固件 run_state_e
 }
 
 # twin ControlMode -> 协议 JmCmd 命令码 (状态帧第3字节 ctrl_mode)。
@@ -56,6 +57,7 @@ _CTRL_TO_JMCMD = {
     ControlMode.POSITION:   int(JmCmd.POSITION),
     ControlMode.DUTY:       int(JmCmd.DUTY_CYCLE),
     ControlMode.VOLTAGE:    int(JmCmd.VOLTAGE_VECTOR),
+    ControlMode.PASSIVE_TORQUE: int(JmCmd.PASSIVE_TORQUE),  # 对拖台 0x60
 }
 
 
@@ -165,7 +167,8 @@ class TwinResponder:
         # ---- 运动控制 ----
         spec = self.reg.get_command(cmd)
         is_motion = (spec is not None and
-                     spec.category in ("运动控制", "高级力控", "轨迹同步", "特殊应用与测试") and
+                     spec.category in ("运动控制", "高级力控", "轨迹同步",
+                                       "对拖台负载", "特殊应用与测试") and
                      cmd <= int(JmCmd.SINGLE_STEP) and
                      cmd != int(JmCmd.TEST_SWEEP_FREQ))
         if is_motion:
@@ -538,6 +541,10 @@ class TwinResponder:
         elif cmd == int(JmCmd.DUTY_CYCLE):
             mc.set_mode = ControlMode.DUTY
             mc.set_duty = v.get('duty')
+        elif cmd == int(JmCmd.PASSIVE_TORQUE):
+            # 被动恒转矩(对拖台 0x60): t_set 为制动转矩幅值, 方向运行时跟随转速
+            mc.set_mode = ControlMode.PASSIVE_TORQUE
+            mc.set_load_torque = pick(v, 't_set', 'torque')
         elif cmd == int(JmCmd.VOLTAGE_VECTOR):
             mc.set_mode = ControlMode.VOLTAGE
             mc.set_voltage = pick(v, 'u_alpha', 'ud')
