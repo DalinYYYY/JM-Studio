@@ -83,6 +83,17 @@ class JmCmd(IntEnum):
     ELECTRONIC_GEAR = 0x5C
     ELECTRONIC_CAM = 0x5D
 
+    # 负载模拟 0x60~0x6F (0x68~0x6F 预留扩展)
+    # 码值顺序即实施顺序: 0x60 第一版 → 0x61~0x64 第二版 → 0x65~0x67 按需
+    PASSIVE_TORQUE = 0x60   # 被动恒转矩: t_set(f32) 方向跟随转速
+    DYNAMIC_TORQUE = 0x61   # 动态转矩: 阶跃/正弦/方波/单脉冲
+    QUADRATIC_LOAD = 0x62   # 平方转矩负载(风机/水泵): k(f32)
+    CONSTANT_POWER = 0x63   # 恒功率负载(主轴/卷绕): p(f32)
+    FRICTION_LOAD = 0x64    # 摩擦负载(库仑+粘性): t_c,b(f32×2)
+    INERTIA_SIM = 0x65      # 惯量模拟: j_sim,t_bias(f32×2)
+    DUTY_PROFILE = 0x66     # 工况谱复现: 下载/启动/停止/清空
+    IMPACT_LOAD = 0x67      # 冲击/过载: 分层限幅+冷却期
+
     # 特殊应用与测试 0x70~0x7F
     STEP_DIR = 0x70
     ANALOG_INPUT = 0x71
@@ -420,55 +431,67 @@ TOP_FSM_CN = {
 class RunState(IntEnum):
     """电机运行子状态, 与固件 state_define.h:run_state_e 严格一致(数值即上报 run_state)"""
     IDLE = 0
-    OPEN_LOOP = 1
-    CURRENT = 2
-    TORQUE = 3
-    MIT = 4
-    VELOCITY = 5
-    POSITION = 6
-    POSITION_VELOCITY = 7
-    POSITION_TORQUE = 8
-    VELOCITY_TORQUE = 9
-    DUTY_CYCLE = 10
-    VOLTAGE_VECTOR = 11
-    FIELD_WEAKENING = 12
-    SENSORLESS = 13
-    IMPEDANCE = 14
-    ADMITTANCE = 15
-    FORCE_CONTROL = 16
-    FORCE_POSITION_HYBRID = 17
-    GRAVITY_COMPENSATION = 18
-    COLLISION_DETECTION = 19
-    ZERO_FORCE = 20
-    CONSTANT_FORCE = 21
-    VARIABLE_IMPEDANCE = 22
-    ADAPTIVE_GRAVITY_COMP = 23
-    LANDING_BUFFER = 24
-    PVT = 25
-    CUBIC_SPLINE = 26
-    TRAPEZOIDAL_TRAJ = 27
-    S_CURVE_TRAJ = 28
-    HOMING = 29
-    ELECTRONIC_GEAR = 30
-    ELECTRONIC_CAM = 31
-    STEP_DIR = 32
-    ANALOG_INPUT = 33
-    PWM_INPUT = 34
-    JOG = 35
-    SAFE_TEACH = 36
-    TEST_AGING = 37
-    TEST_SWEEP_FREQ = 38
-    TEST_COGGING = 39
-    TEST_FRICTION = 40
-    TEST_INERTIA = 41
-    DIAGNOSTIC = 42
-    HIGH_SPEED_DAQ = 43
-    SINGLE_STEP = 44
+    HOLD = 1
+    OPEN_LOOP = 2
+    CURRENT = 3
+    TORQUE = 4
+    MIT = 5
+    VELOCITY = 6
+    POSITION = 7
+    POSITION_VELOCITY = 8
+    POSITION_TORQUE = 9
+    VELOCITY_TORQUE = 10
+    PROFILE_VELOCITY = 11
+    PROFILE_TORQUE = 12
+    DUTY_CYCLE = 13
+    VOLTAGE_VECTOR = 14
+    FIELD_WEAKENING = 15
+    SENSORLESS = 16
+    IMPEDANCE = 17
+    ADMITTANCE = 18
+    FORCE_CONTROL = 19
+    FORCE_POSITION_HYBRID = 20
+    GRAVITY_COMPENSATION = 21
+    COLLISION_DETECTION = 22
+    ZERO_FORCE = 23
+    CONSTANT_FORCE = 24
+    VARIABLE_IMPEDANCE = 25
+    ADAPTIVE_GRAVITY_COMP = 26
+    LANDING_BUFFER = 27
+    PVT = 28
+    CUBIC_SPLINE = 29
+    TRAPEZOIDAL_TRAJ = 30
+    S_CURVE_TRAJ = 31
+    HOMING = 32
+    ELECTRONIC_GEAR = 33
+    ELECTRONIC_CAM = 34
+    PASSIVE_TORQUE = 35
+    DYNAMIC_TORQUE = 36
+    QUADRATIC_LOAD = 37
+    CONSTANT_POWER = 38
+    FRICTION_LOAD = 39
+    INERTIA_SIM = 40
+    DUTY_PROFILE = 41
+    IMPACT_LOAD = 42
+    STEP_DIR = 43
+    ANALOG_INPUT = 44
+    PWM_INPUT = 45
+    JOG = 46
+    SAFE_TEACH = 47
+    TEST_AGING = 48
+    TEST_SWEEP_FREQ = 49
+    TEST_COGGING = 50
+    TEST_FRICTION = 51
+    TEST_INERTIA = 52
+    DIAGNOSTIC = 53
+    HIGH_SPEED_DAQ = 54
+    SINGLE_STEP = 55
 
 
 # 运行子状态中文名(供 UI 显示)
 RUN_STATE_CN = {
     RunState.IDLE: "空闲",
+    RunState.HOLD: "位置保持",
     RunState.OPEN_LOOP: "开环",
     RunState.CURRENT: "电流环",
     RunState.TORQUE: "力矩环",
@@ -478,6 +501,8 @@ RUN_STATE_CN = {
     RunState.POSITION_VELOCITY: "位置+速度",
     RunState.POSITION_TORQUE: "位置+力矩",
     RunState.VELOCITY_TORQUE: "速度+力矩",
+    RunState.PROFILE_VELOCITY: "轮廓速度",
+    RunState.PROFILE_TORQUE: "轮廓力矩",
     RunState.DUTY_CYCLE: "占空比",
     RunState.VOLTAGE_VECTOR: "电压矢量",
     RunState.FIELD_WEAKENING: "弱磁",
@@ -500,6 +525,14 @@ RUN_STATE_CN = {
     RunState.HOMING: "回零",
     RunState.ELECTRONIC_GEAR: "电子齿轮",
     RunState.ELECTRONIC_CAM: "电子凸轮",
+    RunState.PASSIVE_TORQUE: "被动恒转矩",
+    RunState.DYNAMIC_TORQUE: "动态转矩",
+    RunState.QUADRATIC_LOAD: "平方转矩",
+    RunState.CONSTANT_POWER: "恒功率",
+    RunState.FRICTION_LOAD: "摩擦负载",
+    RunState.INERTIA_SIM: "惯量模拟",
+    RunState.DUTY_PROFILE: "工况谱",
+    RunState.IMPACT_LOAD: "冲击过载",
     RunState.STEP_DIR: "脉冲方向",
     RunState.ANALOG_INPUT: "模拟量",
     RunState.PWM_INPUT: "PWM输入",
