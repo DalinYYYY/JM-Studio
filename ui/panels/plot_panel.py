@@ -649,6 +649,10 @@ class PlotPanel(QGroupBox):
         self._debug_checkbox.setChecked(checked)
         self._debug_checkbox.blockSignals(False)
 
+    def set_debug_channel_visible(self, visible: bool):
+        """调试通道复选框显隐。测试员版不接入调试窗口, 隐藏入口。"""
+        self._debug_checkbox.setVisible(visible)
+
     def _visible_current_series(self):
         return tuple(
             name for name in self._current_series_order

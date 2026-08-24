@@ -1,8 +1,12 @@
 """运动控制面板(数据驱动)
 
-模式下拉由 registry 中"运动控制/高级力控/轨迹同步"类命令填充;
+模式下拉由 registry 中"运动控制/高级力控/轨迹同步/对拖台负载"类命令填充;
 选中命令后按其 fields 动态生成输入框; 发送时用 registry.pack_command 打包。
 新增命令只要 CSV 加一行即可出现, 无需改本文件。
+
+模式列表可由 resources/motion_modes.txt 白名单配置(按文件顺序显示),
+详见 motion_mode_config 模块; 文件缺失或无有效条目时显示全部。
+该文件随 resources 嵌入 exe, 打包后对最终用户不可见。
 """
 
 from PyQt6.QtWidgets import (
@@ -12,6 +16,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal
 
 from jmproto import codec
+from ui.panels.motion_mode_config import load_motion_mode_cmds
 
 
 class MotionPanel(QGroupBox):
@@ -20,12 +25,13 @@ class MotionPanel(QGroupBox):
     send_command = pyqtSignal(int, dict)
 
     # 纳入运动面板的命令类别
-    CATEGORIES = ("运动控制", "高级力控", "轨迹同步")
+    CATEGORIES = ("运动控制", "高级力控", "轨迹同步", "对拖台负载")
 
-    def __init__(self, registry, parent=None):
+    def __init__(self, registry, parent=None, mode_subset=None):
         super().__init__("运动控制", parent)
         self._reg = registry
         self._field_widgets = {}   # 字段名 -> widget
+        self._mode_subset = mode_subset   # 应用形态模式子集(如 tester profile), None=用全局白名单
         self._build()
 
     def _build(self):
@@ -35,7 +41,7 @@ class MotionPanel(QGroupBox):
         top = QHBoxLayout()
         top.addWidget(QLabel("控制模式:"))
         self._combo_mode = QComboBox()
-        self._specs = self._reg.commands_by_category(*self.CATEGORIES)
+        self._specs = self._filter_specs(self._reg.commands_by_category(*self.CATEGORIES))
         for spec in self._specs:
             self._combo_mode.addItem(f"{spec.name}  (0x{spec.cmd:02X})", spec.cmd)
         self._combo_mode.currentIndexChanged.connect(self._rebuild_fields)
@@ -67,6 +73,20 @@ class MotionPanel(QGroupBox):
     def _current_spec(self):
         cmd = self._combo_mode.currentData()
         return self._reg.get_command(cmd) if cmd is not None else None
+
+    def _filter_specs(self, specs):
+        """按白名单过滤, 白名单顺序即下拉框顺序。
+
+        mode_subset(应用形态子集)优先于 motion_modes.txt;
+        无白名单(返回 None)时原样返回; 白名单条目均不在面板类别中时
+        回退全部, 防止把下拉框配置为空。加载层已对重复条目去重。
+        """
+        allowed = load_motion_mode_cmds(self._reg, subset=self._mode_subset)
+        if allowed is None:
+            return specs
+        by_cmd = {s.cmd: s for s in specs}
+        filtered = [by_cmd[c] for c in allowed if c in by_cmd]
+        return filtered if filtered else specs
 
     def _clear_form(self):
         while self._form.count():

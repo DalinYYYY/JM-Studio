@@ -306,7 +306,7 @@ class MainWindow(QMainWindow):
             save_text="保存标定结果到Flash/EEPROM", show_legend=False,
             show_bulk_rw=True)
         self._plot_panel = PlotPanel()
-        self._state_panel = StateMachinePanel()
+        self._state_panel = StateMachinePanel(registry=self._registry)
         self._calib_panel = CalibrationPanel()
         # PID 整定面板: 复用标定面板三段式布局, 0xA0~0xA6 命令收发 + ControlParam 读写
         self._pid_panel = PidPanel(self._registry)

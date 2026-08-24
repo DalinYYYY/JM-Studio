@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 
 from jmproto import JmCmd, TopFsm, RunState, top_fsm_name, run_state_name
 from ui.panels._edit_mixin import LayoutEditMixin
+from ui.panels.motion_mode_config import load_motion_mode_cmds
 from ui import layout_store
 from ui.theme import theme
 
@@ -75,6 +76,7 @@ _Theme = _ThemeProxy()
 _RUN_MODE_GRID_COLS = 5
 _RUN_MODE_GRID_X0 = 0.395
 _RUN_MODE_GRID_Y0 = 0.10
+_RUN_MODE_GRID_Y_MAX = 0.94  # 节点区底界(RUN 容器底 0.98, 留边)
 _RUN_MODE_GRID_DX = 0.117
 _RUN_MODE_GRID_DY = 0.083
 _RUN_MODE_GRID_W = 0.105
@@ -134,9 +136,76 @@ _RUN_MODE_SPECS = [
 ]
 
 
+# 默认不显示、但 motion_modes.txt 白名单点名时可显示的运行模式短标签
+# (与 _RUN_MODE_SPECS 中被注释条目 + 对拖台负载 0x60~0x67 一一对应)
+_RUN_MODE_EXTRA_LABELS = {
+    JmCmd.VOLTAGE_VECTOR: "电压矢量",
+    JmCmd.IMPEDANCE: "阻抗",
+    JmCmd.ADMITTANCE: "导纳",
+    JmCmd.GRAVITY_COMPENSATION: "重力补偿",
+    JmCmd.COLLISION_DETECTION: "碰撞检测",
+    JmCmd.ZERO_FORCE: "零力",
+    JmCmd.CONSTANT_FORCE: "恒力",
+    JmCmd.VARIABLE_IMPEDANCE: "变阻抗",
+    JmCmd.ADAPTIVE_GRAVITY_COMP: "自适应重力",
+    JmCmd.LANDING_BUFFER: "落地缓冲",
+    JmCmd.CANOPEN_SYNC: "CAN同步",
+    JmCmd.ELECTRONIC_GEAR: "电子齿轮",
+    JmCmd.ELECTRONIC_CAM: "电子凸轮",
+    JmCmd.STEP_DIR: "脉冲方向",
+    JmCmd.ANALOG_INPUT: "模拟量",
+    JmCmd.PWM_INPUT: "PWM输入",
+    JmCmd.JOG: "点动",
+    JmCmd.SAFE_TEACH: "安全示教",
+    JmCmd.TEST_AGING: "老化测试",
+    JmCmd.TEST_SWEEP_FREQ: "扫频测试",
+    JmCmd.TEST_COGGING: "齿槽测试",
+    JmCmd.TEST_FRICTION: "摩擦测试",
+    JmCmd.TEST_INERTIA: "惯量测试",
+    # 负载模拟 0x60~0x67
+    JmCmd.PASSIVE_TORQUE: "被动恒矩",
+    JmCmd.DYNAMIC_TORQUE: "动态转矩",
+    JmCmd.QUADRATIC_LOAD: "平方转矩",
+    JmCmd.CONSTANT_POWER: "恒功率",
+    JmCmd.FRICTION_LOAD: "摩擦负载",
+    JmCmd.INERTIA_SIM: "惯量模拟",
+    JmCmd.DUTY_PROFILE: "工况谱",
+    JmCmd.IMPACT_LOAD: "冲击过载",
+}
+
+# StateMachinePanel 构造时注入, 供白名单解析中文命令名(命令表 CSV 名称)
+_registry_ref = None
+
+
+def _resolve_run_mode_specs():
+    """解析状态机图实际显示的运行模式(受 motion_modes.txt 白名单约束)。
+
+    无白名单 => 默认 _RUN_MODE_SPECS(现状布局); 有 => 按白名单顺序,
+    标签取默认表/扩展表短标签, 两表都没有的条目跳过(非运动模式),
+    全部无效时回退默认集, 防止图被配置为空(加载层已去重)。
+    """
+    labels = {int(cmd): label for cmd, label in _RUN_MODE_SPECS}
+    for cmd, label in _RUN_MODE_EXTRA_LABELS.items():
+        labels.setdefault(int(cmd), label)
+    # 短标签别名兜底: 白名单可直接写"力矩"等状态机图标签
+    name_map = {label: cmd for cmd, label in labels.items()}
+    allowed = load_motion_mode_cmds(_registry_ref, extra_name_map=name_map)
+    if allowed is None:
+        return list(_RUN_MODE_SPECS)
+    specs = [(cmd, labels[cmd]) for cmd in allowed if cmd in labels]
+    return specs or list(_RUN_MODE_SPECS)
+
+
 def _build_run_mode_nodes():
+    specs = _resolve_run_mode_specs()
+    # 行距自适应: 模式多时压缩行距把全部节点收进节点区(Y0~Y_MAX),
+    # 模式少(≤7行)时保持默认 DY 不改变既有布局。
+    rows = (len(specs) + _RUN_MODE_GRID_COLS - 1) // _RUN_MODE_GRID_COLS
+    dy = _RUN_MODE_GRID_DY
+    if rows > 1:
+        dy = min(dy, (_RUN_MODE_GRID_Y_MAX - _RUN_MODE_GRID_Y0 - _RUN_MODE_GRID_H) / (rows - 1))
     nodes = []
-    for idx, (cmd, label) in enumerate(_RUN_MODE_SPECS):
+    for idx, (cmd, label) in enumerate(specs):
         col = idx % _RUN_MODE_GRID_COLS
         row = idx // _RUN_MODE_GRID_COLS
         nodes.append(
@@ -144,7 +213,7 @@ def _build_run_mode_nodes():
                 int(cmd),
                 label,
                 _RUN_MODE_GRID_X0 + col * _RUN_MODE_GRID_DX,
-                _RUN_MODE_GRID_Y0 + row * _RUN_MODE_GRID_DY,
+                _RUN_MODE_GRID_Y0 + row * dy,
                 _RUN_MODE_GRID_W,
                 _RUN_MODE_GRID_H,
                 "mode",
@@ -762,8 +831,12 @@ class StateMachinePanel(QWidget):
 
     poll_state = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, registry=None):
         super().__init__(parent)
+        # 注入 registry 供白名单解析中文命令名(motion_modes.txt);
+        # 运行模式图节点在 _build() 内构建, 注入须在此之前完成
+        global _registry_ref
+        _registry_ref = registry
         self._link_active = False
         self._last_state = (None, None, None, None)
         self._build()
@@ -935,3 +1008,7 @@ class StateMachinePanel(QWidget):
                 f"   ·   使能 {en_txt}")
         self._lbl_state.setText(text)
         self._refresh_state_styles()
+
+
+# 公共别名: 供 FeedbackPanel 复用顶层主状态机图(测试员版实时反馈上图)
+TopFsmView = _TopFsmView

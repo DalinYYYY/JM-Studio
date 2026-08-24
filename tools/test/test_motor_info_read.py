@@ -143,6 +143,8 @@ if param_ids:
 # ---- 8. 0xEC 端到端: motor_client.motor_info_recalib_reset 通过虚拟引擎拿到 ACK ----
 ack_cmd = []
 mw._client.ack_received.connect(lambda c: ack_cmd.append(c))
+# 0xEC 属危险命令, 默认弹模态确认框; offscreen 下无人点击会永久阻塞, 测试直接放行
+mw._client._confirm_cb = None
 mw._client.motor_info_recalib_reset()
 for _ in range(300):
     app.processEvents()

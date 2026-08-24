@@ -642,12 +642,16 @@ class _MotorView(QWidget):
 
     DEFAULT_POLE_PAIRS = 7
 
+    # 极对数 → 定子槽数(常见分数槽集中绕组槽极配合, 仅视觉示意; 未知回退 12)
+    _SLOTS_BY_PP = {1: 6, 2: 6, 3: 9, 4: 12, 5: 12, 6: 18, 7: 12,
+                    8: 24, 9: 27, 10: 12, 11: 12, 12: 36, 13: 12, 14: 12}
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumWidth(210)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self._pole_pairs = self.DEFAULT_POLE_PAIRS
-        self._stator_slots = 12
+        self._stator_slots = self._SLOTS_BY_PP.get(self._pole_pairs, 12)
         self._disp_th = 0.0
         self._tgt_th = 0.0
         self._omega = 0.0
@@ -689,10 +693,14 @@ class _MotorView(QWidget):
             self.update()
 
     def set_motor_params(self, params: dict):
-        """电机本体参数(r/ld/lq/flux/kt/ke/pole_pairs)。极对数为0或缺失时用默认值。"""
+        """电机本体参数(r/ld/lq/flux/kt/ke/pole_pairs)。极对数为0或缺失时用默认值。
+
+        磁极扇形数与定子槽数随极对数联动(槽极配合见 _SLOTS_BY_PP)。
+        """
         self._params = dict(params)
         pp = int(params.get("pole_pairs", 0) or 0)
         self._pole_pairs = pp if pp > 0 else self.DEFAULT_POLE_PAIRS
+        self._stator_slots = self._SLOTS_BY_PP.get(self._pole_pairs, 12)
         self.update()
 
     def _tick(self):
@@ -876,6 +884,7 @@ class _MotorView(QWidget):
         ("flux", "ψ", "{:.4f}", "Wb"),
         ("kt", "Kt", "{:.3f}", "Nm/A"),
         ("pole_pairs", "Pn", "{:d}", ""),
+        ("_slots", "Z", "{:d}", ""),
     ]
 
     def _draw_params(self, p, y0):
@@ -899,15 +908,18 @@ class _MotorView(QWidget):
             c = i % cols
             cell_x = x0 + c * col_w
             cell_y = gy + r * row_h
-            # 取值: ld/lq 由 H 换算 mH
-            v = self._params.get(key, None)
+            # 取值: ld/lq 由 H 换算 mH; 槽数取当前槽极配合(非协议参数)
+            if key == "_slots":
+                v = self._stator_slots
+            else:
+                v = self._params.get(key, None)
             if v is None:
                 vtxt = "--"
             else:
                 try:
                     if key in ("ld", "lq"):
                         vtxt = fmt.format(float(v) * 1000.0)
-                    elif key == "pole_pairs":
+                    elif key in ("pole_pairs", "_slots"):
                         vtxt = fmt.format(int(v))
                     else:
                         vtxt = fmt.format(float(v))
@@ -944,6 +956,7 @@ class FeedbackPanel(QWidget):
         self._poll_timer = QTimer(self)
         self._poll_timer.setSingleShot(False)
         self._poll_timer.timeout.connect(self._on_poll_tick)
+        self._state_view = None   # 上图替换视图('top_fsm' 形态), None=默认 FOC 框图
         self._build()
         self.apply_theme()
 
@@ -963,6 +976,7 @@ class FeedbackPanel(QWidget):
         top.addWidget(self._foc, 5)
         top.addWidget(self._motor, 2)
         root.addLayout(top, 3)
+        self._top_layout = top   # 供 set_top_diagram 替换上图
 
         # 布局编辑/导出按钮: 作为 FOC 框图的子控件, 浮于其左下角
         self._btn_edit = QPushButton("布局编辑: 关", self._foc)
@@ -1042,9 +1056,9 @@ class FeedbackPanel(QWidget):
         self._chk_poll.toggled.connect(self._apply_poll_settings)
         lay.addWidget(self._chk_poll)
 
-        lbl = QLabel("周期")
-        lbl.setStyleSheet("border:none;")
-        lay.addWidget(lbl)
+        self._lbl_period = QLabel("周期")
+        self._lbl_period.setStyleSheet("border:none;")
+        lay.addWidget(self._lbl_period)
 
         self._spin_period = QSpinBox()
         self._spin_period.setRange(50, 5000)
@@ -1099,6 +1113,8 @@ class FeedbackPanel(QWidget):
             card.apply_theme()
         self._foc.update()
         self._motor.update()
+        if self._state_view is not None:   # 状态机图配色走 _ThemeProxy 动态取色
+            self._state_view.update()
 
     def _on_edit_toggled(self, on: bool):
         self._foc.set_edit_mode(on)
@@ -1224,6 +1240,8 @@ class FeedbackPanel(QWidget):
         self._last_state = (top_fsm, run_state, ctrl_mode, enable)
         self._enabled = bool(enable)
         self._motor.set_enabled(self._enabled)
+        if self._state_view is not None:
+            self._state_view.apply_state(top_fsm, run_state, ctrl_mode, enable)
         is_fault = top_fsm in (1, 2)
         self._card_state.set_text("_fsm", top_fsm_name(top_fsm),
                                   "#FF6B6B" if is_fault else "#5FE6AC")
@@ -1265,6 +1283,8 @@ class FeedbackPanel(QWidget):
             self._disp_pos = 0.0
             self._disp_multiturn = 0
             self._motor.set_enabled(False)
+            if self._state_view is not None:
+                self._state_view.apply_state(None, None, None, None)   # 清空高亮
             self._refresh_state_styles()
 
     def set_can_mode(self, enabled: bool):
@@ -1274,6 +1294,39 @@ class FeedbackPanel(QWidget):
         串口模式下反馈需主窗口主动 READ_FEEDBACK 拉取。提示用户可关闭轮询。
         """
         self._lbl_can_hint.setVisible(enabled)
+
+    def set_top_diagram(self, kind: str):
+        """上图视图切换: 'foc' 电流环框图(默认) / 'top_fsm' 主状态机。
+
+        测试员版用主状态机替代 FOC 框图, 状态数据仍走 update_state 分发;
+        布局配置与开发版状态机 Tab 共享 ui_layout.json 的 top_fsm 节。
+        """
+        want_fsm = (kind == 'top_fsm')
+        if want_fsm and self._state_view is None:
+            from ui.panels.state_machine_panel import TopFsmView
+            self._foc.setVisible(False)
+            self._state_view = TopFsmView()
+            self._state_view.apply_dict(layout_store.load_section("top_fsm"))
+            self._top_layout.replaceWidget(self._foc, self._state_view)
+            self._top_layout.setStretchFactor(self._state_view, 5)
+        elif not want_fsm and self._state_view is not None:
+            self._state_view.setVisible(False)
+            self._top_layout.replaceWidget(self._state_view, self._foc)
+            self._top_layout.setStretchFactor(self._foc, 5)
+            self._state_view = None
+            self._foc.setVisible(True)
+
+    def set_poll_controls_visible(self, visible: bool):
+        """轮询控件(周期请求开关+周期输入)显隐。
+
+        测试员版由主窗口统一轮询调度, 隐藏本面板自带控件并停止内部
+        轮询定时器(poll_state 不再发出), 仅保留状态指示。
+        """
+        self._chk_poll.setVisible(visible)
+        self._lbl_period.setVisible(visible)
+        self._spin_period.setVisible(visible)
+        if not visible and self._chk_poll.isChecked():
+            self._chk_poll.setChecked(False)   # 触发 _apply_poll_settings 停止内部轮询
 
     def _apply_poll_settings(self):
         self._spin_period.setEnabled(not self._chk_poll.isChecked())

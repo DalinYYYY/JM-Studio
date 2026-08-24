@@ -21,9 +21,10 @@ from transport.virtual_engine.digital_twin import DigitalTwinEngine
 from transport.virtual_engine.twin_responder import TwinResponder
 from transport.virtual_engine.twin_fsm import MotorCmd, ControlMode
 
-# 复刻面板运行模式图的节点 key 集合(JmCmd 命令码)
-from ui.panels.state_machine_panel import _RUN_MODE_SPECS
-_RUN_MODE_NODE_KEYS = {int(cmd) for cmd, _ in _RUN_MODE_SPECS}
+# 复刻面板运行模式图的节点 key 集合(JmCmd 命令码),
+# 经 _build_run_mode_nodes() 构建以覆盖 motion_modes.txt 白名单过滤
+from ui.panels.state_machine_panel import _build_run_mode_nodes
+_RUN_MODE_NODE_KEYS = {n.key for n in _build_run_mode_nodes()}
 
 PASS = 0
 FAIL = 0
