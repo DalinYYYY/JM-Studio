@@ -63,7 +63,10 @@ class BodeAnalyzer:
         self.overflow_count = 0
 
     def _mark_discontinuity(self, packet: dict) -> bool:
-        discontinuity = bool(int(packet.get("flags", 0)) & 0x02)
+        # 固件的 DISCONTINUITY/OVERFLOW 标志是会话级粘滞位: 溢出一次后
+        # 所有后续包都带着, 据此判死会污染整场扫频; 丢样已由下方
+        # sequence(包丢失)与 first_sample_index(样本丢失)跳变按包精确检测。
+        discontinuity = False
         sequence = int(packet.get("sequence", 0))
         first = int(packet.get("first_sample_index", 0))
         count = int(packet.get("sample_count", 0))
@@ -140,8 +143,9 @@ class BodeAnalyzer:
         reasons = []
         if force_invalid or result.discontinuity:
             reasons.append(reason or "数据不连续")
-        if result.overflow_count:
-            reasons.append("设备缓冲溢出")
+        # overflow_count 是固件会话级全局累计(不按频点清零), 一次溢出
+        # 即粘滞到之后所有频点, 不能据此判死; 缺样本的影响已由
+        # sample_index 跳变检测精确归属到受影响的频点。字段仅作诊断。
         # 固件测量周期自适应 clamp(2*freq,1,8): 低频仅 1 个整周期,
         # 阈值取 0.99 允许单周期, 不足 1 个整周期才判无效。
         if len(rows) < 2 or duration * freq < 0.99:
