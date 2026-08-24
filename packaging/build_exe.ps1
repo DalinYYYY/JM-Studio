@@ -1,6 +1,7 @@
 param(
     [string]$Python = "",
     [string]$Name = "JointMotorController",
+    [string]$Entry = "main.py",
     [switch]$OneFile,
     [switch]$SkipInstall,
     [switch]$Clean
@@ -48,7 +49,6 @@ if ([string]::IsNullOrWhiteSpace($Python)) {
     $PythonExe = (Resolve-Path $Python).Path
 }
 
-$Entry = "main.py"
 $Resources = Join-Path $ProjectRoot "resources"
 $IconIco = Join-Path $Resources "pic\log_ioc.ico"
 $RuntimeReq = "requirements.txt"

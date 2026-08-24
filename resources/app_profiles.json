@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "profiles": {
+    "tester": {
+      "title": "JM 测试工具",
+      "window_size": [1180, 800],
+      "left_panels": ["connection", "control", "motion"],
+      "tabs": ["feedback_chart", "waveform_plot"],
+      "feedback_diagram": "top_fsm",
+      "motion_modes": ["开环电压", "电流环", "速度环"],
+      "poll_group": [
+        {"cmd": "READ_FEEDBACK", "period_ms": 20},
+        {"cmd": "READ_DQ_CURRENT", "period_ms": 20},
+        {"cmd": "READ_STATE", "period_ms": 100},
+        {"cmd": "READ_BUS", "period_ms": 200},
+        {"cmd": "READ_TEMPERATURE", "period_ms": 200}
+      ]
+    }
+  }
+}
