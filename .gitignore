@@ -16,6 +16,7 @@ env/
 build/
 dist/
 *.egg-info/
+bode_test/
 
 # 运行时日志/导出
 *.log
