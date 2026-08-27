@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import csv
+import math
 import time
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from jmproto import JmCmd, JmErr, err_name_cn_short
-from .bode_analysis import BodeAnalyzer, BodePoint
+from .bode_analysis import (ESTIMATOR_LOCKIN, BodeAnalyzer, BodePoint,
+                            normalize_estimator, trace_phase_step)
 
 
 # 0x76 启动被拒的错误码 → 处理建议(中文, 供状态栏直接提示用户)
@@ -57,12 +59,20 @@ class BodeSession(QObject):
     def active(self):
         return self.state in (self.STARTING, self.RUNNING, self.DRAINING)
 
+    # 机械扫频双模式: 模式0/1输入取目标电流(无采样噪声, 低频段电流环
+    # 增益高、实测≈目标, 惯量辨识干净稳定); 模式6输入取实测电流(高频段
+    # 电流环跟不上目标时仍反映真正进入机械对象的电流, 谐振/带宽测量
+    # 不受电流环跟踪误差污染)。模式3输入取实测速度; 验证模式(2/4/5)测
+    # 闭环传函 T(s)=反馈/参考, 输入保持参考通道。
+    # 通道位序: bit2=IQ_REF bit3=IQ bit4=VEL_REF bit5=VEL bit6=POS_REF bit7=POS
     @staticmethod
     def channel_mask(test_mode: int) -> int:
         if int(test_mode) == 2:
             return (1 << 2) | (1 << 3)
+        if int(test_mode) == 6:
+            return (1 << 3) | (1 << 5)
         if int(test_mode) == 3:
-            return (1 << 4) | (1 << 7)
+            return (1 << 5) | (1 << 7)
         if int(test_mode) == 4:
             return (1 << 4) | (1 << 5)
         if int(test_mode) == 5:
@@ -76,10 +86,15 @@ class BodeSession(QObject):
             return {"input": "IQ_REF", "input_label": "目标电流",
                     "input_unit": "A", "output": "IQ", "output_label": "反馈电流",
                     "output_unit": "A", "transfer": "IQ/IQ_REF", "excitation_unit": "A"}
+        if mode == 6:
+            return {"input": "IQ", "input_label": "实际电流",
+                    "input_unit": "A", "output": "VEL", "output_label": "反馈速度",
+                    "output_unit": "rad/s", "transfer": "VEL/IQ",
+                    "excitation_unit": "A", "torque_conversion": "not_applicable"}
         if mode == 3:
-            return {"input": "VEL_REF", "input_label": "目标速度",
+            return {"input": "VEL", "input_label": "实际速度",
                     "input_unit": "rad/s", "output": "POS", "output_label": "位置",
-                    "output_unit": "rad", "transfer": "POS/VEL_REF", "excitation_unit": "rad/s"}
+                    "output_unit": "rad", "transfer": "POS/VEL", "excitation_unit": "rad/s"}
         if mode == 4:
             return {"input": "VEL_REF", "input_label": "目标速度",
                     "input_unit": "rad/s", "output": "VEL", "output_label": "反馈速度",
@@ -96,7 +111,8 @@ class BodeSession(QObject):
 
     def start(self, test_mode: int, sweep_mode: int, point_cfg: int,
               f_start_hz: float, f_end_hz: float, amp: float,
-              bias: float = 0.0) -> bool:
+              bias: float = 0.0,
+              estimator: str = ESTIMATOR_LOCKIN) -> bool:
         if self.active or not self.client.is_open():
             return False
         self.config = {
@@ -104,6 +120,7 @@ class BodeSession(QObject):
             "point_cfg": int(point_cfg), "f_start_hz": float(f_start_hz),
             "f_end_hz": float(f_end_hz), "amp": float(amp),
             "bias": float(bias),
+            "estimator": normalize_estimator(estimator),
             "channels": self.channel_spec(test_mode),
         }
         self.session_id = 0
@@ -111,7 +128,9 @@ class BodeSession(QObject):
         self.duration_x100 = 0
         self.raw_samples.clear()
         self.received_packets = 0
-        self.analyzer = BodeAnalyzer(self.channel_mask(test_mode))
+        self.analyzer = BodeAnalyzer(
+            self.channel_mask(test_mode), pll_bandwidth_hz=0.0,
+            estimator=self.config["estimator"])
         if not self.client.sweep_start(test_mode, sweep_mode, point_cfg,
                                        f_start_hz, f_end_hz, amp, bias):
             self._set_state(self.ERROR, {"message": "0x76发送失败"})
@@ -125,6 +144,87 @@ class BodeSession(QObject):
             return False
         self._set_state(self.DRAINING, {})
         return self.client.sweep_stop()
+
+    def reanalyze(self, estimator: str) -> list[BodePoint]:
+        """用当前会话已缓存的完整 TRACE 原样本重新计算频点结果。
+
+        算法切换只在上位机执行，不重新下发扫频；按原频点边界重建单包，
+        让锁相/FFT共享与首次分析相同的采样率、DDS相位步进和缺样检测。
+        """
+        if self.active or self.analyzer is None or not self.raw_samples:
+            return []
+        groups = {}
+        for row in self.raw_samples:
+            point = row.get("sweep_point")
+            if point is None:
+                continue
+            try:
+                x = float(row.get("input"))
+                y = float(row.get("output"))
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(x) and math.isfinite(y)):
+                continue
+            groups.setdefault(int(point), []).append((row, (x, y)))
+        if not groups:
+            return []
+
+        old = self.analyzer
+        analyzer = BodeAnalyzer(old.channel_mask, old.pll_bandwidth_hz,
+                                normalize_estimator(estimator))
+        sequence = 0
+        for point in sorted(groups):
+            entries = groups[point]
+            first = entries[0][0]
+            previous = old.points.get(point)
+            freq_value = first.get("f_actual_mhz")
+            if not freq_value and previous is not None:
+                freq_value = round(previous.f_actual_hz * 1000.0)
+            phase_value = first.get("phase_inc")
+            if not phase_value and previous is not None:
+                phase_value = previous.phase_inc
+            freq_mhz = int(freq_value or 0)
+            phase_inc = int(phase_value or 0)
+            # 组内 sample_index 缺口拆段: 缺口(固件组包前丢样)发生在哪个
+            # 频点测量段内, 就归属该频点; 重建单一整包会把段内缺口藏掉、
+            # 把跨界缺口错记到下一频点(错位一档)。
+            segments = []
+            seg = [entries[0]]
+            for prev, cur in zip(entries, entries[1:]):
+                delta = (int(cur[0].get("sample_index") or 0) -
+                         int(prev[0].get("sample_index") or 0))
+                if delta != 1:
+                    segments.append(seg)
+                    seg = []
+                seg.append(cur)
+            segments.append(seg)
+            for si, seg in enumerate(segments):
+                rows = [pair for _, pair in seg]
+                seg_first = seg[0][0]
+                flags = 0x08
+                if si == 0:
+                    flags |= 0x10
+                if si == len(segments) - 1:
+                    flags |= 0x20
+                packet = {
+                    "session_id": self.session_id,
+                    "sequence": sequence,
+                    "first_sample_index": int(seg_first.get("sample_index") or 0),
+                    "actual_rate_hz": int(first.get("actual_rate_hz") or 0),
+                    "channel_mask": old.channel_mask,
+                    "sample_count": len(rows),
+                    "flags": flags,
+                    "overflow_count": old.overflow_count,
+                    "sweep_point": point,
+                    "phase_inc": phase_inc,
+                    "f_actual_mhz": freq_mhz,
+                    "samples": rows,
+                }
+                sequence += 1
+                analyzer.feed_packet(packet)
+        self.analyzer = analyzer
+        self.config["estimator"] = analyzer.estimator
+        return analyzer.ordered_points()
 
     def _set_state(self, state: str, data: dict):
         self.state = state
@@ -174,6 +274,7 @@ class BodeSession(QObject):
                 "sequence": int(packet.get("sequence", 0)),
                 "sample_index": int(packet.get("first_sample_index", 0)) + idx,
                 "actual_rate_hz": int(packet.get("actual_rate_hz", 0)),
+                "phase_inc": int(packet.get("phase_inc", 0) or 0),
                 "sweep_point": point,
                 "f_actual_mhz": packet.get("f_actual_mhz"),
                 "input": row[0] if len(row) > 0 else None,
@@ -211,10 +312,35 @@ class BodeSession(QObject):
         meta_path = stem.with_name(stem.name + "_meta.json")
         self.analyzer.export_csv(bode_path)
         if self.raw_samples:
+            segment_bases = {}
+            for row in self.raw_samples:
+                segment_bases.setdefault(
+                    row.get("sweep_point"),
+                    int(row.get("sample_index") or 0))
+            raw_rows = []
+            for row in self.raw_samples:
+                exported = dict(row)
+                point = self.analyzer.points.get(row.get("sweep_point"))
+                rate = float(row.get("actual_rate_hz") or 0.0)
+                effective = ""
+                if (point is not None and rate > 0.0 and
+                        math.isfinite(point.output_complex.real) and
+                        math.isfinite(point.output_complex.imag)):
+                    i = int(row.get("sample_index") or 0) - segment_bases.get(
+                        row.get("sweep_point"), int(row.get("sample_index") or 0))
+                    phase_inc = int(row.get("phase_inc") or 0)
+                    wx = (point.phase_step_rad if point.phase_step_rad > 0.0
+                          else trace_phase_step(point.f_actual_hz, rate,
+                                                phase_inc))
+                    c = point.output_complex
+                    effective = point.output_dc + c.real * math.cos(wx * i) \
+                        - c.imag * math.sin(wx * i)
+                exported["output_effective"] = effective
+                raw_rows.append(exported)
             with raw_path.open("w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.DictWriter(f, fieldnames=list(self.raw_samples[0]))
+                writer = csv.DictWriter(f, fieldnames=list(raw_rows[0]))
                 writer.writeheader()
-                writer.writerows(self.raw_samples)
+                writer.writerows(raw_rows)
         self.analyzer.export_meta(meta_path, {
             "session_id": self.session_id,
             "point_count": self.point_count,
