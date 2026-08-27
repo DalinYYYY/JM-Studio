@@ -123,13 +123,6 @@ class ConnectionPanel(QGroupBox):
         self._btn_connect.clicked.connect(self._on_toggle)
         self._layout.addWidget(self._btn_connect, 7, 0, 1, 3)
 
-        # ---- 版本信息行 (第 9 行, 连接成功后由主窗口读设备信息填充) ----
-        self._lbl_version = QLabel("固件版本: --")
-        self._lbl_version.setStyleSheet(
-            "color: #8890A4; font-family: Consolas, 'Microsoft YaHei', monospace; "
-            "font-size: 11px; border: none;")
-        self._layout.addWidget(self._lbl_version, 9, 0, 1, 3)
-
         # 默认串口模式: 隐藏 CAN 区
         self._set_can_visible(False)
 
@@ -259,17 +252,6 @@ class ConnectionPanel(QGroupBox):
             self._btn_connect.setText("连接")
             self._btn_connect.setStyleSheet(
                 "background-color: #4CAF50; color: white; font-weight: bold;")
-            self._lbl_version.setText("固件版本: --")
-            self._lbl_version.setToolTip("")
-
-    # ---- 版本显示 ----
-    def set_version(self, fw_text: str, detail: str = ""):
-        """连接后由主窗口填充固件版本(读设备信息 0xD0 的结果)。
-
-        fw_text: 主文本(固件版本号); detail: tooltip 详情(硬件版本/UID/协议版本)。
-        """
-        self._lbl_version.setText(f"固件版本: {fw_text}")
-        self._lbl_version.setToolTip(detail or fw_text)
 
     # ---- 串口设置 ----
     def get_baud(self) -> str:

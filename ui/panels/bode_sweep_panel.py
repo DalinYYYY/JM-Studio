@@ -10,12 +10,15 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
-    QGroupBox, QHBoxLayout, QLabel, QPushButton, QSpinBox, QTableWidget,
-    QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+    QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
+    QWidget,
 )
 
-from core.bode_analysis import closed_loop_metrics, fit_mechanical
+from core.bode_analysis import (ESTIMATOR_FFT, ESTIMATOR_LOCKIN,
+                                 closed_loop_metrics, fit_mechanical,
+                                 trace_phase_step)
 from core.bode_session import BodeSession
 from jmproto.cmd_def import SweepMode, SweepTestMode, TopFsm
 from ui.theme import theme
@@ -44,6 +47,7 @@ class BodeSweepPanel(QWidget):
     _LIMIT_INFO = {
         int(SweepTestMode.TORQUE_TO_VELOCITY): (None, "峰值转矩", "Nm"),
         int(SweepTestMode.CURRENT_TO_VELOCITY): (43, "峰值电流", "A"),
+        int(SweepTestMode.CURRENT_MEAS_TO_VELOCITY): (43, "峰值电流", "A"),
         int(SweepTestMode.CURRENT_TO_CURRENT): (43, "峰值电流", "A"),
         int(SweepTestMode.VELOCITY_TO_POSITION): (44, "最大转速", "rad/s"),
         int(SweepTestMode.VELOCITY_TO_VELOCITY): (44, "最大转速", "rad/s"),
@@ -54,6 +58,7 @@ class BodeSweepPanel(QWidget):
     _IDENT_MODES = (
         int(SweepTestMode.TORQUE_TO_VELOCITY),
         int(SweepTestMode.CURRENT_TO_VELOCITY),
+        int(SweepTestMode.CURRENT_MEAS_TO_VELOCITY),
         int(SweepTestMode.VELOCITY_TO_POSITION),
     )
     # 方向二(验证闭环)测试模式: 产出带宽/Mr/PM/GM 验收指标
@@ -84,72 +89,185 @@ class BodeSweepPanel(QWidget):
     def _build(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
+        # ---------- 表单：2 行 × 共享列网格（两行标签/控件列严格上下对齐） ----------
         form = QGridLayout()
         form.setHorizontalSpacing(8)
-        form.setVerticalSpacing(6)
+        form.setVerticalSpacing(10)
+        form.setContentsMargins(0, 0, 0, 0)
 
-        align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        align_label = Qt.AlignmentFlag.AlignRight  | Qt.AlignmentFlag.AlignVCenter
+        # 输入控件：只定垂直居中，水平交给 sizePolicy(Expanding) + 列 stretch 填充，
+        # 否则 addWidget 的 AlignLeft 会强制控件按窄宽度占位，列宽无法被拉伸填满
+        align_ctrl  = Qt.AlignmentFlag.AlignVCenter
 
-        # 第一行：测试模式、点数、起始频率、结束频率
-        form.addWidget(QLabel("测试模式"), 0, 0, alignment=align)
+        muted_hex = theme.hex("muted")
+        text_hex  = theme.hex("text")
+        H_CTRL = 30  # 所有控件统一高度，保证顶/底基线像素对齐
+
+        def _lbl(text: str, *, bold: bool = False, rich: str | None = None,
+                 pad: int = 8) -> QLabel:
+            """按文本实测定宽 + 右对齐 + 统一高度：
+            标签列右侧对齐成竖线，输入框左缘随之对齐"""
+            lab = QLabel(rich if rich is not None else text)
+            lab.setFixedWidth(lab.fontMetrics().horizontalAdvance(text) + pad)
+            lab.setFixedHeight(H_CTRL)
+            lab.setAlignment(align_label)
+            if bold:
+                lab.setStyleSheet(f"color: {text_hex}; font-weight: 500;")
+            return lab
+
+        def _fill(box) -> None:
+            """输入控件水平方向填充所属列（随窗口拉伸），高度锁定 30px"""
+            box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            box.setFixedHeight(H_CTRL)
+
+        # ================== 第 1 行：测试模式(跨两组宽) + 方式 + 频点数 ==================
+        self.mode_label = _lbl("测试模式", bold=True)
+        form.addWidget(self.mode_label, 0, 0, 1, 1, align_label)
+
         self.mode = QComboBox()
-        self.mode.addItem("【辨识】力矩/电流 → 速度（机械对象）", int(SweepTestMode.TORQUE_TO_VELOCITY))
-        self.mode.addItem("【辨识】电流 → 速度（含电流环）", int(SweepTestMode.CURRENT_TO_VELOCITY))
-        self.mode.addItem("【辨识】速度参考 → 位置反馈（位置对象）", int(SweepTestMode.VELOCITY_TO_POSITION))
-        self.mode.addItem("【验证】电流参考 → 电流反馈（电流环闭环）", int(SweepTestMode.CURRENT_TO_CURRENT))
-        self.mode.addItem("【验证】速度参考 → 速度反馈（速度环闭环）", int(SweepTestMode.VELOCITY_TO_VELOCITY))
-        self.mode.addItem("【验证】位置参考 → 位置反馈（位置环闭环）", int(SweepTestMode.POSITION_TO_POSITION))
+        self.mode.addItem("【辨识】目标力矩 → 实际速度（机械对象）", int(SweepTestMode.TORQUE_TO_VELOCITY))
+        self.mode.addItem("【辨识】目标电流 → 实际速度（机械对象，含电流环）", int(SweepTestMode.CURRENT_TO_VELOCITY))
+        self.mode.addItem("【辨识】实测电流 → 实际速度（机械对象·谐振）", int(SweepTestMode.CURRENT_MEAS_TO_VELOCITY))
+        self.mode.addItem("【辨识】实际速度 → 实际位置（位置对象）", int(SweepTestMode.VELOCITY_TO_POSITION))
+        self.mode.addItem("【验证】电流参考 → 电流反馈（电流闭环）", int(SweepTestMode.CURRENT_TO_CURRENT))
+        self.mode.addItem("【验证】速度参考 → 速度反馈（速度闭环）", int(SweepTestMode.VELOCITY_TO_VELOCITY))
+        self.mode.addItem("【验证】位置参考 → 位置反馈（位置闭环）", int(SweepTestMode.POSITION_TO_POSITION))
         self.mode.currentIndexChanged.connect(self._sync_parameter_labels)
         self.mode.currentIndexChanged.connect(self._on_mode_changed)
-        form.addWidget(self.mode, 0, 1)
-        self.point_cfg_label = QLabel()
-        self.point_cfg_label.setAlignment(align)
-        form.addWidget(self.point_cfg_label, 0, 2)
-        self.point_cfg = QSpinBox()
-        self.point_cfg.setRange(1, 255)
-        self.point_cfg.setValue(10)
-        form.addWidget(self.point_cfg, 0, 3)
-        form.addWidget(QLabel("起始频率 (Hz)"), 0, 4, alignment=align)
-        self.f_start = QDoubleSpinBox()
-        self.f_start.setRange(0.1, 6553.5)
-        self.f_start.setDecimals(1)
-        self.f_start.setValue(0.5)
-        form.addWidget(self.f_start, 0, 5)
-        form.addWidget(QLabel("结束频率 (Hz)"), 0, 6, alignment=align)
-        self.f_end = QDoubleSpinBox()
-        self.f_end.setRange(0.1, 6553.5)
-        self.f_end.setDecimals(1)
-        self.f_end.setValue(30.0)
-        form.addWidget(self.f_end, 0, 7)
+        _fill(self.mode)
+        # 最小宽度≥最长选项，避免窗口过窄时截断；超出的宽度由列 stretch 自适应填充
+        fm = self.mode.fontMetrics()
+        self.mode.setMinimumWidth(
+            max(fm.horizontalAdvance(self.mode.itemText(i))
+                for i in range(self.mode.count())) + 44)
+        form.addWidget(self.mode, 0, 1, 1, 3, align_ctrl)
 
-        # 第二行：扫频方式、幅值、偏置
-        form.addWidget(QLabel("扫频方式"), 1, 0, alignment=align)
+        # 扫频方式（标签与第 2 行“幅值”标签同列）
+        self.sweep_lbl = _lbl("方式")
+        form.addWidget(self.sweep_lbl, 0, 4, 1, 1, align_label)
         self.sweep_mode = QComboBox()
         self.sweep_mode.addItem("对数", int(SweepMode.LOG))
         self.sweep_mode.addItem("线性", int(SweepMode.LINEAR))
         self.sweep_mode.addItem("1Hz 步进", int(SweepMode.STEP))
         self.sweep_mode.currentIndexChanged.connect(self._sync_parameter_labels)
-        form.addWidget(self.sweep_mode, 1, 1)
+        _fill(self.sweep_mode)
+        # 最小宽度≥最长选项（“1Hz 步进”），超出部分随窗口拉伸
+        self.sweep_mode.setMinimumWidth(max(
+            self.sweep_mode.fontMetrics().horizontalAdvance(self.sweep_mode.itemText(i))
+            for i in range(self.sweep_mode.count())) + 30)
+        form.addWidget(self.sweep_mode, 0, 5, 1, 1, align_ctrl)
+
+        # 频点数（标签与第 2 行“偏置”标签同列；文字由 _sync_parameter_labels 动态生成）
+        self.point_cfg_label = QLabel()
+        self.point_cfg_label.setFixedWidth(
+            self.point_cfg_label.fontMetrics().horizontalAdvance("频点·步进自动") + 10)
+        self.point_cfg_label.setFixedHeight(H_CTRL)
+        self.point_cfg_label.setAlignment(align_label)
+        form.addWidget(self.point_cfg_label, 0, 6, 1, 1, align_label)
+        self.point_cfg = QSpinBox()
+        self.point_cfg.setRange(1, 255)
+        self.point_cfg.setValue(10)
+        _fill(self.point_cfg)
+        self.point_cfg.setMinimumWidth(70)
+        form.addWidget(self.point_cfg, 0, 7, 1, 1, align_ctrl)
+
+        # ================== 第 2 行：频率范围 + 激励参数 ==================
+        # 起始频率（单位写进标签灰色字，不用 spinbox suffix 避免切模式抖动）
+        self.f_start_lbl = _lbl("始频 (Hz)",
+                                rich=f"始频<span style='color:{muted_hex};'>(Hz)</span>")
+        self.f_start_lbl.setTextFormat(Qt.TextFormat.RichText)
+        form.addWidget(self.f_start_lbl, 1, 0, 1, 1, align_label)
+        self.f_start = QDoubleSpinBox()
+        self.f_start.setRange(0.1, 6553.5)
+        self.f_start.setDecimals(1)
+        self.f_start.setValue(0.5)
+        _fill(self.f_start)
+        self.f_start.setMinimumWidth(86)
+        form.addWidget(self.f_start, 1, 1, 1, 1, align_ctrl)
+
+        # 结束频率（同上）
+        self.f_end_lbl = _lbl("结束 (Hz)",
+                              rich=f"结束<span style='color:{muted_hex};'>(Hz)</span>")
+        self.f_end_lbl.setTextFormat(Qt.TextFormat.RichText)
+        form.addWidget(self.f_end_lbl, 1, 2, 1, 1, align_label)
+        self.f_end = QDoubleSpinBox()
+        self.f_end.setRange(0.1, 6553.5)
+        self.f_end.setDecimals(1)
+        self.f_end.setValue(30.0)
+        _fill(self.f_end)
+        self.f_end.setMinimumWidth(86)
+        form.addWidget(self.f_end, 1, 3, 1, 1, align_ctrl)
+
+        # 激励幅值（文字含单位灰色字 动态生成，单位不入 suffix → 零抖动）
         self.amp_label = QLabel()
-        self.amp_label.setAlignment(align)
-        form.addWidget(self.amp_label, 1, 2)
+        # 按最长文案实测定宽：切模式改单位时列宽稳定（零抖动）且不截断
+        self.amp_label.setFixedWidth(
+            self.amp_label.fontMetrics().horizontalAdvance("幅值 (rad/s)") + 10)
+        self.amp_label.setFixedHeight(H_CTRL)
+        self.amp_label.setAlignment(align_label)
+        self.amp_label.setTextFormat(Qt.TextFormat.RichText)
+        form.addWidget(self.amp_label, 1, 4, 1, 1, align_label)
         self.amp = QDoubleSpinBox()
         self.amp.setRange(0.001, 655.35)
         self.amp.setDecimals(3)
         self.amp.setValue(0.001)
-        form.addWidget(self.amp, 1, 3)
+        _fill(self.amp)
+        self.amp.setMinimumWidth(90)
+        form.addWidget(self.amp, 1, 5, 1, 1, align_ctrl)
+
+        # 直流偏置（约束提示收进 tooltip，不再占用布局空间）
         self.bias_label = QLabel()
-        self.bias_label.setAlignment(align)
-        form.addWidget(self.bias_label, 1, 4)
+        self.bias_label.setFixedWidth(
+            self.bias_label.fontMetrics().horizontalAdvance("偏置 (rad/s)") + 10)
+        self.bias_label.setFixedHeight(H_CTRL)
+        self.bias_label.setAlignment(align_label)
+        self.bias_label.setTextFormat(Qt.TextFormat.RichText)
+        self.bias_label.setToolTip(
+            "扫频围绕该直流工作点叠加，|偏置| + 幅值 ≤ 电机限幅")
+        form.addWidget(self.bias_label, 1, 6, 1, 1, align_label)
         self.bias = QDoubleSpinBox()
         self.bias.setRange(-327.68, 327.67)
         self.bias.setDecimals(2)
         self.bias.setValue(0.0)
-        form.addWidget(self.bias, 1, 5)
-        self.bias_hint = QLabel("扫频围绕该直流工作点叠加")
-        self.bias_hint.setStyleSheet(f"color:{theme.hex('muted')};")
-        form.addWidget(self.bias_hint, 1, 6, 1, 2)
+        _fill(self.bias)
+        self.bias.setMinimumWidth(90)
+        form.addWidget(self.bias, 1, 7, 1, 1, align_ctrl)
+
+        # 列 stretch：标签列固定(0)、输入列拉伸(1)→ 多余宽度被输入框吸收，
+        # 窗口拉宽时右侧不留白；同一列上下行共享列宽 → 两行严格对齐
+        form.setColumnStretch(0, 0)
+        form.setColumnStretch(1, 1)
+        form.setColumnStretch(2, 0)
+        form.setColumnStretch(3, 1)
+        form.setColumnStretch(4, 0)
+        form.setColumnStretch(5, 1)
+        form.setColumnStretch(6, 0)
+        form.setColumnStretch(7, 1)
+
         root.addLayout(form)
+
+        # 反馈信号提取方式只影响上位机频点分析，不改变下位机激励和 TRACE 原样本。
+        extract_bar = QHBoxLayout()
+        extract_bar.setContentsMargins(0, 0, 0, 0)
+        extract_bar.setSpacing(8)
+        extract_label = QLabel("反馈提取")
+        extract_label.setStyleSheet(f"color:{text_hex}; font-weight:500;")
+        extract_bar.addWidget(extract_label)
+        self.estimator = QComboBox()
+        self.estimator.addItem("锁相相关（推荐）", ESTIMATOR_LOCKIN)
+        self.estimator.addItem("FFT 频谱", ESTIMATOR_FFT)
+        self.estimator.currentIndexChanged.connect(self._on_estimator_changed)
+        self.estimator.setToolTip(
+            "锁相相关：按已知激励频率同步积分，最适合抑制扫频纹波；"
+            "FFT：加 Hann 窗并零填充后提取目标频带。")
+        self.estimator.setMinimumWidth(170)
+        extract_bar.addWidget(self.estimator)
+        extract_hint = QLabel("仅提取激励频率的交流基波，原始样本仍完整保留")
+        extract_hint.setStyleSheet(f"color:{muted_hex};")
+        extract_bar.addWidget(extract_hint)
+        extract_bar.addStretch(1)
+        root.addLayout(extract_bar)
 
         self.status = QLabel("空闲")
         self.status.setStyleSheet(f"color:{theme.hex('muted')};")
@@ -175,7 +293,7 @@ class BodeSweepPanel(QWidget):
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._export)
         btn_width = max(btn.sizeHint().width() for btn in
-                        (self.start_btn, self.stop_btn, self.export_btn))
+                        (self.start_btn, self.stop_btn, self.export_btn)) + 8
         for btn in (self.start_btn, self.stop_btn, self.export_btn):
             btn.setMinimumWidth(btn_width)
             # NoFocus: 点击后按钮被禁用时焦点不会跳到参数输入框
@@ -365,6 +483,9 @@ class BodeSweepPanel(QWidget):
             # 图例由 _update_raw_legend 按当前模式通道名动态维护, 创建时不带 name
             self._raw_in = self.raw_plot.plot(pen=pg.mkPen("#5A8DFF", width=2))
             self._raw_out = self.raw_plot.plot(pen=pg.mkPen("#E8B04B", width=2))
+            self._raw_out_clean = self.raw_plot.plot(
+                pen=pg.mkPen("#61D095", width=2, style=Qt.PenStyle.DashLine))
+            self._raw_out_clean.setVisible(False)
             # 右轴独立 ViewBox: 输入/输出异量纲时输出曲线挂右轴(双纵坐标)
             self._raw_dual_axis = False  # False=输出曲线在主(左)轴
             self._raw_vb_out = pg.ViewBox()
@@ -390,10 +511,11 @@ class BodeSweepPanel(QWidget):
     def _build_table_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        self.table = QTableWidget(0, 11)
+        self.table = QTableWidget(0, 14)
         self.table.setHorizontalHeaderLabels([
-            "点", "实际频率", "输入 RMS", "输出 RMS", "增益 dB", "相位 deg",
-            "SNR dB", "样本数", "估计器影响", "有效", "原因",
+            "点", "实际频率", "输入原始 RMS", "反馈原始 RMS", "输入有效 RMS",
+            "反馈有效 RMS", "增益 dB", "相位 deg", "SNR dB", "相干度",
+            "样本数", "提取方法", "有效", "原因",
         ])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.currentCellChanged.connect(self._show_selected_raw)
@@ -430,6 +552,8 @@ class BodeSweepPanel(QWidget):
             self._phase_curve.setData([], [])
             self._raw_in.setData([], [])
             self._raw_out.setData([], [])
+            self._raw_out_clean.setData([], [])
+            self._raw_out_clean.setVisible(False)
             # 新会话频点编号从 0 重新开始, 旧频率标注线必须显式清除
             for line in self._freq_lines.values():
                 self.raw_plot.removeItem(line)
@@ -440,7 +564,8 @@ class BodeSweepPanel(QWidget):
         self._raw_render_key = None
         ok = self.session.start(self.mode.currentData(), self.sweep_mode.currentData(),
                                 self.point_cfg.value(), self.f_start.value(),
-                                self.f_end.value(), self.amp.value(), self.bias.value())
+                                self.f_end.value(), self.amp.value(), self.bias.value(),
+                                self.estimator.currentData())
         if not ok:
             self._set_status("启动失败：参数超出范围（检查频率/幅值/点数）", "danger")
 
@@ -488,7 +613,7 @@ class BodeSweepPanel(QWidget):
         if amp <= 0.0:
             return "扫频幅值必须大于 0"
         # 幅值/偏置编码精度: 速度模式 0.01, 电流/力矩模式 0.001, 量化为 0 会被固件拒绝
-        scale = 100.0 if test_mode >= 3 else 1000.0
+        scale = 100.0 if test_mode in (3, 4, 5) else 1000.0
         if int(round(amp * scale)) < 1:
             return f"幅值 {amp:g} 低于编码精度 {1.0 / scale:g}，会被固件拒绝，请增大"
         if int(round(abs(bias) * scale)) > 32767:
@@ -564,7 +689,7 @@ class BodeSweepPanel(QWidget):
             # 力矩模式: 峰值转矩是编译期参数(motor_profile.h), 不在 motor_info 体系
             return (f"力矩模式限幅为峰值转矩(编译期参数, 上位机不可读, "
                     f"默认配置 0.5 Nm)。当前 |偏置|+幅值={total:.4g} Nm, "
-                    f"超过峰值转矩则固件拒绝; 也可改用【辨识】电流→速度模式"
+                    f"超过峰值转矩则固件拒绝; 也可改用【辨识】电流激励·机械对象模式"
                     f"(限幅=峰值电流, 可读可配)")
         limit = self._limits.get(limit_id)
         if limit is None:
@@ -588,6 +713,8 @@ class BodeSweepPanel(QWidget):
         active = self.session.active
         self.start_btn.setEnabled(not active)
         self.stop_btn.setEnabled(active)
+        # 分析器在会话启动时固定算法，运行中禁止切换以免界面选择与结果不一致。
+        self.estimator.setEnabled(not active)
         if state == BodeSession.COMPLETE:
             self.export_btn.setEnabled(True)
 
@@ -595,21 +722,48 @@ class BodeSweepPanel(QWidget):
         if not hasattr(result, "point"):
             return
         self._refresh_direction_results()
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-        values = [
-            result.point, f"{result.f_actual_hz:.3f}", f"{result.input_rms:.6g}",
-            f"{result.output_rms:.6g}", f"{result.gain_db:.3f}",
-            f"{result.phase_deg:.3f}", f"{result.snr_db:.2f}",
-            result.sample_count, result.estimator_warning,
-            "是" if result.valid else "否", result.valid_reason,
-        ]
-        for col, value in enumerate(values):
-            self.table.setItem(row, col, QTableWidgetItem(str(value)))
+        self._append_point_row(result)
         self._refresh_curves()
         # 扫频进行中只刷滚动窗口: 全量重采样是 O(总样本), 长扫频逐频点
         # 全量渲染累计成本 O(n^2); 全周期视图留给 _on_finished 一次渲染
         self._show_raw(streaming=True)
+
+    def _append_point_row(self, result):
+        """将一个分析结果追加到频点表，供实时结果和重算路径共用。"""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        values = [
+            result.point, f"{result.f_actual_hz:.3f}", f"{result.input_rms:.6g}",
+            f"{result.output_rms:.6g}", f"{result.input_ac_rms:.6g}",
+            f"{result.output_ac_rms:.6g}", f"{result.gain_db:.3f}",
+            f"{result.phase_deg:.3f}", f"{result.snr_db:.2f}",
+            (f"{result.coherence * 100.0:.1f}%"
+             if math.isfinite(result.coherence) else "--"),
+            result.sample_count, result.estimator +
+            (f"（{result.estimator_warning}）" if result.estimator_warning else ""),
+            "是" if result.valid else "否", result.valid_reason,
+        ]
+        for col, value in enumerate(values):
+            self.table.setItem(row, col, QTableWidgetItem(str(value)))
+
+    def _on_estimator_changed(self, *_):
+        """扫频结束后切换算法，立即重算全部频点并刷新图表/表格。"""
+        if self.session.active or self.session.analyzer is None:
+            return
+        if not self.session.raw_samples:
+            return
+        points = self.session.reanalyze(self.estimator.currentData())
+        if not points:
+            return
+        self.table.setRowCount(0)
+        for result in points:
+            self._append_point_row(result)
+        self._refresh_curves()
+        self._show_raw(streaming=False)
+        self._refresh_direction_results()
+        self._set_status(
+            f"已用{self.estimator.currentText()}重新计算 {len(points)} 个频点",
+            "ok")
 
     def _update_diagnosis(self, points):
         """在 Bode 图顶部给出有效性诊断：有效点数 + 无效频点原因分布。"""
@@ -763,6 +917,75 @@ class BodeSweepPanel(QWidget):
         out.sort(key=lambda r: int(r.get("sample_index") or 0))
         return out
 
+    @staticmethod
+    def _row_times(rows):
+        """逐行累计时间轴, 返回 ``{id(row): t}``。
+
+        TRACE 采样率随频点钳制切换, 样本间隔 = 1/所在频点采样率,
+        不能再用统一的 ``(index - base)/rate`` 换算; 丢样处 index
+        跳变对应真实的时间空洞, 一并保留。
+        """
+        times = {}
+        t = 0.0
+        prev_idx = None
+        prev_rate = 0.0
+        for r in rows:
+            idx = int(r.get("sample_index") or 0)
+            rate = float(r.get("actual_rate_hz") or 0.0)
+            if prev_idx is not None and prev_rate > 0.0:
+                t += (idx - prev_idx) / prev_rate
+            times[id(r)] = t
+            prev_idx, prev_rate = idx, rate
+        return times
+
+    def _demodulated_output(self, rows, selected_rows=None):
+        """按已完成频点的复数结果重建反馈基波，返回 ``(row, value)``。
+
+        这是显示用的有效反馈轨迹，不参与再次计算 Bode 数据；原始反馈曲线
+        始终保留，便于直接比较纹波被滤除的程度。``rows`` 始终是完整的
+        计算输入；``selected_rows`` 仅用于限制返回的绘图点，避免把绘图下采样
+        误当成信号处理下采样。
+        """
+        analyzer = self.session.analyzer
+        points = analyzer.points if analyzer is not None else {}
+        # 下采样后的 rows 可能没有包含某频点的首个样本，基准必须来自完整时间轴，
+        # 否则叠加曲线会因 min/max 保留点而产生一个固定相位偏移。
+        segment_bases = {}
+        for original in self.session.raw_samples:
+            segment_bases.setdefault(
+                original.get("sweep_point"),
+                int(original.get("sample_index") or 0))
+        wanted = None if selected_rows is None else {
+            id(row) for row in selected_rows
+        }
+        values = []
+        point = object()
+        base = 0
+        for row in rows:
+            current = row.get("sweep_point")
+            if current != point:
+                point = current
+                base = segment_bases.get(
+                    current, int(row.get("sample_index") or 0))
+            result = points.get(current)
+            rate = float(row.get("actual_rate_hz") or 0.0)
+            if (result is None or not result.valid or rate <= 0.0 or
+                    not math.isfinite(result.output_complex.real) or
+                    not math.isfinite(result.output_complex.imag)):
+                if wanted is None or id(row) in wanted:
+                    values.append((row, float("nan")))
+                continue
+            phase_inc = int(row.get("phase_inc") or 0)
+            wx = (result.phase_step_rad if result.phase_step_rad > 0.0 else
+                  trace_phase_step(result.f_actual_hz, rate, phase_inc))
+            i = int(row.get("sample_index") or 0) - base
+            c = result.output_complex
+            value = (result.output_dc + c.real * math.cos(wx * i)
+                     - c.imag * math.sin(wx * i))
+            if wanted is None or id(row) in wanted:
+                values.append((row, float(value)))
+        return values
+
     def _show_raw(self, point=None, streaming=False):
         if pg is None or self.raw_plot is None:
             return
@@ -781,27 +1004,43 @@ class BodeSweepPanel(QWidget):
         if windowed:
             rows = rows[-self._STREAM_WINDOW:]
         shown = self._downsample_rows(rows)
-        rate = max(1, int(rows[0].get("actual_rate_hz") or 1))
         base = int(rows[0].get("sample_index") or 0)
+        times = self._row_times(rows)
         # 时间零点变化(流式窗口滚动/视图切换): 旧频率标注线坐标全部失效, 清空重画
         if base != getattr(self, "_raw_base", None):
             for line in self._freq_lines.values():
                 self.raw_plot.removeItem(line)
             self._freq_lines.clear()
             self._raw_base = base
-        ts = [(int(r.get("sample_index") or 0) - base) / rate for r in shown]
+        ts = [times[id(r)] for r in shown]
+        # 原始两条曲线不随算法切换隐藏；提取曲线单独控制可见性。
+        self._raw_in.setVisible(True)
+        self._raw_out.setVisible(True)
         self._raw_in.setData(ts, [float(r.get("input") or 0.0) for r in shown])
         self._raw_out.setData(ts, [float(r.get("output") or 0.0) for r in shown])
-        self._update_freq_markers(rows, base, rate)
+        # 频点完成后，用同一复数解调结果重建反馈基波；实时阶段尚无完整频点，
+        # 隐藏该曲线避免把半成品误当作有效反馈。
+        if streaming and point is None:
+            self._raw_out_clean.setVisible(False)
+        else:
+            # 先对完整原始段逐样本解调，再只压缩显示点数；不能把极值点
+            # 下采样后的 ``shown`` 直接当作信号处理输入。
+            clean = self._demodulated_output(rows, shown)
+            self._raw_out_clean.setData(
+                [times[id(r)] for r, _ in clean],
+                [value for _, value in clean])
+            self._raw_out_clean.setVisible(any(
+                value is not None and math.isfinite(value) for _, value in clean))
+        self._update_freq_markers(rows, times)
         if point is not None:
             self.raw_plot.setTitle(f"频点 {int(point)} 测量段")
         elif windowed:
             self.raw_plot.setTitle(
-                f"实时波形（最近 {len(rows) / rate:.0f}s，结束后显示全周期）")
+                f"实时波形（最近 {times[id(rows[-1])]:.0f}s，结束后显示全周期）")
         else:
             self.raw_plot.setTitle("扫频全周期原始波形")
 
-    def _update_freq_markers(self, rows, base: int, rate: int):
+    def _update_freq_markers(self, rows, times):
         """按频点切换时间画频率标注线: 竖直点线分隔各频点段, 顶部标激励频率。
 
         频率取自各段样本携带的 f_actual_mhz 包元数据(目标激励的实际频率)。
@@ -814,7 +1053,7 @@ class BodeSweepPanel(QWidget):
             pt = r.get("sweep_point")
             if pt == last_pt:
                 continue
-            t = (int(r.get("sample_index") or 0) - base) / rate
+            t = times[id(r)]
             mhz = r.get("f_actual_mhz")
             segs.append((pt, t, float(mhz) / 1000.0 if mhz else None))
             last_pt = pt
@@ -874,6 +1113,8 @@ class BodeSweepPanel(QWidget):
             analyzer = self.session.analyzer
             points = list(analyzer.points.values()) if analyzer else []
         fit = fit_mechanical(points) if points else None
+        fit_lbls = (self.fit_J, self.fit_B, self.fit_corner,
+                    self.fit_err, self.fit_points)
         if fit is not None:
             self.fit_J.setText(f"{fit['J']:.6g}")
             self.fit_B.setText(f"{fit['B']:.6g}")
@@ -883,13 +1124,30 @@ class BodeSweepPanel(QWidget):
             self.fit_err.setText(f"{fit['fit_err_pct']:.1f} %")
             self.fit_err.setStyleSheet(err_style)
             self.fit_points.setText(str(fit["point_count"]))
+            # 拟合自动补偿的环路/采样等效延迟, 供排查相位滞后来源
+            self.fit_points.setToolTip(
+                f"拟合含 {fit.get('delay_ms', 0.0):.2f} ms 等效延迟补偿"
+                f"(控制环路+采样滞后)")
+            for lbl in fit_lbls:
+                if lbl is not self.fit_points:
+                    lbl.setToolTip("")  # 清除失败态残留提示
         else:
             valid_n = sum(1 for p in points if p.valid)
-            tip = "--" if not points else \
-                f"有效频点不足({valid_n}/至少3), 等待更多频点完成"
-            for lbl in (self.fit_J, self.fit_B, self.fit_corner,
-                        self.fit_err, self.fit_points):
+            if not points:
+                tip = "--"
+                detail = ""
+            elif valid_n < 3:
+                tip = f"有效频点不足({valid_n}/至少3), 等待更多频点完成"
+                detail = ""
+            else:
+                # 点数已够但 J/B 无物理解: 相位与一阶模型严重不符
+                tip = f"拟合不收敛({valid_n}个有效点)"
+                detail = ("实测相位与一阶机械模型不符: 请检查速度反馈方向"
+                          "是否与电流方向一致(方向反接会引入180°翻转)")
+            for lbl in fit_lbls:
                 lbl.setText(tip)
+                lbl.setToolTip(detail)
+            self.fit_err.setStyleSheet("")
         # PID 换算: Kp_v = ωv·Ĵ, Ki_v = Kp_v·ωv/4; Kp_p = ωp (与 J 无关)
         wv = 2.0 * math.pi * self.vel_bw.value()
         wp = 2.0 * math.pi * self.pos_bw.value()
@@ -1024,6 +1282,8 @@ class BodeSweepPanel(QWidget):
                        f"{spec['input_label']} ({spec['input']}, {spec['input_unit']})")
         legend.addItem(self._raw_out,
                        f"{spec['output_label']} ({spec['output']}, {spec['output_unit']})")
+        legend.addItem(self._raw_out_clean,
+                       f"提取反馈基波 ({spec['output_unit']})")
 
     def _sync_raw_vb_geometry(self, *_):
         """右轴独立 ViewBox 与主绘图区几何同步(pyqtgraph 双轴必需)。"""
@@ -1041,10 +1301,14 @@ class BodeSweepPanel(QWidget):
             self._raw_dual_axis = dual
             if dual:
                 self.raw_plot.removeItem(self._raw_out)
+                self.raw_plot.removeItem(self._raw_out_clean)
                 self._raw_vb_out.addItem(self._raw_out)
+                self._raw_vb_out.addItem(self._raw_out_clean)
             else:
                 self._raw_vb_out.removeItem(self._raw_out)
+                self._raw_vb_out.removeItem(self._raw_out_clean)
                 self.raw_plot.addItem(self._raw_out)
+                self.raw_plot.addItem(self._raw_out_clean)
         if dual:
             self.raw_plot.showAxis("right")
             self.raw_plot.setLabel("left", spec["input_label"],
@@ -1064,6 +1328,7 @@ class BodeSweepPanel(QWidget):
         _SAFE_DEFAULTS = {
             int(SweepTestMode.TORQUE_TO_VELOCITY): (0.001, 0.0),
             int(SweepTestMode.CURRENT_TO_VELOCITY): (0.5, 0.0),
+            int(SweepTestMode.CURRENT_MEAS_TO_VELOCITY): (0.5, 0.0),
             int(SweepTestMode.CURRENT_TO_CURRENT): (0.5, 0.0),
             int(SweepTestMode.VELOCITY_TO_POSITION): (1.0, 0.0),
             int(SweepTestMode.VELOCITY_TO_VELOCITY): (0.5, 0.0),
@@ -1075,45 +1340,56 @@ class BodeSweepPanel(QWidget):
                 self.amp.setValue(safe_amp)
             if self.bias.value() != safe_bias:
                 self.bias.setValue(safe_bias)
+        # 富文本模板：<KEY 加粗主题色>  <UNIT 灰色> — 单位写在标签文字末尾
+        # 不使用 spinbox suffix，避免切模式改单位时输入框宽度抖动
+        tx = theme.hex("text")
+        mu = theme.hex("muted")
+        def _rt(key: str, unit: str) -> str:
+            return (f'<span style="color:{tx}; font-weight:500;">{key}</span>'
+                    f' <span style="color:{mu};">({unit})</span>')
+
         if mode == int(SweepTestMode.VELOCITY_TO_POSITION):
-            self.amp_label.setText("速度幅值 (rad/s)")
-            self.bias_label.setText("速度直流偏置 (rad/s)")
+            self.amp_label.setText(_rt("幅值", "rad/s"))
+            self.bias_label.setText(_rt("偏置", "rad/s"))
             self.amp.setMaximum(655.35)
             self.bias.setMaximum(327.67)
             self.bias.setMinimum(-327.68)
         elif mode == int(SweepTestMode.VELOCITY_TO_VELOCITY):
-            self.amp_label.setText("速度扰动幅值 (rad/s)")
-            self.bias_label.setText("速度直流偏置 (rad/s)")
+            self.amp_label.setText(_rt("幅值", "rad/s"))
+            self.bias_label.setText(_rt("偏置", "rad/s"))
             self.amp.setMaximum(655.35)
             self.bias.setMaximum(327.67)
             self.bias.setMinimum(-327.68)
         elif mode == int(SweepTestMode.TORQUE_TO_VELOCITY):
-            self.amp_label.setText("力矩幅值 (Nm)")
-            self.bias_label.setText("力矩直流偏置 (Nm)")
+            self.amp_label.setText(_rt("幅值", "Nm"))
+            self.bias_label.setText(_rt("偏置", "Nm"))
             self.amp.setMaximum(65.535)
             self.bias.setMaximum(32.767)
             self.bias.setMinimum(-32.768)
         elif mode == int(SweepTestMode.POSITION_TO_POSITION):
-            self.amp_label.setText("位置幅值 (rad)")
-            self.bias_label.setText("位置偏置 (rad)")
+            self.amp_label.setText(_rt("幅值", "rad"))
+            self.bias_label.setText(_rt("偏置", "rad"))
             self.amp.setMaximum(655.35)
             self.bias.setMaximum(327.67)
             self.bias.setMinimum(-327.68)
         else:
-            self.amp_label.setText("电流幅值 (A)")
-            self.bias_label.setText("电流直流偏置 (A)")
+            self.amp_label.setText(_rt("幅值", "A"))
+            self.bias_label.setText(_rt("偏置", "A"))
             self.amp.setMaximum(65.535)
             self.bias.setMaximum(32.767)
-            self.bias.setMinimum(-32.768)
+            self.bias.setMinimum(-327.68)
         sweep_mode = int(self.sweep_mode.currentData())
         if sweep_mode == int(SweepMode.LOG):
-            self.point_cfg_label.setText("点数 / 十倍频")
+            self.point_cfg_label.setText("点数/十倍频")
+            self.point_cfg_label.setToolTip("每个十倍频程内扫频的点数")
             self.point_cfg.setEnabled(True)
         elif sweep_mode == int(SweepMode.STEP):
-            self.point_cfg_label.setText("频点 (步进 1Hz 自动)")
+            self.point_cfg_label.setText("频点·步进自动")
+            self.point_cfg_label.setToolTip("按 1Hz 步进自动生成频点，无需手动配置")
             self.point_cfg.setEnabled(False)
         else:
             self.point_cfg_label.setText("总频点数")
+            self.point_cfg_label.setToolTip("在起始频率 ~ 结束频率之间线性均分的总点数")
             self.point_cfg.setEnabled(True)
         spec = BodeSession.channel_spec(mode)
         if pg is not None:
@@ -1137,6 +1413,7 @@ class BodeSweepPanel(QWidget):
             "point_cfg": self.point_cfg.value(), "f_start": self.f_start.value(),
             "f_end": self.f_end.value(), "amp": self.amp.value(),
             "bias": self.bias.value(),
+            "estimator": self.estimator.currentData(),
         }
 
     def set_opts(self, opts):
@@ -1147,6 +1424,10 @@ class BodeSweepPanel(QWidget):
                 idx = combo.findData(int(opts[key]))
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
+        if "estimator" in opts:
+            idx = self.estimator.findData(str(opts["estimator"]).lower())
+            if idx >= 0:
+                self.estimator.setCurrentIndex(idx)
         if "point_cfg" in opts:
             self.point_cfg.setValue(int(opts["point_cfg"]))
         for widget, key in ((self.f_start, "f_start"),

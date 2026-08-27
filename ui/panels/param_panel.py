@@ -33,13 +33,14 @@ from ui.theme import theme
 
 
 COL_NAME = 0
-COL_ID = 1
-COL_TYPE = 2
-COL_CURRENT = 3
-COL_EDIT = 4
-COL_DESC = 5
-COL_READ = 6
-COL_WRITE = 7
+COL_CN_NAME = 1
+COL_ID = 2
+COL_TYPE = 3
+COL_CURRENT = 4
+COL_EDIT = 5
+COL_DESC = 6
+COL_READ = 7
+COL_WRITE = 8
 
 
 class _ColorSwatch(QFrame):
@@ -225,8 +226,8 @@ class ParamPanel(QGroupBox):
             legend_w.setLayout(legend)
             layout.addWidget(legend_w)
 
-        self._table = QTableWidget(0, 8)
-        self._table.setHorizontalHeaderLabels(["参数", "ID", "类型/单位", "当前值", "修改值", "描述", "读", "写"])
+        self._table = QTableWidget(0, 9)
+        self._table.setHorizontalHeaderLabels(["参数", "中文名", "ID", "类型/单位", "当前值", "修改值", "描述", "读", "写"])
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -326,7 +327,8 @@ class ParamPanel(QGroupBox):
 
         self._table.itemChanged.connect(self._on_item_changed)
         self._populate()
-        self._table.setColumnWidth(COL_NAME, 220)
+        self._table.setColumnWidth(COL_NAME, 200)
+        self._table.setColumnWidth(COL_CN_NAME, 140)
         self._table.setColumnWidth(COL_ID, 60)
         self._table.setColumnWidth(COL_TYPE, 120)
         self._table.setColumnWidth(COL_CURRENT, 120)
@@ -527,6 +529,7 @@ class ParamPanel(QGroupBox):
         unit = f" ({p.unit})" if p.unit and p.unit != '-' else ""
         desc = p.desc or p.cn_name
         name_item = self._make_cell_item(p.code_name)
+        cn_item = self._make_cell_item(p.cn_name or "--")
         id_item = self._make_cell_item(str(p.param_id))
         type_item = self._make_cell_item(f"{p.dtype}{unit}")
         current_item = self._make_cell_item("--")
@@ -538,8 +541,10 @@ class ParamPanel(QGroupBox):
         if tooltip:
             desc_item.setToolTip(tooltip)
             name_item.setToolTip(tooltip)
+            cn_item.setToolTip(tooltip)
 
         self._table.setItem(row, COL_NAME, name_item)
+        self._table.setItem(row, COL_CN_NAME, cn_item)
         self._table.setItem(row, COL_ID, id_item)
         self._table.setItem(row, COL_TYPE, type_item)
         self._table.setItem(row, COL_CURRENT, current_item)

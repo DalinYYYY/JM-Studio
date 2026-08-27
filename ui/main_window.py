@@ -491,6 +491,10 @@ class MainWindow(QMainWindow):
         self._sb_link = _mk("● 未连接")
         self._sb_link.setStyleSheet(
             "font-family: Consolas; padding: 0 8px; color: #999;")
+        # 固件版本标签: 连接成功后由 _on_dev_info 填充
+        self._sb_fw_ver = _mk("")
+        self._sb_fw_ver.setStyleSheet(
+            "font-family: Consolas; padding: 0 8px; color: #999;")
         # P1-1/P1-2: CAN 总线状态(ERROR_ACTIVE/PASSIVE/BUS_OFF + TEC/REC), 串口模式为空
         self._sb_bus_state = _mk("")
         self._sb_tx = _mk("TX 0 B/s  Σ0 B")
@@ -499,7 +503,7 @@ class MainWindow(QMainWindow):
         # P1-3: CAN 总线占用率估算, 串口模式为空
         self._sb_load = _mk("")
 
-        for w in (self._sb_link, self._sb_bus_state, self._sb_tx,
+        for w in (self._sb_link, self._sb_fw_ver, self._sb_bus_state, self._sb_tx,
                   self._sb_rx, self._sb_frames, self._sb_load):
             sb.addPermanentWidget(w)
 
@@ -1505,6 +1509,9 @@ class MainWindow(QMainWindow):
                 self._last_connect_params["motor_id"] = node_id
             self.statusBar().showMessage(f"当前 CAN 节点已切换为 ID={node_id}", 3000)
             self._log_panel.log(f"[CAN-DI] 已选中唯一设备 ID={node_id}，主窗口控制已启用")
+            # CAN 节点选中后自动请求一次固件版本
+            self._dev_info_auto_query = True
+            QTimer.singleShot(100, self._client.query_dev_info)
             if self._can_device_dialog is not None:
                 self._can_device_dialog.close()
 
@@ -1705,6 +1712,9 @@ class MainWindow(QMainWindow):
             self._feedback_panel.set_can_mode(False)
             self._sb_bus_state.setText("")
             self._sb_load.setText("")
+            # 断开时清除状态栏固件版本
+            self._sb_fw_ver.setText("")
+            self._sb_fw_ver.setToolTip("")
             # 断开时停止周期心跳, 避免向已关闭的链路发帧
             if self._btn_hb.isChecked():
                 self._btn_hb.setChecked(False)
@@ -1735,6 +1745,12 @@ class MainWindow(QMainWindow):
                 try:
                     self._client.query_state()
                     self._client.pid_source_get()
+                except Exception:
+                    pass
+                # 连接成功后自动请求一次固件版本(下位机固件信息)
+                self._dev_info_auto_query = True
+                try:
+                    self._client.query_dev_info()
                 except Exception:
                     pass
             # P0-7: CAN 模式看门狗策略 — 保守延长到 5s
@@ -1799,9 +1815,13 @@ class MainWindow(QMainWindow):
             self._sb_link.setText(f"● {ch_prefix}{getattr(self, '_cur_port', '')}")
             self._sb_link.setStyleSheet(
                 f"font-family: Consolas; padding: 0 8px; color: {theme.hex('ok')}; font-weight: bold;")
+            self._sb_fw_ver.setStyleSheet(
+                f"font-family: Consolas; padding: 0 8px; color: {theme.hex('ok')};")
         else:
             self._sb_link.setText("● 未连接")
             self._sb_link.setStyleSheet(
+                f"font-family: Consolas; padding: 0 8px; color: {theme.hex('muted')};")
+            self._sb_fw_ver.setStyleSheet(
                 f"font-family: Consolas; padding: 0 8px; color: {theme.hex('muted')};")
 
     def _on_error(self, msg: str):
@@ -3099,13 +3119,28 @@ class MainWindow(QMainWindow):
 
     def _on_dev_info(self, hw: int, fw: int, uid: bytes):
         uid_hex = uid.hex(':').upper()
+        fw_text = format_version(fw)
+        hw_text = format_version(hw)
         self._log_panel.log(
-            f"[RX] DEV_INFO HW={format_version(hw)} "
-            f"FW={format_version(fw)} UID={uid_hex}")
-        QMessageBox.information(
-            self, "设备信息",
-            f"硬件版本: {format_version(hw)}\n"
-            f"固件版本: {format_version(fw)}\nUID: {uid_hex}")
+            f"[RX] DEV_INFO HW={hw_text} "
+            f"FW={fw_text} UID={uid_hex}")
+        # 更新状态栏固件版本显示
+        proto = self._client.fw_proto_version
+        if proto:
+            self._sb_fw_ver.setText(
+                f"FW: {fw_text}  (协议 v{proto[0]}.{proto[1]})")
+        else:
+            self._sb_fw_ver.setText(f"FW: {fw_text}")
+        self._sb_fw_ver.setToolTip(
+            f"硬件版本: {hw_text}\n固件版本: {fw_text}\nUID: {uid_hex}"
+            + (f"\n协议版本: {proto[0]}.{proto[1]}" if proto else ""))
+        # 仅在用户主动点击"读设备信息"按钮时弹窗显示完整信息
+        if not getattr(self, '_dev_info_auto_query', False):
+            QMessageBox.information(
+                self, "设备信息",
+                f"硬件版本: {hw_text}\n"
+                f"固件版本: {fw_text}\nUID: {uid_hex}")
+        self._dev_info_auto_query = False
 
     def _on_dev_name(self, name: str):
         self._log_panel.log(f'[RX] DEV_NAME="{name}"')

@@ -244,11 +244,15 @@ class TesterMainWindow(QMainWindow):
         self._sb_link = _mk("● 未连接")
         self._sb_link.setStyleSheet(
             "font-family: Consolas; padding: 0 8px; color: #999;")
+        self._sb_fw_ver = _mk("")
+        self._sb_fw_ver.setStyleSheet(
+            "font-family: Consolas; padding: 0 8px; color: #999;")
         self._sb_mode = _mk("模式: -")
         self._sb_tx = _mk("TX 0 B/s  Σ0 B")
         self._sb_rx = _mk("RX 0 B/s  Σ0 B")
         self._sb_poll = _mk("")
-        for w in (self._sb_link, self._sb_mode, self._sb_tx, self._sb_rx, self._sb_poll):
+        for w in (self._sb_link, self._sb_fw_ver, self._sb_mode, self._sb_tx,
+                  self._sb_rx, self._sb_poll):
             sb.addPermanentWidget(w)
 
     # ==================== 信号连接 ====================
@@ -327,6 +331,8 @@ class TesterMainWindow(QMainWindow):
             self._feedback_panel.set_motor_params({})   # 恢复默认极对数
             self._sb_poll.setText("")
             self._sb_mode.setText("模式: -")
+            self._sb_fw_ver.setText("")
+            self._sb_fw_ver.setToolTip("")
         self._refresh_link_label()
 
     def _refresh_link_label(self):
@@ -337,9 +343,13 @@ class TesterMainWindow(QMainWindow):
             self._sb_link.setStyleSheet(
                 f"font-family: Consolas; padding: 0 8px; "
                 f"color: {theme.hex('ok')}; font-weight: bold;")
+            self._sb_fw_ver.setStyleSheet(
+                f"font-family: Consolas; padding: 0 8px; color: {theme.hex('ok')};")
         else:
             self._sb_link.setText("● 未连接")
             self._sb_link.setStyleSheet(
+                f"font-family: Consolas; padding: 0 8px; color: {theme.hex('muted')};")
+            self._sb_fw_ver.setStyleSheet(
                 f"font-family: Consolas; padding: 0 8px; color: {theme.hex('muted')};")
 
     def _on_error(self, msg: str):
@@ -357,14 +367,21 @@ class TesterMainWindow(QMainWindow):
                         for shift in (24, 16, 8, 0))
 
     def _on_dev_info(self, hw: int, fw: int, uid: bytes):
-        """连接后读设备信息(0xD0)应答: 固件版本显示在连接面板。"""
+        """连接后读设备信息(0xD0)应答: 固件版本显示在状态栏。"""
         fw_ver = self._format_version(fw)
-        detail = (f"固件版本: {fw_ver}\n硬件版本: {self._format_version(hw)}\n"
-                  f"UID: {uid.hex(':').upper()}")
+        hw_ver = self._format_version(hw)
+        uid_hex = uid.hex(':').upper()
+        detail = (f"固件版本: {fw_ver}\n硬件版本: {hw_ver}\n"
+                  f"UID: {uid_hex}")
         proto = getattr(self._client, "fw_proto_version", None)
         if proto:
             detail += f"\n协议版本: {proto[0]}.{proto[1]}"
-        self._conn_panel.set_version(fw_ver, detail)
+        # 更新状态栏固件版本显示
+        if proto:
+            self._sb_fw_ver.setText(f"FW: {fw_ver}  (协议 v{proto[0]}.{proto[1]})")
+        else:
+            self._sb_fw_ver.setText(f"FW: {fw_ver}")
+        self._sb_fw_ver.setToolTip(detail)
         self.statusBar().showMessage(f"固件版本 v{fw_ver}", 4000)
 
     # ==================== 电机本体参数读取(转子示意图) ====================
