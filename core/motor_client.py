@@ -33,6 +33,7 @@ DANGER_CMDS = {
     JmCmd.MOTOR_INFO_RESET: "电机配置恢复默认",
     JmCmd.MOTOR_INFO_RECALIB_RESET: "清除标定状态",
     JmCmd.SET_CAN_ID: "设置 CAN 地址(重启生效)",
+    JmCmd.SOFT_RESET: "软件复位(设备重启)",
 }
 
 

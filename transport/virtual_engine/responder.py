@@ -17,6 +17,7 @@
 import struct
 
 from jmproto import JmCmd, JmErr, JmTlmBit, JmParamType, codec, get_registry
+from jmproto.cmd_def import MAGIC_SOFT_RESET
 from .motor_sim import MotorSim
 
 
@@ -61,6 +62,13 @@ class VirtualResponder:
         # 系统控制
         if cmd in (_SYS_ENABLE, _SYS_DISABLE, _SYS_STOP, _SYS_IDLE, _SYS_ESTOP, _SYS_CLEAR_FAULT):
             self._handle_system(cmd)
+            return [self._ack(cmd)]
+
+        # 软件复位 0x07: 校验魔数后模拟重启(停机+清遥测订阅), 回 ACK
+        if cmd == int(JmCmd.SOFT_RESET):
+            if len(payload) >= 4 and int.from_bytes(payload[:4], 'little') != MAGIC_SOFT_RESET:
+                return [self._nack(cmd, int(JmErr.UNAUTHORIZED))]
+            self._handle_reset()
             return [self._ack(cmd)]
 
         if is_motion and cmd <= int(JmCmd.SINGLE_STEP):
@@ -142,6 +150,13 @@ class VirtualResponder:
             self.sim.fault_mask = 0
             self.sim.warn_mask = 0
             self.top_fsm = _TOP_IDLE
+
+    def _handle_reset(self):
+        """模拟软复位: 与固件行为一致(RAM 清零), 停机+停遥测+回 IDLE。"""
+        self.sim.set_enabled(False)
+        self.tlm_enabled = False
+        self.top_fsm = _TOP_IDLE
+        self.run_state = 0
 
     @staticmethod
     def _ctrl_to_run_state(cmd: int) -> int:

@@ -25,6 +25,7 @@ class ControlPanel(QGroupBox):
 
         style_danger = "background-color: #F44336; color: white; padding: 6px;"
         style_normal = "padding: 6px;"
+        style_warn = "background-color: #E08A1E; color: white; padding: 6px;"
 
         self._btn_enable = QPushButton("使能")
         self._btn_disable = QPushButton("去使能")
@@ -39,6 +40,7 @@ class ControlPanel(QGroupBox):
             ("待机", JmCmd.IDLE, style_normal, 1, 1),
             ("急停", JmCmd.ESTOP, style_danger, 2, 0),
             ("清除故障", JmCmd.CLEAR_FAULT, style_normal, 2, 1),
+            ("软件复位", JmCmd.SOFT_RESET, style_warn, 3, 0),
         ]
         for label, cmd, style, row, col in others:
             btn = QPushButton(label)

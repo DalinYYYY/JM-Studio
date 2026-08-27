@@ -1193,6 +1193,10 @@ class MainWindow(QMainWindow):
         elif cmd == JmCmd.MOTOR_INFO_RECALIB_RESET:
             risk = "中"
             extra = "清除标定状态后需重新标定编码器零点, 电机才能正常工作。"
+        elif cmd == JmCmd.SOFT_RESET:
+            risk = "高"
+            extra = ("设备将安全停机并重启(约 1~2s), 期间通信中断、周期遥测停止; "
+                     "RAM 中的临时配置丢失, Flash 已保存配置不受影响。")
         else:
             risk = "中"
             extra = "此操作可能修改设备配置, 请确认无误后继续。"
@@ -2926,6 +2930,25 @@ class MainWindow(QMainWindow):
                 self._cancel_pid_theory("设备未返回电机参数数据")
             self._cmd_watchdog.stop()
             self._pump_param_read_queue()
+        # 软件复位 0x07 ACK: 设备已接受复位请求, ACK 后约 200ms 硬复位。
+        # 设备重启后 RAM 清零(遥测订阅/调试会话丢失), 遥测面板同步置停;
+        # 延迟 1.5s 发 0xD0 探测设备恢复并刷新固件信息。
+        if cmd == JmCmd.SOFT_RESET:
+            self._telemetry_panel.set_running(False)
+            self._log_panel.log(
+                "[复位] 设备已接受复位请求, 等待重启完成(约 1~2s)...")
+            self._log_panel.log("[复位] 重启后周期遥测/调试会话已丢失, 需重新开启")
+            QTimer.singleShot(1500, self._on_soft_reset_probe)
+
+    def _on_soft_reset_probe(self):
+        """复位后探测: 0xD0 读设备信息确认链路恢复(dev_info_received 携带固件版本)。"""
+        if not self._client.is_open():
+            return
+        self._log_panel.log("[复位] 探测设备恢复(0xD0)...")
+        try:
+            self._client.query_dev_info()
+        except Exception as e:
+            self._log_panel.log_warn(f"[复位] 探测发送失败: {e}")
 
     def _on_nack(self, cmd: int, err: int):
         # NACK 中文描述: err_name_cn 返回 "枚举名(中文)"; 错误信息加载到故障面板

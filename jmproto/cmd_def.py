@@ -39,6 +39,7 @@ class JmCmd(IntEnum):
     ENABLE = 0x04
     DISABLE = 0x05
     STOP = 0x06
+    SOFT_RESET = 0x07  # 软件复位: {magic:u32} ACK后延迟约200ms复位
 
     # 运动控制 0x10~0x2F
     OPEN_LOOP = 0x10
@@ -553,6 +554,7 @@ RUN_STATE_CN = {
 # 防误触魔数
 MAGIC_BOOTLOADER = 0xB00710AD
 MAGIC_FACTORY_RESET = 0xFAC70F5F
+MAGIC_SOFT_RESET = 0x5E7E7E5E
 
 
 def cmd_name(cmd: int) -> str:

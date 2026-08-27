@@ -16,6 +16,7 @@ from typing import Optional
 
 from jmproto import (JmCmd, JmErr, JmTlmBit, JmParamType, TopFsm, RunState,
                      codec, get_registry)
+from jmproto.cmd_def import MAGIC_SOFT_RESET
 
 from .digital_twin import DigitalTwinEngine
 from .twin_fsm import MotorCmd, ControlMode, SystemState
@@ -162,6 +163,15 @@ class TwinResponder:
             self.engine.apply_cmd(MotorCmd(fault_clear=True))
             self.engine.fault_detector.clear_injected()
             self.engine.step()
+            return [self._ack(cmd)]
+
+        # ---- 软件复位 0x07: 校验魔数后模拟重启(停机+停遥测), 回 ACK ----
+        if cmd == int(JmCmd.SOFT_RESET):
+            if len(payload) >= 4 and int.from_bytes(payload[:4], 'little') != MAGIC_SOFT_RESET:
+                return [self._nack(cmd, int(JmErr.UNAUTHORIZED))]
+            self.engine.apply_cmd(MotorCmd(disable=True))
+            self.engine.step()
+            self.tlm_enabled = False
             return [self._ack(cmd)]
 
         # ---- 运动控制 ----

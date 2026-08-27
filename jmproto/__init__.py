@@ -21,7 +21,7 @@ from .cmd_def import (
     cmd_name, err_name, top_fsm_name, run_state_name, motion_state_name,
     calib_state_name, calib_fail_reason_name, calib_level_submode_name,
     pid_autotune_fail_reason_name,
-    MAGIC_BOOTLOADER, MAGIC_FACTORY_RESET,
+    MAGIC_BOOTLOADER, MAGIC_FACTORY_RESET, MAGIC_SOFT_RESET,
 )
 from . import codec
 from .feedback import (
@@ -50,7 +50,7 @@ __all__ = [
     'cmd_name', 'err_name', 'top_fsm_name', 'run_state_name', 'motion_state_name',
     'calib_state_name', 'calib_fail_reason_name', 'calib_level_submode_name',
     'pid_autotune_fail_reason_name',
-    'MAGIC_BOOTLOADER', 'MAGIC_FACTORY_RESET',
+    'MAGIC_BOOTLOADER', 'MAGIC_FACTORY_RESET', 'MAGIC_SOFT_RESET',
     'codec',
     'FeedbackData', 'parse_state', 'parse_read_reply', 'parse_telemetry',
     'parse_calib_status', 'parse_pid_autotune_ack',
