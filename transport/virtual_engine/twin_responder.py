@@ -216,7 +216,7 @@ class TwinResponder:
             control, point_cfg = payload[0], payload[1]
             test_mode = (control >> 4) & 0x07
             sweep_mode = (control >> 2) & 0x03
-            if (control & 0x03) or test_mode > 5 or sweep_mode > 2 or not 1 <= point_cfg <= 255:
+            if (control & 0x03) or test_mode > 6 or sweep_mode > 2 or not 1 <= point_cfg <= 255:
                 return [self._nack(cmd, int(JmErr.OUT_OF_RANGE))]
             f_start_x10, f_end_x10, amp_raw = struct.unpack_from('<HHH', payload, 2)
             bias_raw = 0
@@ -251,13 +251,16 @@ class TwinResponder:
             self._sweep_session = (self._sweep_session + 1) & 0xFFFF or 1
             self._sweep_active = True
             self._sweep_test_mode = test_mode
-            self._sweep_bias = bias_raw * (0.01 if test_mode >= 3 else 0.001)
+            self._sweep_bias = bias_raw * (0.01 if test_mode in (3, 4, 5) else 0.001)
             self._sweep_freqs_hz = freqs
             self._sweep_point = 0
             self._sweep_point_sample = 0
             self._sweep_point_total = 0
             self._trace_session = self._sweep_session
-            self._trace_mask = ((1 << 2) | (1 << 3)) if test_mode == 2 else ((1 << 4) | (1 << 7)) if test_mode == 3 else ((1 << 4) | (1 << 5)) if test_mode == 4 else ((1 << 6) | (1 << 7)) if test_mode == 5 else ((1 << 2) | (1 << 5))
+            # 与固件 jm_proto_ops.c 对齐: 机械模式0/1输入取目标电流
+            # (IQ_REF), 模式6取实测电流(IQ), 模式3取实测速度(VEL);
+            # 验证模式(2/4/5)输入保持参考通道
+            self._trace_mask = ((1 << 2) | (1 << 3)) if test_mode == 2 else ((1 << 3) | (1 << 5)) if test_mode == 6 else ((1 << 5) | (1 << 7)) if test_mode == 3 else ((1 << 4) | (1 << 5)) if test_mode == 4 else ((1 << 6) | (1 << 7)) if test_mode == 5 else ((1 << 2) | (1 << 5))
             # 采样率策略与固件 jm_proto_ops.c 对齐: 电流环对象≥5kHz,
             # 速度/位置对象≥2kHz, 保底 f_end×20, 上限钳制到控制频率10kHz。
             rate_min = 5000 if test_mode == 2 else 2000
@@ -363,17 +366,19 @@ class TwinResponder:
     def _plant_h(test_mode: int, freq: float) -> complex:
         """按测试模式合成传递函数 H(jω), 供辨识/验证两个方向做端到端验证。
 
-        - mode 0/1(辨识·机械对象): 一阶 1/(J·s+B), 转折 8Hz
-        - mode 3(辨识·位置对象): 速度闭环(一阶 30Hz) + 积分器
+        辨识模式(3/6)输入为实测通道, H 即被辨识对象本身; 机械模式0/1
+        输入为目标电流(双胎电流环按理想单位增益近似, H 同机械对象)。
+        - mode 0/1/6(辨识·机械对象): 一阶 1/(J·s+B), 转折 8Hz
+        - mode 3(辨识·位置对象): 纯积分器 1/s(实际速度→实际位置)
         - mode 2(验证·电流环): 一阶闭环 200Hz
         - mode 4(验证·速度环): 一阶闭环 30Hz
         - mode 5(验证·位置环): 二阶闭环 ωn=2π·8Hz, ζ=0.7
         """
         w = 2.0 * math.pi * freq
-        if test_mode in (0, 1):
+        if test_mode in (0, 1, 6):
             return 1.0 / (1.0 + 1j * freq / 8.0)
         if test_mode == 3:
-            return 1.0 / (1j * w * (1.0 + 1j * freq / 30.0))
+            return 1.0 / (1j * w)
         if test_mode == 2:
             return 1.0 / (1.0 + 1j * freq / 200.0)
         if test_mode == 4:

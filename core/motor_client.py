@@ -312,12 +312,13 @@ class JmClient(QObject):
         test_mode = int(test_mode)
         sweep_mode = int(sweep_mode)
         point_cfg = int(point_cfg)
-        if not (0 <= test_mode <= 5 and 0 <= sweep_mode <= 2 and
+        if not (0 <= test_mode <= 6 and 0 <= sweep_mode <= 2 and
                 1 <= point_cfg <= 255):
             return False
         f_start_x10 = int(round(float(f_start_hz) * 10.0))
         f_end_x10 = int(round(float(f_end_hz) * 10.0))
-        amp_scale = 100.0 if test_mode >= 3 else 1000.0
+        # 速度/位置参考类模式(3~5)量纲0.01, 力矩/电流类(0/1/2/6)量纲0.001
+        amp_scale = 100.0 if test_mode in (3, 4, 5) else 1000.0
         amp_raw = int(round(float(amp) * amp_scale))
         bias_raw = int(round(float(bias) * amp_scale))
         if not (1 <= f_start_x10 <= f_end_x10 <= 65535 and

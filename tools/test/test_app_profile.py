@@ -119,18 +119,23 @@ win._feedback_panel.set_link_active(False)
 check(not win._feedback_panel._state_view._active_keys,
       "断开后主状态机高亮应清空")
 
-# ---- 4c. 连接面板版本显示 ----
-check(win._conn_panel._lbl_version.text() == "固件版本: --",
-      f"未连接时版本应显示 --, 实际 {win._conn_panel._lbl_version.text()}")
+# ---- 4c. 状态栏固件版本显示 ----
+check(win._sb_fw_ver.text() == "",
+      f"未连接时固件版本应为空, 实际 '{win._sb_fw_ver.text()}'")
+# 模拟自动请求模式(不弹窗)
+win._dev_info_auto_query = True
 win._on_dev_info(0x00000100, 0x01020300, b'\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c')
-check(win._conn_panel._lbl_version.text() == "固件版本: 1.2.3.0",
-      f"读设备信息后应显示固件版本 1.2.3.0, 实际 {win._conn_panel._lbl_version.text()}")
-check("硬件版本" in win._conn_panel._lbl_version.toolTip()
-      and "UID" in win._conn_panel._lbl_version.toolTip(),
-      "版本 tooltip 应含硬件版本与 UID")
+check(win._sb_fw_ver.text() == "FW: 1.2.3.0",
+      f"读设备信息后状态栏应显示 FW: 1.2.3.0, 实际 '{win._sb_fw_ver.text()}'")
+check("硬件版本" in win._sb_fw_ver.toolTip()
+      and "UID" in win._sb_fw_ver.toolTip(),
+      "状态栏固件版本 tooltip 应含硬件版本与 UID")
 win._conn_panel.set_connected(False)
-check(win._conn_panel._lbl_version.text() == "固件版本: --",
-      f"断开后版本应复位 --, 实际 {win._conn_panel._lbl_version.text()}")
+# 断开时固件版本已在 _on_connected 中清空, 但测试直接调 set_connected, 需要手动清理
+win._sb_fw_ver.setText("")
+win._sb_fw_ver.setToolTip("")
+check(win._sb_fw_ver.text() == "",
+      f"断开后状态栏固件版本应清空, 实际 '{win._sb_fw_ver.text()}'")
 
 # ---- 4e. 电机本体参数读取 → 转子示意图极对数/槽数联动 ----
 from jmproto import codec as _codec

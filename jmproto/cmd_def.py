@@ -15,6 +15,7 @@ class SweepTestMode(IntEnum):
     VELOCITY_TO_POSITION = 3
     VELOCITY_TO_VELOCITY = 4
     POSITION_TO_POSITION = 5
+    CURRENT_MEAS_TO_VELOCITY = 6
 
 
 class SweepMode(IntEnum):
