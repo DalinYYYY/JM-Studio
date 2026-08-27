@@ -34,6 +34,7 @@ from ui.panels.control_panel import ControlPanel
 from ui.panels.motion_panel import MotionPanel
 from ui.panels.param_panel import ParamPanel
 from ui.panels.feedback_panel import FeedbackPanel
+from ui.panels.power_panel import PowerPanel
 from ui.panels.telemetry_panel import TelemetryPanel
 from ui.panels.plot_panel import PlotPanel
 from ui.panels.log_panel import LogPanel
@@ -306,6 +307,7 @@ class MainWindow(QMainWindow):
             save_text="保存标定结果到Flash/EEPROM", show_legend=False,
             show_bulk_rw=True)
         self._plot_panel = PlotPanel()
+        self._power_panel = PowerPanel()
         self._state_panel = StateMachinePanel(registry=self._registry)
         self._calib_panel = CalibrationPanel()
         # PID 整定面板: 复用标定面板三段式布局, 0xA0~0xA6 命令收发 + ControlParam 读写
@@ -339,6 +341,8 @@ class MainWindow(QMainWindow):
         ff = feature_flags
         if ff.is_enabled("feedback_chart"):
             tabs.addTab(self._feedback_panel, "实时反馈")
+        if ff.is_enabled("power_monitor"):
+            tabs.addTab(self._power_panel, "功率监控")
         if ff.is_enabled("state_machine"):
             tabs.addTab(self._state_panel, "状态机")
         if ff.is_enabled("calibration"):
@@ -598,6 +602,7 @@ class MainWindow(QMainWindow):
         # 各面板配置 (容错: 单面板失败不影响整体保存; 被开关关闭的面板跳过)
         for key, panel in (
             ("plot", self._plot_panel),
+            ("power", self._power_panel),
             ("motion", self._motion_panel),
             ("motor_param", self._param_panel),
             ("motor_config", self._config_panel),
@@ -743,6 +748,7 @@ class MainWindow(QMainWindow):
         # 各面板配置 (容错: 单面板失败不影响其他; 被开关关闭的面板跳过)
         for key, panel in (
             ("plot", self._plot_panel),
+            ("power", self._power_panel),
             ("motion", self._motion_panel),
             ("motor_param", self._param_panel),
             ("motor_config", self._config_panel),
@@ -980,9 +986,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_btn_virtual_mode") and self._btn_virtual_mode is not None:
             self._btn_virtual_mode.setStyleSheet(self._virtual_mode_btn_style())
         for panel in (self._feedback_panel, self._state_panel, self._plot_panel,
-                      self._log_panel, self._param_panel, self._config_panel,
-                      self._calib_panel, self._pid_panel, self._twin_param_panel,
-                      self._fault_info_panel, self._bode_panel):
+                      self._power_panel, self._log_panel, self._param_panel,
+                      self._config_panel, self._calib_panel, self._pid_panel,
+                      self._twin_param_panel, self._fault_info_panel, self._bode_panel):
             fn = getattr(panel, "apply_theme", None)
             if callable(fn):
                 fn()
@@ -1048,6 +1054,8 @@ class MainWindow(QMainWindow):
         # 状态机面板: 周期请求 -> 拉取 READ_STATE
         self._state_panel.poll_state.connect(self._on_poll_state)
         self._feedback_panel.poll_state.connect(self._on_poll_state)
+        # 功率监控面板: 周期温度采集 -> 拉取 READ_TEMPERATURE(0xC5)
+        self._power_panel.poll_temperature.connect(self._on_poll_temperature)
 
         # 面板 -> 客户端
         self._conn_panel.connect_requested.connect(self._on_connect)
@@ -1861,6 +1869,15 @@ class MainWindow(QMainWindow):
         self._client.query_state()
         self._client.query_dq_current()
         self._client.query_phase_current()
+
+    def _on_poll_temperature(self):
+        """功率监控面板周期温度请求: 静默拉取 READ_TEMPERATURE(0xC5)。"""
+        if not self._client.is_open():
+            return
+        if (self._client.transport.name == "can"
+                and self._can_commissioning_required):
+            return
+        self._client.query_temperature()
 
     def _on_control_command(self, cmd: int):
         if self._ensure_open():
@@ -2856,6 +2873,7 @@ class MainWindow(QMainWindow):
             # P4 优化: 批量向量化喂曲线, 避免逐帧 Python 调用开销
             # X 轴使用数据点编号, 无需时间戳
             self._plot_panel.feed_feedback_batch(batch)
+            self._power_panel.feed_batch(batch)
             last_fb = batch[-1]
             self._feedback_panel.update_feedback(last_fb)
             self._pid_panel.update_pid_observation(

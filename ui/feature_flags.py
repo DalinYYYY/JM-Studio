@@ -18,6 +18,7 @@ _DEFAULTS = {
     "calibration": True,
     "pid_tuning": True,
     "feedback_chart": True,
+    "power_monitor": True,
     "state_machine": True,
     "waveform_plot": True,
     "bode_sweep": True,
