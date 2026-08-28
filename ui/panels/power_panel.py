@@ -8,6 +8,12 @@
     统一按"配置采集周期"降采样(相邻点间隔 >= 周期/2 才入库), 保证存储点距
     与监控时长可预期, 长时程温度监控稳定。
 
+后台运行(采集与绘图解耦):
+  - 采集/入库不随 Tab 可见性启停: 温度周期请求与遥测数据入库始终运行,
+    切到其他界面时数据照常累积到环形缓冲(切换期间曲线连续)。
+  - 绘图仅在本面板可见时进行: 隐藏时停绘图定时器, 切回时一次性 force
+    刷新, 把后台积累的数据全部绘出。
+
 布局:
   顶部: 实时参数栏(Vbus/Ibus/Power/T_FET/T_Motor)
   中部: 母线图(电压/电流共左轴 + 功率右轴), 存储深度与显示窗口可配
@@ -73,14 +79,14 @@ class PowerPanel(QGroupBox):
 
         self._build()
 
-        # 图表刷新定时器(脏标记跳过, 暂停时只停绘制不停采集)
+        # 图表刷新定时器(仅绘图; 后台运行时数据照常入库, 隐藏即停绘)
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(33)
         self._refresh_timer.timeout.connect(self._refresh)
         self._refresh_timer.start()
         self._auto_range_counter = 0
 
-        # 温度周期请求定时器(面板可见且勾选采集时运行)
+        # 温度周期请求定时器(后台采集: 不随面板可见性启停, 只看开关)
         self._temp_poll_timer = QTimer(self)
         self._temp_poll_timer.setSingleShot(False)
         self._temp_poll_timer.timeout.connect(self._on_temp_poll_tick)
@@ -353,21 +359,26 @@ class PowerPanel(QGroupBox):
         self._restart_temp_poll()
 
     def _restart_temp_poll(self):
+        """温度周期采集启停: 只看采集开关, 与面板可见性无关(后台运行)。"""
         self._temp_poll_timer.stop()
-        if self._temp_enabled and self.isVisible():
+        if self._temp_enabled:
             self._temp_poll_timer.start(self._temp_period_s * 1000)
 
     def _on_temp_poll_tick(self):
-        if self._temp_enabled and self.isVisible():
+        if self._temp_enabled:
             self.poll_temperature.emit()
 
     def showEvent(self, evt):
+        """切回本面板: 重启绘图定时器并 force 刷新, 绘出后台积累的数据。"""
         super().showEvent(evt)
-        self._restart_temp_poll()
+        if not self._refresh_timer.isActive():
+            self._refresh_timer.start()
+        self._refresh(force=True)
 
     def hideEvent(self, evt):
+        """切走面板: 只停绘图, 采集与数据入库继续(后台运行)。"""
         super().hideEvent(evt)
-        self._temp_poll_timer.stop()
+        self._refresh_timer.stop()
 
     # ==================== 数据入口 ====================
     def feed_batch(self, fb_list):
@@ -473,6 +484,9 @@ class PowerPanel(QGroupBox):
             curve.setData(ts, ys)
 
     def _refresh(self, force: bool = False):
+        # 可见性兜底: 后台运行时数据只入库不绘图(timer 已停, 此处防初始未激活等场景)
+        if not self.isVisible():
+            return
         if pg is None or (self._paused and not force):
             return
         if not self._any_dirty() and not force:
