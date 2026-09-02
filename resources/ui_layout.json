@@ -9,18 +9,18 @@
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1649,
-      "height": 971,
-      "x": 695,
-      "y": 139
+      "width": 1755,
+      "height": 1128,
+      "x": 589,
+      "y": 107
     },
     "right_splitter": [
-      915,
+      1072,
       0
     ],
     "main_splitter": [
-      358,
-      1265
+      324,
+      1405
     ],
     "log_splitter_sizes": [
       341,
@@ -28,11 +28,11 @@
     ],
     "layout_edit": true,
     "telemetry": {
-      "mask": 3583,
-      "period_ms": 4
+      "mask": 3567,
+      "period_ms": 5
     },
     "feedback_poll": {
-      "enabled": true,
+      "enabled": false,
       "period_ms": 500
     },
     "log_visible": false,
@@ -41,7 +41,7 @@
       "tx": true,
       "rx": true,
       "raw": true,
-      "can_raw": false,
+      "can_raw": true,
       "autoscroll": false,
       "lvl_debug": true,
       "lvl_info": true,
@@ -54,7 +54,7 @@
       "motor_param": "D:/AAWorkSpace/001_JointMotor/SW/JointMotor/User/Tools/pyqt_gui/resources/motor_param.csv"
     },
     "plot": {
-      "window_points": 3000,
+      "window_points": 10000,
       "follow": true,
       "auto_y": true,
       "current_visibility": {
@@ -73,7 +73,7 @@
           "legend": true
         },
         "vel": {
-          "auto_y": false,
+          "auto_y": true,
           "legend": true
         },
         "current": {
@@ -88,21 +88,34 @@
         "checked": false
       }
     },
+    "power": {
+      "bus_depth": 30000,
+      "bus_window_s": 50,
+      "temp_enabled": false,
+      "temp_period_s": 1.0,
+      "temp_depth": 7200,
+      "temp_window_s": 200,
+      "bus_follow": true,
+      "temp_follow": false,
+      "bus_auto_y": false,
+      "temp_auto_y": false,
+      "bus_auto_power_y": false
+    },
     "motion": {
-      "current_cmd": 21,
+      "current_cmd": 20,
       "fields": {
-        "pos_ref": 0.0
+        "vel_ref": 20.0
       }
     },
     "motor_param": {
       "column_widths": {
         "0": 207,
-        "1": 95,
+        "1": 269,
         "2": 120,
         "3": 120,
-        "4": 194,
-        "5": 382,
-        "6": 773,
+        "4": 104,
+        "5": 124,
+        "6": 195,
         "7": 72,
         "8": 72
       }
@@ -110,12 +123,12 @@
     "motor_config": {
       "column_widths": {
         "0": 185,
-        "1": 117,
+        "1": 127,
         "2": 64,
         "3": 99,
         "4": 104,
-        "5": 86,
-        "6": 407,
+        "5": 101,
+        "6": 533,
         "7": 72,
         "8": 72
       }
@@ -123,45 +136,45 @@
     "calib_results": {
       "column_widths": {
         "0": 188,
-        "1": 60,
+        "1": 134,
         "2": 120,
         "3": 120,
         "4": 120,
         "5": 101,
-        "6": 325,
+        "6": 402,
         "7": 72,
         "8": 72
       }
     },
     "pid_params": {
       "column_widths": {
-        "0": 220,
-        "1": 60,
-        "2": 120,
+        "0": 142,
+        "1": 134,
+        "2": 68,
         "3": 120,
         "4": 120,
-        "5": 427,
-        "6": 922,
+        "5": 124,
+        "6": 415,
         "7": 72,
         "8": 72
       }
     },
     "calib": {
-      "task_tab_index": 1,
+      "task_tab_index": 5,
       "history_visible": false,
       "active_task": [
-        145,
-        2
+        149,
+        1
       ],
       "config_panel": {
         "column_widths": {
           "0": 188,
-          "1": 60,
+          "1": 134,
           "2": 120,
           "3": 120,
           "4": 120,
           "5": 101,
-          "6": 325,
+          "6": 402,
           "7": 72,
           "8": 72
         }
@@ -192,13 +205,13 @@
       },
       "params_panel": {
         "column_widths": {
-          "0": 220,
-          "1": 60,
-          "2": 120,
+          "0": 142,
+          "1": 134,
+          "2": 68,
           "3": 120,
           "4": 120,
-          "5": 427,
-          "6": 922,
+          "5": 124,
+          "6": 415,
           "7": 72,
           "8": 72
         }
@@ -214,17 +227,17 @@
     },
     "fault_info": {
       "disable_mask": 0,
-      "current_tab": 2
+      "current_tab": 0
     },
     "bode_sweep": {
-      "test_mode": 6,
+      "test_mode": 1,
       "sweep_mode": 0,
-      "point_cfg": 100,
-      "f_start": 1.0,
-      "f_end": 200.0,
-      "amp": 0.05,
-      "bias": 0.08,
-      "estimator": "fft"
+      "point_cfg": 30,
+      "f_start": 0.5,
+      "f_end": 30.0,
+      "amp": 0.2,
+      "bias": 0.5,
+      "estimator": "lockin"
     }
   },
   "theme": "dark",
@@ -586,12 +599,12 @@
     "motion": {
       "current_cmd": 20,
       "fields": {
-        "vel_ref": 2.0
+        "vel_ref": 12.0
       }
     },
     "window": [
-      1588,
-      963
+      1438,
+      893
     ]
   }
 }

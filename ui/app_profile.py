@@ -36,7 +36,7 @@ _DEFAULTS = {
 
 # 合法面板名(调用方按此分发)
 _VALID_LEFT = {'connection', 'control', 'motion'}
-_VALID_TABS = {'feedback_chart', 'waveform_plot'}
+_VALID_TABS = {'feedback_chart', 'waveform_plot', 'power_monitor'}
 
 
 def _resource_dir():

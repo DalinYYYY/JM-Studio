@@ -6,7 +6,7 @@
     "calibration": true,
     "pid_tuning": true,
     "feedback_chart": true,
-    "state_machine": false,
+    "state_machine": true,
     "waveform_plot": true,
     "bode_sweep": true,
     "fault_info": true,

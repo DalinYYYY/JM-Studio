@@ -5,7 +5,7 @@
       "title": "JM 测试工具",
       "window_size": [1180, 800],
       "left_panels": ["connection", "control", "motion"],
-      "tabs": ["feedback_chart", "waveform_plot"],
+      "tabs": ["feedback_chart", "waveform_plot", "power_monitor"],
       "feedback_diagram": "top_fsm",
       "motion_modes": ["开环电压", "电流环", "速度环"],
       "poll_group": [
