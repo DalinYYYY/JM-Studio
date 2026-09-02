@@ -30,10 +30,14 @@ for _d in _EXPAT_SEARCH:
         break
 
 # ---- 收集 ----
+# python-can 按需动态导入后端模块(can/interface.py 的 importlib.import_module),
+# PyInstaller 静态分析不可见, 必须显式收集; 缺失时 CAN 通道扫描为空且无法打开总线。
+# 当前仅用 PCAN 硬件; 换其他硬件(socketcan/vector/...)时需同步追加对应后端。
 hiddenimports = ['serial.tools.list_ports', 'PyQt6.sip', 'PyQt6.QtOpenGLWidgets']
 hiddenimports += collect_submodules('pyqtgraph')
 hiddenimports += collect_submodules('serial')
 hiddenimports += collect_submodules('transport.virtual_engine')
+hiddenimports += collect_submodules('can.interfaces.pcan')
 
 # 未使用的 Qt 模块(排除 .pyd 包装), 与 CLI 一致
 excludes = [

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Python = "",
     [string]$Name = "JointMotorController",
     [string]$Entry = "main.py",
@@ -108,6 +108,7 @@ if ($OneFile -and (Test-Path $SpecFile)) {
         "--collect-submodules", "pyqtgraph",
         "--collect-submodules", "serial",
         "--collect-submodules", "transport.virtual_engine",
+        "--collect-submodules", "can.interfaces.pcan",
         "--hidden-import", "serial.tools.list_ports",
         "--hidden-import", "PyQt6.sip",
         "--hidden-import", "PyQt6.QtOpenGLWidgets"
