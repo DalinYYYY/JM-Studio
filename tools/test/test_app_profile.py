@@ -97,7 +97,11 @@ mode_names = [win._motion_panel._combo_mode.itemText(i)
 check(all(('开环' in n) or ('电流环' in n) or ('速度环' in n)
           for n in mode_names), f"模式名应只含白名单 3 项: {mode_names}")
 check('位置环' not in ''.join(mode_names), "位置环应从测试版移除")
-check(win._tabs.count() == 2, f"Tab 应只有 2 个, 实际 {win._tabs.count()}")
+check(win._tabs.count() == 3, f"Tab 应只有 3 个, 实际 {win._tabs.count()}")
+tab_names = [win._tabs.tabText(i) for i in range(win._tabs.count())]
+check('功率监控' in tab_names, f"功率监控 Tab 应存在, 实际 {tab_names}")
+check(win._power_panel.receivers(win._power_panel.poll_temperature) > 0,
+      "功率面板 poll_temperature 信号应已连接")
 check(win._poller._entries is not None and len(win._poller._entries) >= 3,
       f"轮询组应至少 3 条, 实际 {len(win._poller._entries)}")
 check(not win._feedback_panel._chk_poll.isVisibleTo(win._feedback_panel)

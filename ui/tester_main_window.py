@@ -1,9 +1,10 @@
 """测试员版主窗口: 复用现有面板的精简形态(app_profiles.json 驱动)。
 
 与开发版 MainWindow 的差异:
-- 仅组装 连接/系统控制/运动控制 左栏 + 实时反馈/实时曲线 双 Tab;
+- 仅组装 连接/系统控制/运动控制 左栏 + 实时反馈/实时曲线/功率监控 Tab;
 - 不使用下位机遥测(0xCA 主动上报), 所有数据由 _PollScheduler 主动轮询拉取
   (0xC0 反馈 + 0xC4 DQ 电流 + 0xC1 状态 + 慢速总线/温度), 轮询组由 profile 配置;
+  功率监控的温度周期采集(0xC5)由面板自身定时器触发(poll_temperature 转发);
 - 运动模式下拉按 profile.motion_modes 子集白名单过滤(优先于 motion_modes.txt);
 - 用户设置存 ui_layout.json 的 tester_settings 节, 与开发版 settings 节互不干扰。
 
@@ -31,6 +32,7 @@ from ui.panels.control_panel import ControlPanel
 from ui.panels.motion_panel import MotionPanel
 from ui.panels.feedback_panel import FeedbackPanel
 from ui.panels.plot_panel import PlotPanel
+from ui.panels.power_panel import PowerPanel
 from ui.theme import theme
 from ui import layout_store
 from ui import APP_VERSION
@@ -206,17 +208,19 @@ class TesterMainWindow(QMainWindow):
             left_layout.addWidget(left_map[name])
         left_layout.addStretch()
 
-        # 右栏: 实时反馈 / 实时曲线 Tab
+        # 右栏: 实时反馈 / 实时曲线 / 功率监控 Tab
         self._feedback_panel = FeedbackPanel()
         self._feedback_panel.set_poll_controls_visible(False)
         self._feedback_panel.set_top_diagram(self._profile.get('feedback_diagram', 'foc'))
         self._plot_panel = PlotPanel()
         self._plot_panel.set_debug_channel_visible(False)
+        self._power_panel = PowerPanel()
 
         tabs = QTabWidget()
         tab_map = {
             'feedback_chart': (self._feedback_panel, "实时反馈"),
             'waveform_plot': (self._plot_panel, "实时曲线"),
+            'power_monitor': (self._power_panel, "功率监控"),
         }
         for name in self._profile['tabs']:
             panel, label = tab_map[name]
@@ -278,6 +282,8 @@ class TesterMainWindow(QMainWindow):
 
         self._control_panel.command.connect(self._on_control_command)
         self._motion_panel.send_command.connect(self._on_motion_command)
+        # 功率监控面板: 周期温度采集 -> 拉取 READ_TEMPERATURE(0xC5)
+        self._power_panel.poll_temperature.connect(self._on_poll_temperature)
 
     # ==================== 连接管理 ====================
     def _on_connect(self, port: str, baud: int):
@@ -443,6 +449,11 @@ class TesterMainWindow(QMainWindow):
         )
         return btn == QMessageBox.StandardButton.Yes
 
+    def _on_poll_temperature(self):
+        """功率监控面板周期温度请求: 静默拉取 READ_TEMPERATURE(0xC5)。"""
+        if self._client.is_open():
+            self._client.query_temperature()
+
     # ==================== 数据接收/分发 ====================
     def _queue_feedback(self, fb):
         if len(self._feedback_pending) >= 2000:
@@ -473,6 +484,7 @@ class TesterMainWindow(QMainWindow):
             while self._feedback_pending:
                 batch.append(self._feedback_pending.popleft())
             self._plot_panel.feed_feedback_batch(batch)
+            self._power_panel.feed_batch(batch)
             self._feedback_panel.update_feedback(batch[-1])
         self._feedback_dropped = 0   # 测试版无日志面板, 丢弃计数不累计展示
 
@@ -492,7 +504,7 @@ class TesterMainWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet(theme.qss())
-        for panel in (self._feedback_panel, self._plot_panel):
+        for panel in (self._feedback_panel, self._plot_panel, self._power_panel):
             fn = getattr(panel, "apply_theme", None)
             if callable(fn):
                 fn()

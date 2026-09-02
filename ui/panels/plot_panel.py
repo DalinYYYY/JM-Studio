@@ -213,6 +213,14 @@ class _SeriesBuffer:
             return None
         return float(self._ts[(self._head - 1) % self._maxlen])
 
+    def first_time(self):
+        """返回最早时间戳, O(1). 未满时最旧在索引0, 满时最旧在写入位置 _head."""
+        if self._count == 0:
+            return None
+        if self._count < self._maxlen:
+            return float(self._ts[0])
+        return float(self._ts[self._head])
+
     def interpolate(self, t: float):
         """在时间 t 处线性插值, 复用缓存数组."""
         ts = self._ts_view
