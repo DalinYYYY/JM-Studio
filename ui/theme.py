@@ -426,7 +426,14 @@ class _Theme(QObject):
             border: 1px solid {g('border')}; border-bottom: none;
             padding: 5px 12px; border-top-left-radius: 5px; border-top-right-radius: 5px;
         }}
-        QTabBar::tab:selected {{ background: {g('panel_bg')}; color: {g('text_strong')}; }}
+        QTabBar::tab:hover {{ color: {g('text')}; }}
+        /* 选中: accent 边框+粗体文字, 顶部条加粗 2px 并减 1px padding 补偿高度 */
+        QTabBar::tab:selected {{
+            background: {g('panel_bg')}; color: {g('accent')};
+            border: 1px solid {g('accent')}; border-bottom: none;
+            border-top: 2px solid {g('accent')};
+            padding: 4px 12px; font-weight: bold;
+        }}
         QScrollBar:vertical {{ background: {g('scroll_bg')}; width: 12px; margin: 0; }}
         QScrollBar::handle:vertical {{ background: {g('scroll_handle')}; border-radius: 5px; min-height: 24px; }}
         QScrollBar:horizontal {{ background: {g('scroll_bg')}; height: 12px; margin: 0; }}

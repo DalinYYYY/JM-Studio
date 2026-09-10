@@ -19,7 +19,7 @@ import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QGroupBox, QHBoxLayout, QLabel, QMenu, QPushButton, QSpinBox,
+    QCheckBox, QHBoxLayout, QLabel, QMenu, QPushButton, QSpinBox,
     QVBoxLayout, QWidget,
 )
 
@@ -242,7 +242,7 @@ class _SeriesBuffer:
         return float(y0 + (y1 - y0) * k)
 
 
-class PlotPanel(QGroupBox):
+class PlotPanel(QWidget):
     """实时曲线面板。"""
 
     debug_window_toggled = pyqtSignal(bool)  # 调试通道复选框状态变化
@@ -253,7 +253,7 @@ class PlotPanel(QGroupBox):
     _AUTO_RANGE_EVERY = 10       # Y 轴自适应节流: 每 N 帧执行一次
 
     def __init__(self, parent=None):
-        super().__init__("", parent)
+        super().__init__(parent)
         self._point_index = 0       # 全局数据点编号计数器
         self._paused = False
         self._window_points = 2000  # 窗口显示的数据点数
@@ -298,7 +298,7 @@ class PlotPanel(QGroupBox):
 
     def _build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(2)
 
         if pg is None:
@@ -334,7 +334,7 @@ class PlotPanel(QGroupBox):
         self._spin_window = QSpinBox()
         self._spin_window.setRange(100, 50000)
         self._spin_window.setValue(self._window_points)
-        self._spin_window.setFixedWidth(72)
+        self._spin_window.setFixedWidth(108)
         self._spin_window.valueChanged.connect(self._on_window_changed)
         bar.addWidget(self._spin_window)
 
@@ -653,6 +653,8 @@ class PlotPanel(QGroupBox):
 
     def set_debug_checkbox(self, checked: bool):
         """外部（MainWindow）同步调试通道复选框状态，不触发信号。"""
+        if not hasattr(self, "_debug_checkbox"):
+            return
         self._debug_checkbox.blockSignals(True)
         self._debug_checkbox.setChecked(checked)
         self._debug_checkbox.blockSignals(False)

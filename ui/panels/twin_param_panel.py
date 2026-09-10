@@ -333,7 +333,7 @@ _PROTECT_FIELDS = [
 
 
 # ==================== 主面板 ====================
-class TwinParamPanel(QGroupBox):
+class TwinParamPanel(QWidget):
     """数字孪生参数面板(给定/控制/推导/保护 四类)。
 
     Tab 分组:
@@ -346,7 +346,7 @@ class TwinParamPanel(QGroupBox):
     params_changed = pyqtSignal()   # 任意参数修改后发出(主窗口可订阅触发 reload_params)
 
     def __init__(self, parent=None):
-        super().__init__("", parent)
+        super().__init__(parent)
         self._panel_name = "孪生参数"
         self._engine = None          # DigitalTwinEngine 引用
         self._mp = None              # MotorParam
@@ -418,7 +418,7 @@ class TwinParamPanel(QGroupBox):
     # ---------------- 构建 UI ----------------
     def _build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
         # 顶部提示

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "features": {
+    "motor_config": true,
+    "motor_params": false,
+    "calibration": true,
+    "pid_tuning": false,
+    "softstart_cfg": false,
+    "feedback_chart": true,
+    "power_monitor": true,
+    "state_machine": false,
+    "waveform_plot": true,
+    "bode_sweep": false,
+    "fault_info": false,
+    "virtual_twin": false,
+    "log_panel": true,
+    "can_transport": false
+  }
+}

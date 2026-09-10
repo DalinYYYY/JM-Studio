@@ -47,7 +47,9 @@ class ConnectionPanel(QGroupBox):
         self._lbl_port = QLabel("串口号:")
         self._layout.addWidget(self._lbl_port, 1, 0)
         self._combo_port = QComboBox()
-        self._combo_port.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        # 按最小内容长度自适应: 避免随最长项(如超长端口名)无限撑宽左栏, 触发滚动条与控件重合
+        self._combo_port.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self._combo_port.setMinimumContentsLength(12)
         self._layout.addWidget(self._combo_port, 1, 1)
 
@@ -71,8 +73,9 @@ class ConnectionPanel(QGroupBox):
         self._lbl_can_ch = QLabel("CAN 通道:")
         self._layout.addWidget(self._lbl_can_ch, 3, 0)
         self._combo_can_channel = QComboBox()
-        self._combo_can_channel.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-        self._combo_can_channel.setMinimumContentsLength(18)
+        self._combo_can_channel.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self._combo_can_channel.setMinimumContentsLength(12)
         self._layout.addWidget(self._combo_can_channel, 3, 1)
 
         self._btn_can_refresh = QPushButton("刷新")

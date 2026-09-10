@@ -41,6 +41,7 @@ from ui.panels.log_panel import LogPanel
 from ui.panels.state_machine_panel import StateMachinePanel
 from ui.panels.calibration_panel import CalibrationPanel
 from ui.panels.pid_panel import PidPanel, PidSource
+from ui.panels.softstart_panel import SoftstartPanel
 from ui.panels.twin_param_panel import TwinParamPanel
 from ui.panels.fault_info_panel import FaultInfoPanel
 from ui.panels.bode_sweep_panel import BodeSweepPanel
@@ -85,6 +86,8 @@ class MainWindow(QMainWindow):
         self._pending_virtual_mode = False
         # 调试通道窗口
         self._debug_window: DebugPlotWindow | None = None
+        # 最近一次调试窗口配置；关闭窗口后仍保留位置、缩放和通道名称。
+        self._debug_window_opts: dict = {}
         self._logo_path = Path(__file__).resolve().parent.parent / "resources" / "pic" / "log_ioc.png"
         if self._logo_path.exists():
             self.setWindowIcon(QIcon(str(self._logo_path)))
@@ -111,6 +114,10 @@ class MainWindow(QMainWindow):
         self._pending_param_writes = deque()
         self._param_read_queue = deque()
         self._param_write_queue = deque()
+        # 保护总览: PID128 读在途标志(独立于配置页 FIFO 读队列, 应答按 param_id==128 拦截)
+        self._protect_mask_pending = False
+        # 故障级别使能掩码 PID154~159 读在途集合(独立于配置页 FIFO)
+        self._fault_level_pending = set()
         # P3: motor_info 导出状态(异步批量读时拦截 _on_param_result 收集值)
         # None=未导出; dict={file_path, fields, total, collected, config_version}
         self._export_state = None
@@ -211,7 +218,7 @@ class MainWindow(QMainWindow):
         # 左侧: 控制类面板。整体放入滚动区, 小窗口或参数较多时不挤压控件。
         self._left_scroll = QScrollArea()
         self._left_scroll.setWidgetResizable(True)
-        self._left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._left_scroll.setMinimumWidth(220)  # 允许用户拖到很窄
         self._left_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -232,11 +239,11 @@ class MainWindow(QMainWindow):
             show_save=False, show_legend=False)
         self._config_panel = ParamPanel(
             self._registry, title="电机配置", source="motor_config",
-            show_save=True, save_text="参数固化", show_legend=False,
+            show_save=True, save_text="固化参数", show_legend=False,
             show_import_export=True)
         # 电机型号预设下拉框: 包装 _config_panel, 顶部放 ComboBox + 应用按钮
         # 选择预设后一键填充 9 个电气字段(R/Ld/Lq/flux/pole_pairs/Kt/inertia/peak_current/max_speed)
-        # 用户确认后点击"参数固化"按钮 0xEA 持久化
+        # 用户确认后点击"固化参数"按钮 0xEA 持久化
         self._config_tab_container = QWidget()
         _config_layout = QVBoxLayout(self._config_tab_container)
         _config_layout.setContentsMargins(4, 4, 4, 4)
@@ -250,7 +257,7 @@ class MainWindow(QMainWindow):
         self._motor_preset_apply_btn = QPushButton("应用到 motor_info (0xE7)")
         self._motor_preset_apply_btn.setToolTip(
             "把所选电机型号的电气参数批量写入 motor_info RAM (0xE7)\n"
-            "写入后需点击下方'参数固化'按钮(0xEA)持久化到 Flash")
+            "写入后需点击下方'固化参数'按钮(0xEA)持久化到 Flash")
         self._motor_preset_apply_btn.clicked.connect(self._on_motor_preset_apply)
         _preset_layout.addWidget(self._motor_preset_apply_btn)
         # P3: motor_info 导出/导入按钮 — 应对 CONFIG_VERSION 升级清空 Flash 风险
@@ -304,7 +311,7 @@ class MainWindow(QMainWindow):
         self._calib_results_panel = ParamPanel(
             self._registry, title="标定结果", source="motor_config",
             groups=("MotorCalibParam",), show_save=True,
-            save_text="保存标定结果到Flash/EEPROM", show_legend=False,
+            save_text="固化参数", show_legend=False,
             show_bulk_rw=True)
         self._plot_panel = PlotPanel()
         self._power_panel = PowerPanel()
@@ -312,11 +319,13 @@ class MainWindow(QMainWindow):
         self._calib_panel = CalibrationPanel()
         # PID 整定面板: 复用标定面板三段式布局, 0xA0~0xA6 命令收发 + ControlParam 读写
         self._pid_panel = PidPanel(self._registry)
+        # 缓启配置面板: 0xA3/0xA4 缓启动渐变配置读写(同模式渐变+跨模式切换共用)
+        self._softstart_panel = SoftstartPanel()
         # PID 参数面板: 复用 motor_config 通道(0xE6/0xE7/0xEA), 仅展示 ControlParam 段
         self._pid_params_panel = ParamPanel(
             self._registry, title="PID 参数 (Flash)", source="motor_config",
             groups=("ControlParam",), show_save=True,
-            save_text="保存PID参数到Flash", show_legend=False,
+            save_text="固化参数", show_legend=False,
             show_bulk_rw=False, show_import_export=True)
         self._twin_param_panel = TwinParamPanel()
         self._fault_info_panel = FaultInfoPanel()
@@ -349,6 +358,8 @@ class MainWindow(QMainWindow):
             tabs.addTab(self._calib_panel, "电机标定")
         if ff.is_enabled("pid_tuning"):
             tabs.addTab(self._pid_panel, "PID 整定")
+        if ff.is_enabled("softstart_cfg"):
+            tabs.addTab(self._softstart_panel, "缓启配置")
         if ff.is_enabled("motor_params"):
             tabs.addTab(self._param_panel, "电机参数")
         if ff.is_enabled("motor_config"):
@@ -362,6 +373,11 @@ class MainWindow(QMainWindow):
         if ff.is_enabled("bode_sweep"):
             tabs.addTab(self._bode_panel, "Bode 扫频")
         self._tabs = tabs
+        # 固件/协议版本显示: 一级 tab 行右上角(连接成功后由 _on_dev_info 填充)
+        self._fw_ver_top = QLabel("")
+        self._fw_ver_top.setStyleSheet(
+            f"font-family: Consolas; padding: 0 10px; color: {theme.hex('muted')};")
+        tabs.setCornerWidget(self._fw_ver_top, Qt.Corner.TopRightCorner)
         # 虚拟电机模式默认关闭: 初始隐藏孪生参数 Tab (故障信息面板内部子表/屏蔽区自行隐藏)
         if ff.is_enabled("virtual_twin"):
             tabs.setTabVisible(tabs.indexOf(self._twin_param_panel), False)
@@ -484,30 +500,36 @@ class MainWindow(QMainWindow):
         btn.setStyleSheet("QPushButton { font-weight: bold; }")
 
     def _build_statusbar(self):
-        """底部状态栏: 连接状态 + CAN 总线状态 + TX/RX 速率与累计总量 + 占用率"""
+        """底部状态栏: 活动故障摘要(最左, 红) + CAN 总线状态 + TX/RX 速率与累计总量 + 占用率"""
         sb = self.statusBar()
 
-        def _mk(text):
+        def _mk(text, fixed_w=0):
             lbl = QLabel(text)
             lbl.setStyleSheet("font-family: Consolas, monospace; padding: 0 8px;")
+            if fixed_w:
+                # 固定宽度: 数值变化不推挤相邻标签(等宽字体, 按最长预期内容估宽)
+                lbl.setFixedWidth(fixed_w)
+                lbl.setAlignment(
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             return lbl
 
-        self._sb_link = _mk("● 未连接")
-        self._sb_link.setStyleSheet(
-            "font-family: Consolas; padding: 0 8px; color: #999;")
-        # 固件版本标签: 连接成功后由 _on_dev_info 填充
-        self._sb_fw_ver = _mk("")
-        self._sb_fw_ver.setStyleSheet(
-            "font-family: Consolas; padding: 0 8px; color: #999;")
+        # 活动故障摘要(最左, 红色, 最多3个名称): 由故障面板 active_faults_changed 驱动
+        self._sb_faults = _mk("")
+        self._sb_faults.setStyleSheet(
+            "font-family: Consolas; padding: 0 8px; "
+            "color: #F85149; font-weight: bold;")
+        self._sb_faults.hide()
         # P1-1/P1-2: CAN 总线状态(ERROR_ACTIVE/PASSIVE/BUS_OFF + TEC/REC), 串口模式为空
-        self._sb_bus_state = _mk("")
-        self._sb_tx = _mk("TX 0 B/s  Σ0 B")
-        self._sb_rx = _mk("RX 0 B/s  Σ0 B")
-        self._sb_frames = _mk("帧 TX:0 RX:0")
+        self._sb_bus_state = _mk("", 170)
+        self._sb_tx = _mk("TX 0 B/s  Σ0 B", 150)
+        self._sb_rx = _mk("RX 0 B/s  Σ0 B", 150)
+        self._sb_frames = _mk("帧 TX:0 RX:0", 150)
         # P1-3: CAN 总线占用率估算, 串口模式为空
-        self._sb_load = _mk("")
+        self._sb_load = _mk("", 100)
 
-        for w in (self._sb_link, self._sb_fw_ver, self._sb_bus_state, self._sb_tx,
+        # permanent 区先 add 在左: 故障摘要紧贴 TX 统计左侧
+        # (视觉左→右: bus_state, [faults], tx, rx, frames, load)
+        for w in (self._sb_bus_state, self._sb_faults, self._sb_tx,
                   self._sb_rx, self._sb_frames, self._sb_load):
             sb.addPermanentWidget(w)
 
@@ -618,14 +640,18 @@ class MainWindow(QMainWindow):
                 s[key] = panel.get_opts()
             except Exception:
                 pass
-        # 调试窗口运行时配置 (只在窗口打开时收集)
+        # 调试窗口运行时配置。窗口被手动关闭后使用最近一次缓存，避免
+        # 通道命名、窗口位置和显示范围在退出时丢失。
         if self._debug_window is not None:
             try:
                 dw_opts = self._debug_window.get_opts()
                 if isinstance(dw_opts, dict):
-                    s["plot"]["debug_window"].update(dw_opts)
+                    self._debug_window_opts = dict(dw_opts)
             except Exception:
                 pass
+        if self._debug_window_opts and isinstance(s.get("plot"), dict):
+            s["plot"].setdefault("debug_window", {}).update(
+                self._debug_window_opts)
         return s
 
     def _safe_sizes(self, splitter) -> list:
@@ -762,6 +788,10 @@ class MainWindow(QMainWindow):
         ):
             opts = d.get(key)
             if isinstance(opts, dict):
+                if key == "plot":
+                    cached_dw = opts.get("debug_window")
+                    if isinstance(cached_dw, dict):
+                        self._debug_window_opts = dict(cached_dw)
                 try:
                     panel.set_opts(opts)
                 except Exception:
@@ -788,7 +818,7 @@ class MainWindow(QMainWindow):
         self._sb_tx.setText(f"TX {self._fmt_rate(tx_rate)}  Σ{self._fmt_bytes(tp.tx_bytes)}")
         self._sb_rx.setText(f"RX {self._fmt_rate(rx_rate)}  Σ{self._fmt_bytes(tp.rx_bytes)}")
         self._sb_frames.setText(f"帧 TX:{tp.tx_frames} RX:{tp.rx_frames}")
-        # P1-3: CAN 模式下估算总线占用率; 串口模式清空 BUS/LOAD 标签
+        # P1-3: CAN 模式下估算总线占用率; 串口模式按波特率估算并 EMA 平滑
         if tp.name == "can":
             # 取样本周期内总线所有帧(RX+TX, 含发给其他节点的帧)累计位长并清零
             # 位长含帧头+位填充+帧间隔, 与 PCAN-View 等工具口径对齐
@@ -801,6 +831,27 @@ class MainWindow(QMainWindow):
                      else theme.hex('muted'))
             self._sb_load.setStyleSheet(
                 f"font-family: Consolas; padding: 0 8px; color: {color};")
+        elif tp.name == "serial":
+            self._sb_bus_state.setText("")
+            # 串口总线负载: (TX+RX 字节速率)/(baud/10) 占比(8N1 每字节 10bit),
+            # EMA 平滑防数值跳变
+            baud = (getattr(tp, 'baudrate', 0)
+                    or (getattr(self, '_last_connect_params', None) or {}).get('baud', 0))
+            if baud and baud > 0:
+                capacity_bps = baud / 10.0
+                load = (tx_rate + rx_rate) / capacity_bps * 100.0
+                ema = getattr(self, '_serial_load_ema', None)
+                load = ema * 0.7 + load * 0.3 if ema is not None else load
+                self._serial_load_ema = load
+                load_pct = min(load, 100.0)
+                self._sb_load.setText(f"LOAD: {load_pct:.1f}%")
+                color = ("#E53935" if load_pct > 70
+                         else "#F9A825" if load_pct > 40
+                         else theme.hex('muted'))
+                self._sb_load.setStyleSheet(
+                    f"font-family: Consolas; padding: 0 8px; color: {color};")
+            else:
+                self._sb_load.setText("")
         else:
             self._sb_load.setText("")
             self._sb_bus_state.setText("")
@@ -1048,6 +1099,11 @@ class MainWindow(QMainWindow):
         c.pid_autotune_result_received.connect(self._on_pid_autotune_result)
         c.pid_source_received.connect(self._on_pid_source_received)
         c.pid_param_received.connect(self._on_pid_param_received)
+        c.smooth_cfg_received.connect(self._on_smooth_cfg_received)
+        c.fault_summary_received.connect(self._fault_info_panel.on_summary_received)
+        c.fault_detail_received.connect(self._fault_info_panel.on_detail_received)
+        # 状态栏最左活动故障摘要(最多3个名称, 红色)
+        self._fault_info_panel.active_faults_changed.connect(self._on_sb_active_faults)
         c.trace_config_received.connect(self._on_trace_config_received)
         c.trace_data_received.connect(self._on_trace_data)
 
@@ -1102,6 +1158,32 @@ class MainWindow(QMainWindow):
             self._on_pid_waveform_config_changed)
         self._pid_panel.pid_debug_commit_requested.connect(
             self._on_pid_debug_commit)
+        # 缓启配置面板: 0xA3/0xA4/0xEA 直连 client (结构化载荷不走 registry 通用打包)
+        self._softstart_panel.smooth_cfg_read_requested.connect(
+            lambda: self._client.smooth_cfg_get(jp.smoothstart.PID_ALL)
+            if self._client.is_open() else None)
+        self._softstart_panel.smooth_cfg_set_requested.connect(
+            self._on_smooth_cfg_set)
+        self._softstart_panel.smooth_cfg_save_requested.connect(
+            lambda: self._on_config_save(0))
+        # 故障信息面板: 0xAA/0xAB/0xB0 诊断命令 + PID154~159 使能掩码走 motor_info 通道
+        self._fault_info_panel.fault_summary_requested.connect(
+            lambda: self._client.fault_summary_get() if self._client.is_open() else None)
+        self._fault_info_panel.fault_detail_requested.connect(
+            lambda ftype, idx: self._client.fault_detail_get(ftype, idx)
+            if self._client.is_open() else None)
+        self._fault_info_panel.fault_enable_masks_read_requested.connect(
+            self._on_fault_enable_masks_read)
+        self._fault_info_panel.fault_enable_mask_write_requested.connect(
+            self._on_fault_enable_mask_write)
+        self._fault_info_panel.fault_clear_requested.connect(self._on_fault_clear)
+        self._fault_info_panel.fault_save_requested.connect(
+            lambda: self._client.motor_info_save(0) if self._client.is_open() else None)
+        # 保护总览页: 0xE6/0xE7 读写 PID128 保护总使能与 PID154~159 三级故障使能掩码
+        self._fault_info_panel.protect_mask_read_requested.connect(
+            self._on_protect_mask_read)
+        self._fault_info_panel.protect_mask_write_requested.connect(
+            self._on_protect_mask_write)
         # PID 参数面板: 注入 PID Tab 内嵌, 复用 motor_config 通道(0xE6/0xE7/0xEA)
         self._pid_panel.attach_params_panel(self._pid_params_panel)
         self._pid_params_panel.read_param.connect(
@@ -1136,6 +1218,7 @@ class MainWindow(QMainWindow):
         self._config_panel.write_params.connect(
             lambda writes, panel=self._config_panel: self._on_param_write_many(panel, writes))
         self._config_panel.save_all.connect(self._on_config_save)
+        self._config_panel.erase_all.connect(self._on_config_erase)
 
         # P0-1/P1-1: CAN 专用信号(传输切换时需重连, 串口发射这些信号无害)
         self._reconnect_can_signals()
@@ -1181,7 +1264,7 @@ class MainWindow(QMainWindow):
         if len(payload_hex) > 96:
             payload_hex = payload_hex[:96] + " ..."
         # 风险等级与额外提示
-        if cmd in (JmCmd.FACTORY_RESET, JmCmd.MOTOR_INFO_RESET):
+        if cmd in (JmCmd.FACTORY_RESET, JmCmd.MOTOR_INFO_RESET, JmCmd.MOTOR_INFO_ERASE):
             risk = "极高"
             extra = "此操作将清除所有用户配置和标定数据, 不可恢复!"
         elif cmd in (JmCmd.PARAM_SAVE, JmCmd.MOTOR_INFO_SAVE):
@@ -1665,6 +1748,7 @@ class MainWindow(QMainWindow):
         self._param_read_queue.clear()
         self._param_write_queue.clear()
         self._pid_theory_pending = None
+        self._protect_mask_pending = False
         self._cmd_watchdog.stop()
         # 清除各 ParamPanel 内部待确认写状态, 防止"等待返回"高亮卡死
         for pnl in (self._param_panel, self._config_panel,
@@ -1688,20 +1772,36 @@ class MainWindow(QMainWindow):
             if self._debug_window is None:
                 self._debug_window = DebugPlotWindow()
                 self._debug_window.window_closed.connect(self._on_debug_window_closed)
-                # 恢复上次窗口大小/位置/通道名称 (从持久化配置)
-                settings = layout_store.get_meta("settings", {})
-                plot_opts = settings.get("plot", {})
-                dw_opts = plot_opts.get("debug_window", {})
+                # 恢复上次窗口大小/位置/通道名称；优先使用本次运行缓存。
+                dw_opts = self._debug_window_opts
+                if not dw_opts:
+                    settings = layout_store.get_meta("settings", {})
+                    plot_opts = settings.get("plot", {})
+                    dw_opts = plot_opts.get("debug_window", {})
                 if isinstance(dw_opts, dict):
+                    self._debug_window_opts = dict(dw_opts)
                     self._debug_window.set_opts(dw_opts)
             self._debug_window.show()
         else:
             if self._debug_window is not None:
+                self._cache_debug_window_opts()
                 self._debug_window.close()
                 self._debug_window = None
 
+    def _cache_debug_window_opts(self):
+        """保存调试窗口当前设置，供关闭窗口后重新打开或退出时使用。"""
+        if self._debug_window is None:
+            return
+        try:
+            opts = self._debug_window.get_opts()
+            if isinstance(opts, dict):
+                self._debug_window_opts = dict(opts)
+        except Exception:
+            pass
+
     def _on_debug_window_closed(self):
-        """用户手动关闭调试窗口 → 同步取消 PlotPanel 复选框。"""
+        """用户手动关闭调试窗口 → 先缓存配置，再同步取消复选框。"""
+        self._cache_debug_window_opts()
         self._plot_panel.set_debug_checkbox(False)
         self._debug_window = None
 
@@ -1711,6 +1811,8 @@ class MainWindow(QMainWindow):
         self._state_panel.set_link_active(connected)
         self._calib_panel.set_link_active(connected)
         self._pid_panel.set_link_active(connected)
+        self._softstart_panel.set_link_active(connected)
+        self._fault_info_panel.set_link_active(connected)
         self._link_connected = connected
         is_can = (self._client.transport.name == "can")
         if not connected:
@@ -1724,9 +1826,10 @@ class MainWindow(QMainWindow):
             self._feedback_panel.set_can_mode(False)
             self._sb_bus_state.setText("")
             self._sb_load.setText("")
+            self._serial_load_ema = None   # 断开清串口负载 EMA
             # 断开时清除状态栏固件版本
-            self._sb_fw_ver.setText("")
-            self._sb_fw_ver.setToolTip("")
+            self._fw_ver_top.setText("")
+            self._fw_ver_top.setToolTip("")
             # 断开时停止周期心跳, 避免向已关闭的链路发帧
             if self._btn_hb.isChecked():
                 self._btn_hb.setChecked(False)
@@ -1813,28 +1916,22 @@ class MainWindow(QMainWindow):
                 f"重连中... ({self._reconnect_attempts}/{self._reconnect_max_attempts})")
 
     def _refresh_statusbar_theme(self):
-        """按连接状态 + 当前主题重设状态栏连接标签颜色, 前缀显示通道类型(UART/CAN/SIM)。"""
+        """按连接状态 + 当前主题刷新一级 tab 行版本标签配色。"""
         connected = getattr(self, "_link_connected", False)
-        if connected:
-            # 通道类型前缀: serial→UART, can→CAN, virtual→SIM
-            tp_name = self._client.transport.name
-            if tp_name == "can":
-                ch_prefix = "[CAN] "
-            elif tp_name == "virtual":
-                ch_prefix = "[SIM] "
-            else:
-                ch_prefix = "[UART] "
-            self._sb_link.setText(f"● {ch_prefix}{getattr(self, '_cur_port', '')}")
-            self._sb_link.setStyleSheet(
-                f"font-family: Consolas; padding: 0 8px; color: {theme.hex('ok')}; font-weight: bold;")
-            self._sb_fw_ver.setStyleSheet(
-                f"font-family: Consolas; padding: 0 8px; color: {theme.hex('ok')};")
+        color = theme.hex('ok') if connected else theme.hex('muted')
+        if getattr(self, "_fw_ver_top", None) is not None and self._fw_ver_top.text():
+            self._fw_ver_top.setStyleSheet(
+                f"font-family: Consolas; padding: 0 10px; color: {color};")
+
+    def _on_sb_active_faults(self, names: list):
+        """状态栏最左活动故障摘要: 最多 3 个故障名称, 红色; 无故障时隐藏。"""
+        if names:
+            self._sb_faults.setText("⚠ " + " | ".join(names[:3]))
+            self._sb_faults.setToolTip("当前活动故障(最多显示3个, 详情见故障信息页)")
+            self._sb_faults.show()
         else:
-            self._sb_link.setText("● 未连接")
-            self._sb_link.setStyleSheet(
-                f"font-family: Consolas; padding: 0 8px; color: {theme.hex('muted')};")
-            self._sb_fw_ver.setStyleSheet(
-                f"font-family: Consolas; padding: 0 8px; color: {theme.hex('muted')};")
+            self._sb_faults.setText("")
+            self._sb_faults.hide()
 
     def _on_error(self, msg: str):
         self._log_panel.log_err(msg)
@@ -2189,6 +2286,7 @@ class MainWindow(QMainWindow):
             w = self._tabs.widget(index)
         except Exception:
             return
+        prev = self._active_main_tab_widget
         if self._active_main_tab_widget is self._pid_panel and w is not self._pid_panel:
             self._restore_pid_telemetry()
             self._stop_trace()
@@ -2197,6 +2295,12 @@ class MainWindow(QMainWindow):
                 self._log_panel.log(
                     "[PID] 已离开调试页，停止DEBUG租约；设备将在2秒内安全回滚")
         self._active_main_tab_widget = w
+        # 离开故障信息页: 停自动刷新省带宽
+        if prev is self._fault_info_panel and w is not self._fault_info_panel:
+            try:
+                self._fault_info_panel.pause_auto_refresh()
+            except Exception:
+                pass
         if w is self._calib_panel:
             if not self._client.is_open():
                 return
@@ -2224,6 +2328,20 @@ class MainWindow(QMainWindow):
                 pass
             # 波形窗口开着就恢复采集 (与是否处于 DEBUG source 无关)
             self._start_trace()
+            return
+        if w is self._softstart_panel:
+            # 已连接: 自动读取缓启配置(0xA4 整块)
+            try:
+                self._softstart_panel.auto_read_if_connected()
+            except Exception:
+                pass
+            return
+        if w is self._fault_info_panel:
+            # 已连接: 自动读摘要(0xAA) + 三级故障使能掩码(PID154~159) + 保护总使能(PID128)
+            try:
+                self._fault_info_panel.auto_read_if_connected()
+            except Exception:
+                pass
             return
 
     def _on_apply_telemetry(self, enable: bool, mask: int, period_ms: int):
@@ -2427,6 +2545,14 @@ class MainWindow(QMainWindow):
             else:
                 self._log_panel.log("[TX] 保存电机配置到EEPROM (0xEA)")
 
+    def _on_config_erase(self):
+        if not self._panel_remote_supported(self._config_panel):
+            return
+        if self._ensure_open():
+            # 固化清零(0xED): 擦除EEPROM全部参数+RAM恢复默认, 危险操作由 DANGER_CMDS 二次确认
+            self._client.motor_info_erase()
+            self._log_panel.log("[TX] 固化清零: 擦除EEPROM全部参数 (0xED)")
+
     def _load_motor_presets(self):
         """加载内置 motor_presets.json + 用户 user_motor_presets.json
 
@@ -2506,14 +2632,14 @@ class MainWindow(QMainWindow):
             self, "应用电机型号预设",
             f"确认将电机型号 '{name}' ({label}) 的 {len(writes)} 个电气参数\n"
             f"批量写入 motor_info RAM (0xE7)?\n\n"
-            f"写入后请点击下方'参数固化'按钮(0xEA)持久化到 Flash, 重启生效。",
+            f"写入后请点击下方'固化参数'按钮(0xEA)持久化到 Flash, 重启生效。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes:
             return
         # 复用批量写通道(走 _on_param_write_many → 0xE7)
         self._on_param_write_many(self._config_panel, writes)
-        self._log_panel.log(f"[预设] 已应用电机型号 '{name}' ({len(writes)} 项 0xE7 写入), 请点击'参数固化'持久化")
+        self._log_panel.log(f"[预设] 已应用电机型号 '{name}' ({len(writes)} 项 0xE7 写入), 请点击'固化参数'持久化")
         # P0: 写入成功后明确提示用户需两步操作才能完全生效
         # 原因: motor_profile_sync_to_param 仅在启动时执行一次,
         # 运行期不刷新 peak_current/max_speed 到控制环
@@ -2521,7 +2647,7 @@ class MainWindow(QMainWindow):
             self, "电机型号预设已应用",
             f"已将 '{name}' 预设的 {len(writes)} 个字段写入 motor_info RAM (0xE7)。\n\n"
             "请完成以下两步才能让新参数完全生效：\n"
-            "  1. 点击下方'参数固化'按钮 (0xEA) 持久化到 Flash\n"
+            "  1. 点击下方'固化参数'按钮 (0xEA) 持久化到 Flash\n"
             "  2. 重启设备 (断电重上 或 发送 RESET 命令)\n"
             "     原因: motor_profile_sync_to_param 仅在启动时执行一次,\n"
             "     运行期不刷新 peak_current/max_speed 到控制环",
@@ -2591,10 +2717,10 @@ class MainWindow(QMainWindow):
             "  • peak_current / max_speed / protect_over_current\n\n"
             "操作流程：\n"
             "  1. 点击'是'清除上述字段（仅 RAM，不落盘）\n"
-            "  2. 点击'参数固化'按钮（0xEA）持久化到 Flash\n"
+            "  2. 点击'固化参数'按钮（0xEA）持久化到 Flash\n"
             "  3. 重启设备\n"
             "  4. 进入'电机标定'Tab 执行 L3 编码器标定\n"
-            "  5. 标定完成后再次'参数固化' + 重启\n\n"
+            "  5. 标定完成后再次'固化参数' + 重启\n\n"
             "确认继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
@@ -2616,10 +2742,10 @@ class MainWindow(QMainWindow):
             "已发送 0xEC 命令清除标定状态字段（仅 RAM，未落盘）。\n\n"
             "请完成以下步骤：\n"
             "  1. 等待设备 ACK 应答（看日志面板）\n"
-            "  2. 点击下方'参数固化'按钮 (0xEA) 持久化到 Flash\n"
+            "  2. 点击下方'固化参数'按钮 (0xEA) 持久化到 Flash\n"
             "  3. 重启设备 (断电重上 或 发送 RESET 命令)\n"
             "  4. 进入'电机标定'Tab 执行 L3 编码器零位/方向标定\n"
-            "  5. 标定完成后再次'参数固化' + 重启",
+            "  5. 标定完成后再次'固化参数' + 重启",
             QMessageBox.StandardButton.Ok)
 
     # ==================== P3: motor_info 导出/导入 ====================
@@ -2737,7 +2863,7 @@ class MainWindow(QMainWindow):
             f"确认从文件导入 {len(writes)} 个字段到 motor_info RAM (0xE7)?\n\n"
             f"源文件: {file_path}\n"
             f"源 config_version: {file_version}\n\n"
-            "写入后需点击'参数固化'按钮 (0xEA) + 重启设备才能完全生效。",
+            "写入后需点击'固化参数'按钮 (0xEA) + 重启设备才能完全生效。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes:
@@ -2748,11 +2874,38 @@ class MainWindow(QMainWindow):
             self, "motor_info 导入完成",
             f"已将 {len(writes)} 个字段写入 motor_info RAM (0xE7)。\n\n"
             "请完成以下两步才能让数据完全生效：\n"
-            "  1. 点击下方'参数固化'按钮 (0xEA) 持久化到 Flash\n"
+            "  1. 点击下方'固化参数'按钮 (0xEA) 持久化到 Flash\n"
             "  2. 重启设备 (断电重上 或 发送 RESET 命令)",
             QMessageBox.StandardButton.Ok)
 
     def _on_param_result(self, param_id: int, ptype: int, value_bytes: bytes):
+        # 保护总览上下文: PID128(protect_enable) 应答转发故障面板,
+        # 不进电机配置页 FIFO 读队列(面板用独立 pending 上下文区分来源)
+        if self._protect_mask_pending and int(param_id) == 128:
+            self._protect_mask_pending = False
+            try:
+                self._fault_info_panel.on_protect_mask_received(
+                    int.from_bytes(bytes(value_bytes[:4]), 'little'))
+            except (ValueError, TypeError, IndexError):
+                pass
+            self._cmd_watchdog.stop()
+            if self._pending_param_reads:
+                self._cmd_watchdog.start()
+            return
+        # 保护总览上下文: PID154~159 三级故障使能掩码(低/高32位对)应答转发故障面板(独立 pending 集合)
+        _FAULT_MASK_PIDS = (154, 155, 156, 157, 158, 159)
+        if self._fault_level_pending and int(param_id) in _FAULT_MASK_PIDS:
+            self._fault_level_pending.discard(int(param_id))
+            try:
+                self._fault_info_panel.on_fault_enable_mask_received(
+                    int(param_id), int.from_bytes(bytes(value_bytes[:4]), 'little'))
+            except (ValueError, TypeError, IndexError):
+                pass
+            if self._fault_level_pending:
+                self._cmd_watchdog.start()   # 尚有在途掩码读, 续期看门狗
+            elif not self._pending_param_reads and not self._pending_param_writes:
+                self._cmd_watchdog.stop()
+            return
         if not self._pending_param_reads:
             # 无待处理读请求(设备主动上报/重复帧/自愈误触), 丢弃避免误填默认面板
             self._log_panel.log(f"[WARN] 收到意外参数应答 id={param_id}, 无待处理读请求")
@@ -2764,6 +2917,8 @@ class MainWindow(QMainWindow):
         spec = panel.get_param(param_id)
         if val is None:
             disp = value_bytes.hex(' ')
+        elif spec is not None and spec.dtype == 'u32_bool':
+            disp = f'0x{int(val) & 0xFFFFFFFF:08X}'
         elif spec is not None and jp.codec.is_float_type(spec.dtype):
             disp = f'{val:.6g}'
         else:
@@ -2818,6 +2973,15 @@ class MainWindow(QMainWindow):
     def _on_cmd_timeout(self):
         """命令超时看门狗: 弹出当前 pending 项并推进队列, 防止设备不响应时死锁。"""
         timed_out = []
+        if self._protect_mask_pending:
+            # PID128 读应答超时: 解除保护总览拦截上下文, 防止吞掉配置页后续 128 应答
+            self._protect_mask_pending = False
+            timed_out.append("读(保护总览 PID128)")
+        if self._fault_level_pending:
+            # PID154~159 掩码读超时: 清空 pending, 防止迟到应答命中"意外应答"分支
+            pids = ",".join(str(p) for p in sorted(self._fault_level_pending))
+            self._fault_level_pending.clear()
+            timed_out.append(f"读(故障使能掩码 PID{pids})")
         if self._pending_param_reads:
             panel = self._pending_param_reads.popleft()
             timed_out.append(f"读({panel.panel_name()})")
@@ -2883,12 +3047,10 @@ class MainWindow(QMainWindow):
                 getattr(last_fb, 'fault_mask', 0) or 0)
             # 调试通道数据分发 (逐帧全部绘制)
             if self._debug_window is not None and self._debug_window.isVisible():
-                debug_vals = []
-                for fb in batch:
-                    d = getattr(fb, 'debug', ())
-                    if d:
-                        debug_vals.append(d)
-                if debug_vals:
+                # 保留批次中的空 debug 帧，令调试窗口 X 轴与实时曲线使用同一帧编号；
+                # 只过滤“整批无调试数据”的情况，避免窗口尚未开启 DEBUG 时无意义增长。
+                debug_vals = [getattr(fb, 'debug', ()) for fb in batch]
+                if any(debug_vals):
                     self._debug_window.feed_debug_batch(debug_vals)
 
         if self._feedback_dropped:
@@ -2907,6 +3069,9 @@ class MainWindow(QMainWindow):
         self._pid_panel.on_ack(cmd)
         if cmd == JmCmd.PID_SOURCE_SET:
             self._sync_pid_debug_heartbeat()
+        # 故障面板: 0xB0 清除成功后立即重读摘要刷新活动数/历史条数
+        if cmd == JmCmd.CLEAR_FAULT:
+            self._fault_info_panel.refresh_after_clear()
         # 写完成: 0xE1(运行时参数) / 0xE7(电机配置) 共用同一待应答队列
         if cmd in (JmCmd.PARAM_WRITE, JmCmd.MOTOR_INFO_WRITE):
             if not self._pending_param_writes:
@@ -2936,8 +3101,15 @@ class MainWindow(QMainWindow):
                 self._pid_commit_phase = 'idle'
                 self._log_panel.log('[PID] 当前调试值已校验并固化到Flash')
             # 固化成功弹窗提醒 + 刷新固化次数(0xE6 读 save_count=5, 固件每次固化自增)
-            QMessageBox.information(self, "参数固化", "电机配置已成功固化到 Flash/EEPROM。")
+            QMessageBox.information(self, "固化参数", "电机配置已成功固化到 Flash/EEPROM。")
             self._on_param_read(self._config_panel, 5)
+        # 固化清零(0xED) ACK: 弹窗提醒 + 自动全读刷新面板(下位机 RAM 已恢复默认,
+        # 不刷新面板会显示旧值, 用户感觉"无效果")
+        if cmd == JmCmd.MOTOR_INFO_ERASE:
+            QMessageBox.information(
+                self, "固化清零",
+                "EEPROM 参数已全部擦除, 电机配置已恢复默认值。\n面板正在重新读取...")
+            self._config_panel.read_all()
         # 队列自愈: 若收到 PARAM_READ/MOTOR_INFO_READ 的意外 ACK(正常应走数据帧,
         # 但某些固件/仿真器可能只回 ACK), 弹出读队列防止永久死锁
         if cmd in (JmCmd.PARAM_READ, JmCmd.MOTOR_INFO_READ) and self._pending_param_reads:
@@ -2989,8 +3161,13 @@ class MainWindow(QMainWindow):
         # 固化失败弹窗提醒(0xEA NACK)
         if cmd == JmCmd.MOTOR_INFO_SAVE:
             QMessageBox.warning(
-                self, "参数固化失败",
+                self, "固化参数失败",
                 f"电机配置未能固化到 Flash/EEPROM。\n\n错误: {cn} (0x{err:02X})")
+        # 固化清零失败弹窗提醒(0xED NACK)
+        if cmd == JmCmd.MOTOR_INFO_ERASE:
+            QMessageBox.warning(
+                self, "固化清零失败",
+                f"EEPROM 参数未能擦除, 原配置保持不变。\n\n错误: {cn} (0x{err:02X})")
         # 标定面板: 0x90~0x98 NACK 转发(内部按 cmd 过滤)
         self._calib_panel.on_nack(cmd, err)
         # PID 面板: 0xA1 来源切换 / 0xA5 调试参数写入 失败 NACK 转发(内部按 cmd 过滤)
@@ -3065,6 +3242,69 @@ class MainWindow(QMainWindow):
         转发给 PID 面板显示读回值 + 历史记录。
         """
         self._pid_panel.on_pid_param_received(ring, param_type, value4)
+
+    def _on_smooth_cfg_received(self, param_id: int, payload):
+        """0xA4 缓启配置读取应答 (JmClient.smooth_cfg_received 信号)。
+
+        param_id=0xFF: payload 为 SmoothConfig 整块解析结果, 回填面板;
+        其余: payload 为 4B 原始值(单字段, 面板当前仅用整块, 记日志)。
+        """
+        if param_id == jp.smoothstart.PID_ALL:
+            self._softstart_panel.apply_config(payload)
+            self._log_panel.log("[RX] 缓启配置整块读取成功 (0xA4 FF)")
+        else:
+            self._log_panel.log(
+                f"[RX] 缓启配置单字段应答: {payload.hex() if isinstance(payload, bytes) else payload}")
+
+    def _on_smooth_cfg_set(self, param_id: int, value):
+        """缓启面板逐字段下发 (0xA3), 发送前记录日志便于追溯。"""
+        if not self._ensure_open():
+            return
+        name = jp.smoothstart.PID_NAMES.get(param_id, f"0x{param_id:02X}")
+        self._log_panel.log(f"[TX] 缓启配置写 {name} = {value}")
+        self._client.smooth_cfg_set(param_id, value)
+
+    def _on_protect_mask_read(self):
+        """保护总览: 0xE6 读 PID128 protect_enable。
+        独立 pending 上下文(应答在 _on_param_result 头部按 param_id==128 拦截转发),
+        避免与电机配置页的 FIFO 读队列互相错位。"""
+        if not self._ensure_open():
+            return
+        if self._client.motor_info_read(128):
+            self._protect_mask_pending = True
+            self._cmd_watchdog.start()
+
+    def _on_protect_mask_write(self, value: int):
+        """保护总览: 0xE7 写 PID128 (1/0, RAM 即时生效); 固化由用户手动点"固化参数"(0xEA)。"""
+        if not self._ensure_open():
+            return
+        self._client.motor_info_write(128, (int(value) & 0xFFFFFFFF).to_bytes(4, 'little'))
+
+    def _on_fault_enable_masks_read(self):
+        """保护总览：读取 PID154~159 三级故障使能掩码(低/高32位对)。"""
+        if not self._ensure_open():
+            return
+        for pid in (154, 155, 156, 157, 158, 159):
+            if self._client.motor_info_read(pid):
+                self._fault_level_pending.add(pid)
+        if self._fault_level_pending:
+            self._cmd_watchdog.start()
+
+    def _on_fault_enable_mask_write(self, param_id: int, value: int):
+        """保护总览：写入单个掩码 PID(u32 4B)，RAM 立即生效，随后由面板 0xEA 固化。"""
+        if not self._ensure_open():
+            return
+        pid = int(param_id)
+        if pid not in (154, 155, 156, 157, 158, 159):
+            return
+        self._client.motor_info_write(pid, (int(value) & 0xFFFFFFFF).to_bytes(4, 'little'))
+
+    def _on_fault_clear(self, flags: int):
+        """故障面板清除请求 (0xB0): bit0=清锁存(仅IDLE) bit1=清历史。
+        CLEAR_FAULT 命中 DANGER_CMDS, 发送前由确认回调二次确认。"""
+        if not self._ensure_open():
+            return
+        self._client.fault_clear(int(flags))
 
     def _on_pid_autotune(self, ring_select: int, cur_bw: float, vel_bw: float, pos_bw: float):
         """Read motor_info and generate editable PID values on the host."""
@@ -3165,14 +3405,14 @@ class MainWindow(QMainWindow):
         self._log_panel.log(
             f"[RX] DEV_INFO HW={hw_text} "
             f"FW={fw_text} UID={uid_hex}")
-        # 更新状态栏固件版本显示
+        # 更新一级 tab 行右上角固件版本显示
         proto = self._client.fw_proto_version
         if proto:
-            self._sb_fw_ver.setText(
+            self._fw_ver_top.setText(
                 f"FW: {fw_text}  (协议 v{proto[0]}.{proto[1]})")
         else:
-            self._sb_fw_ver.setText(f"FW: {fw_text}")
-        self._sb_fw_ver.setToolTip(
+            self._fw_ver_top.setText(f"FW: {fw_text}")
+        self._fw_ver_top.setToolTip(
             f"硬件版本: {hw_text}\n固件版本: {fw_text}\nUID: {uid_hex}"
             + (f"\n协议版本: {proto[0]}.{proto[1]}" if proto else ""))
         # 仅在用户主动点击"读设备信息"按钮时弹窗显示完整信息

@@ -16,7 +16,7 @@ from typing import Optional
 
 from jmproto import (JmCmd, JmErr, JmTlmBit, JmParamType, TopFsm, RunState,
                      codec, get_registry)
-from jmproto.cmd_def import MAGIC_SOFT_RESET
+from jmproto.cmd_def import MAGIC_SOFT_RESET, MAGIC_STORAGE_ERASE
 
 from .digital_twin import DigitalTwinEngine
 from .twin_fsm import MotorCmd, ControlMode, SystemState
@@ -98,7 +98,7 @@ class TwinResponder:
         'over_temp_drive': 'protect_over_temp',
         'over_temp_motor': 'motor_over_temp_threshold',
         'over_speed_rad_s': 'protect_over_speed',
-        'error_enable_mask': 'protect_enable_mask',
+        'protect_enable': 'protect_enable',
         'mit_kp': 'impedance_kp', 'mit_kd': 'impedance_kd',
         'mit_max_current': 'iq_max',
         'homing_speed': 'homing_speed_fast',
@@ -357,7 +357,7 @@ class TwinResponder:
         if cmd in (int(JmCmd.PARAM_SAVE), int(JmCmd.PARAM_RESET)):
             return [self._ack(cmd)]
 
-        # ---- 电机配置读写 (0xE6~0xEB, motor_info) ----
+        # ---- 电机配置读写 (0xE6~0xED, motor_info) ----
         if cmd == int(JmCmd.MOTOR_INFO_READ):
             return [self._motor_info_read_frame(payload)]
         if cmd == int(JmCmd.MOTOR_INFO_WRITE):
@@ -367,6 +367,11 @@ class TwinResponder:
             # 0xEC (RECALIB_RESET): 虚拟引擎不维护 is_calibrated/编码器字段语义,
             # 仅回 ACK 让上位机烟雾测试可通过; 真实语义由下位机 motor_info_calib.c 实现
             return [self._ack(cmd)]
+        if cmd == int(JmCmd.MOTOR_INFO_ERASE):
+            # 0xED (固化清零): 虚拟引擎同样校验魔数, 防误触语义与下位机一致
+            if len(payload) >= 4 and codec.rd_u32(payload, 0) == MAGIC_STORAGE_ERASE:
+                return [self._ack(cmd)]
+            return [self._nack(cmd, int(JmErr.UNAUTHORIZED))]
 
         # 未知命令返回 NACK(UNSUPPORTED), 避免掩盖上位机 bug
         return [self._nack(cmd, int(JmErr.UNSUPPORTED))]

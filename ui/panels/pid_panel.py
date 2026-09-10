@@ -83,7 +83,7 @@ _SOURCE_OPTIONS = {
 }
 
 
-class PidPanel(QGroupBox):
+class PidPanel(QWidget):
     """PID 整定面板 (顶级 Tab)。"""
 
     # ---- 请求信号 (主窗口连接到 JmClient) ----
@@ -103,7 +103,7 @@ class PidPanel(QGroupBox):
     _WAVEFORM_MAX_POINTS = 2000000
 
     def __init__(self, registry=None, parent=None):
-        super().__init__("", parent)
+        super().__init__(parent)
         self._panel_name = "PID 整定"
         self._registry = registry
         self._link_active = False
@@ -165,7 +165,7 @@ class PidPanel(QGroupBox):
 
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(8)
 
         self._build_status_card(layout)

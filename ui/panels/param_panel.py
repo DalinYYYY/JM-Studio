@@ -7,7 +7,6 @@
 
 from PyQt6.QtWidgets import (
     QAbstractItemView,
-    QCheckBox,
     QFileDialog,
     QFrame,
     QGroupBox,
@@ -63,20 +62,21 @@ class _ColorSwatch(QFrame):
         self._update()
 
 
-class ParamPanel(QGroupBox):
+class ParamPanel(QWidget):
     """参数表格面板。发出 read_param/write_param/read_params/write_params/save_all 信号。"""
 
     read_param = pyqtSignal(int)
     write_param = pyqtSignal(int, str)
     read_params = pyqtSignal(object)
     write_params = pyqtSignal(object)
-    save_all = pyqtSignal(int)  # flags: bit0=1 追加写Flash备份
+    save_all = pyqtSignal(int)  # flags 参数兼容保留, 现恒为0(仅写EEPROM, Flash备份已随固件裁剪移除)
+    erase_all = pyqtSignal()    # 固化清零: 擦除EEPROM全部参数(0xED, 电机配置面板)
 
     def __init__(self, registry, parent=None, title="电机参数",
                  source="motor_param", show_save=False, save_text="保存到Flash",
                  groups=None, show_legend=True, show_bulk_rw=False,
                  show_import_export=False):
-        super().__init__("", parent)
+        super().__init__(parent)
         self._panel_name = title
         self._reg = registry
         self._source = source
@@ -204,7 +204,7 @@ class ParamPanel(QGroupBox):
 
     def _build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
         # 图例: 固有(只读)/可配置(可改) 颜色区分说明 (可由 show_legend 关闭)
@@ -261,43 +261,39 @@ class ParamPanel(QGroupBox):
         btn_layout = QHBoxLayout(btn_row)
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.setSpacing(6)
+        # 底部功能按钮: 统一宽度, 按功能着色(随主题切换)
+        self._func_btns = []   # (btn, theme_key), 供 apply_theme 刷新
 
-        # "同时写Flash备份"复选框: 默认仅写EEPROM, 勾选后追加写Flash备份(0xEA flags bit0)。
-        # 置于保存按钮之前(用户先勾选备份目标, 再点击固化)。
-        self._chk_flash_backup = QCheckBox("同时写Flash备份")
-        self._chk_flash_backup.setToolTip(
-            "默认仅写EEPROM(上电优先加载)。勾选后追加写Flash备份, 频繁勾选会降低Flash寿命。")
+        # 固化按钮: accent 绿(保存确认)
+        self._btn_save = self._make_func_btn(
+            self._save_text, self._on_save_clicked, "accent")
         # 先 addWidget 父级化, 再 setVisible; 否则 widget 无 parent 时被设为可见
         # 会作为独立小窗口在 Windows 上短暂弹出
-        btn_layout.addWidget(self._chk_flash_backup)
-        self._chk_flash_backup.setVisible(self._show_save)
-
-        self._btn_save = QPushButton(self._save_text)
-        self._btn_save.clicked.connect(self._on_save_clicked)
         btn_layout.addWidget(self._btn_save)
         self._btn_save.setVisible(self._show_save)
-        # 全读/全写按钮: 先创建, 位置由下方模式决定(保存后 或 最右)
-        self._btn_read_all = self._make_button(
+        # 固化清零按钮(仅电机配置面板): 擦除EEPROM全部参数, 危险操作走 DANGER_CMDS 二次确认; danger 红
+        self._btn_erase = self._make_func_btn(
+            "固化清零", self.erase_all.emit, "danger")
+        btn_layout.addWidget(self._btn_erase)
+        self._btn_erase.setVisible(self._show_import_export)
+        # 全读/全写按钮: 先创建, 位置由下方模式决定(保存后 或 最右); 同组蓝色(设备数据交互)
+        self._btn_read_all = self._make_func_btn(
             "参数全读",
             lambda _=False: self.read_params.emit(list(self._param_specs.keys())),
-            width=88)
-        self._btn_write_all = self._make_button(
-            "参数全写", self._on_write_all_clicked, width=88)
+            "value")
+        self._btn_write_all = self._make_func_btn(
+            "参数全写", self._on_write_all_clicked, "value")
         # show_import_export 模式(电机配置面板): 全读/全写放保存按钮后、导入导出前
         if self._show_import_export:
             btn_layout.addWidget(self._btn_read_all)
             btn_layout.addWidget(self._btn_write_all)
             self._btn_read_all.setVisible(True)
             self._btn_write_all.setVisible(True)
-        # 导入/导出按钮 + 文件名标签 (紧跟保存按钮, 在 footer 注入位之前)
-        self._btn_export = QPushButton("参数导出")
-        self._btn_export.setFixedHeight(24)
-        self._btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_export.clicked.connect(self._on_export_clicked)
-        self._btn_import = QPushButton("参数导入")
-        self._btn_import.setFixedHeight(24)
-        self._btn_import.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_import.clicked.connect(self._on_import_clicked)
+        # 导入/导出按钮 + 文件名标签 (紧跟保存按钮, 在 footer 注入位之前); 同组紫色(文件操作)
+        self._btn_export = self._make_func_btn(
+            "参数导出", self._on_export_clicked, "plot_ibus")
+        self._btn_import = self._make_func_btn(
+            "参数导入", self._on_import_clicked, "plot_ibus")
         self._lbl_import_file = QLabel("")
         self._lbl_import_file.setStyleSheet(
             f"color: {theme.hex('muted')}; font-style: italic;"
@@ -375,6 +371,43 @@ class ParamPanel(QGroupBox):
         layout.addWidget(button, 0, Qt.AlignmentFlag.AlignCenter)
         return cell
 
+    def _make_func_btn(self, text: str, callback, theme_key: str) -> QPushButton:
+        """底部功能按钮: 统一宽度 88 + 按功能主题色着色, 登记供主题刷新。"""
+        btn = self._make_button(text, callback, width=88)
+        btn.setStyleSheet(self._func_btn_style(theme_key))
+        self._func_btns.append((btn, theme_key))
+        return btn
+
+    def _func_btn_style(self, key: str) -> str:
+        """功能按钮样式: 主题语义色描边+同色文字+低透明度底色, hover 加深。
+
+        色取自主题色板(随深/浅色切换): 固化=accent / 清零=danger / 全读全写=value / 导出导入=plot_ibus。
+        """
+        c = theme.c(key)
+        r, g, b = c.red(), c.green(), c.blue()
+        return f"""
+            QPushButton {{
+                padding: 0 8px;
+                border: 1px solid rgb({r},{g},{b});
+                border-radius: 4px;
+                background: rgba({r},{g},{b},36);
+                color: rgb({r},{g},{b});
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background: rgba({r},{g},{b},70);
+                border-color: rgb({r},{g},{b});
+            }}
+            QPushButton:pressed {{
+                background: rgba({r},{g},{b},105);
+            }}
+            QPushButton:disabled {{
+                color: {theme.hex('muted')};
+                border-color: {theme.hex('border')};
+                background: {theme.hex('card_bottom')};
+            }}
+        """
+
     # ---------- 主题 ----------
     def _btn_base_style(self) -> str:
         """需求4: 读/写按钮基础样式(随主题切换, 不再硬编码)."""
@@ -443,11 +476,9 @@ class ParamPanel(QGroupBox):
             state = self._row_state.get(pid)
             is_dirty = bool(state and state.get('dirty'))
             btn.setStyleSheet(dirty_css if is_dirty else base_css)
-        # 需求5: 底部全读/全写按钮也套 base 样式(若存在)
-        for attr in ("_btn_read_all", "_btn_write_all"):
-            btn = getattr(self, attr, None)
-            if btn is not None:
-                btn.setStyleSheet(base_css)
+        # 底部功能按钮: 按功能色重建样式(随主题切换)
+        for btn, key in self._func_btns:
+            btn.setStyleSheet(self._func_btn_style(key))
 
     def _populate(self):
         self._syncing_table = True
@@ -658,12 +689,8 @@ class ParamPanel(QGroupBox):
         self._on_write_group_clicked(list(self._param_specs.keys()))
 
     def _on_save_clicked(self):
-        """保存按钮: 按复选框状态拼装 flags 发出 save_all。
-        flags bit0=1 追加写Flash备份(0xEA), 默认仅写EEPROM。"""
-        flags = 0
-        if self._chk_flash_backup.isChecked():
-            flags |= 1 << 0  # MOTOR_INFO_SAVE_FLAG_FLASH
-        self.save_all.emit(flags)
+        """保存按钮: 固化参数到EEPROM(0xEA)。Flash备份已随固件裁剪移除, flags 恒 0。"""
+        self.save_all.emit(0)
 
     def _set_write_button_state(self, param_id: int, dirty: bool, pending: bool = False):
         btn = self._write_buttons.get(int(param_id))

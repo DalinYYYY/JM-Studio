@@ -223,9 +223,10 @@ class MotorRef:
     ctrl_type: RefCtrlType = RefCtrlType.IDLE
     pos: float = 0.0           # 目标位置 rad
     vel: float = 0.0           # 目标速度 rad/s
+    accel: float = 0.0         # 参考加速度 rad/s² (解析生成, 惯量前馈用)
     torque: float = 0.0        # 目标力矩 Nm
     id: float = 0.0             # 目标d轴电流 A
-    iq: float = 0.0             # 目标q轴电流 A
+    iq: float = 0.0            # 目标q轴电流 A
     kp: float = 0.0             # MIT刚度
     kd: float = 0.0             # MIT阻尼
     torque_ff: float = 0.0       # 力矩前馈 Nm
@@ -510,7 +511,9 @@ class CascadeController:
 
         elif ct == RefCtrlType.VELOCITY:
             p_vel = self.profile.get(ref.vel_profile)
+            # 力矩前馈 + 惯量加速度前馈 (复刻 cascade_control.c REF_CTRL_VELOCITY)
             iq_ff = (ref.torque_ff / kt) if kt > 0 else 0.0
+            iq_ff += self.mp.position_loop.accel_ff_gain * ref.accel
             iq = PidController.calculate(self.pid_vel, p_vel,
                                           ref.vel, fb.vel, iq_ff, self.dt_vel)
             out.iq_ref = _clamp(iq, -peak_i, peak_i)

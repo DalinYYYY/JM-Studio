@@ -276,7 +276,7 @@ pyqt_gui/
 │   ├── joint_motor_command_list.csv  #   命令表（100 条）
 │   ├── joint_motor_param_index.csv   #   参数表（83 项）
 │   ├── motor_info.csv                #   MotorInfo 配置表
-│   ├── 故障码定义_故障信息表_表格.csv  #   故障码定义
+│   ├── fault_param.csv               #   故障码定义（fault_param_gen 生成副本, 109 条, 行号=0xAE 位图 bit）
 │   ├── ui_layout.json                #   用户设置/布局持久化
 │   └── MotorInfo_readme.md           #   MotorInfo 1024B 参数区结构说明
 │

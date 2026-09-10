@@ -63,6 +63,7 @@ class Fault:
     PHASE_LOSS = 1 << 8          # 缺相
     SAFETY_LIMIT = 1 << 9       # 安全限位触发
     OVER_SPEED = 1 << 10        # 超速保护 (对齐固件 protect_over_speed)
+    GATE_DRIVER = 1 << 12       # 栅极驱动器硬件故障 nFAULT (对齐固件 SYSTEM_FAULT_GATE_DRIVER)
 
     # 注入型故障(演示用)
     INJECTED = 1 << 15
@@ -82,6 +83,7 @@ class Fault:
             Fault.PHASE_LOSS: 'PHASE_LOSS',
             Fault.SAFETY_LIMIT: 'SAFETY_LIMIT',
             Fault.OVER_SPEED: 'OVER_SPEED',
+            Fault.GATE_DRIVER: 'GATE_DRIVER',
             Fault.INJECTED: 'INJECTED',
         }
         for bit, name in m.items():
@@ -203,14 +205,14 @@ class FaultDetector:
 
         屏蔽来源:
           1. self.disable_mask (演示用屏蔽, UI 勾选)
-          2. self.mp.protection_param.protect_enable_mask 取反 (固件使能掩码)
-          两者取或: dm = disable_mask | ~enable_mask
+          2. self.mp.protection_param.protect_enable (固件保护总使能, 0=全部屏蔽)
+          两者取或: 总使能关闭时全部故障不触发
         """
         flags = 0
         th = self.th
-        # 合并屏蔽: 演示屏蔽(disable_mask) + 固件使能掩码取反
-        enable_mask = getattr(self.mp.protection_param, 'protect_enable_mask', 0xFFFFFFFF)
-        dm = self.disable_mask | (~int(enable_mask) & 0xFFFF)
+        # 合并屏蔽: 演示屏蔽(disable_mask) + 固件保护总使能关闭则全部屏蔽
+        enable = int(getattr(self.mp.protection_param, 'protect_enable', 1))
+        dm = 0xFFFF if enable == 0 else self.disable_mask
 
         # 过流: 任意相电流超限
         if not (dm & Fault.OVER_CURRENT):

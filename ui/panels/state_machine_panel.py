@@ -849,7 +849,7 @@ class StateMachinePanel(QWidget):
         self.setObjectName("smRoot")
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(8)
 
         self._bar = self._build_status_bar()

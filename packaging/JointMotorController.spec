@@ -15,6 +15,17 @@ _HERE = os.path.abspath(SPECPATH)          # SPECPATH 即 spec 所在目录
 _ROOT = os.path.abspath(os.path.join(_HERE, '..'))
 _RES = os.path.join(_ROOT, 'resources')
 
+# 打包裁剪: build_exe.ps1 经 prepare_build.py 生成 staging 资源并通过
+# JM_STAGING_RES 注入; 未设变量时保持默认工程 resources(直接跑 spec 不受影响)。
+_STAGING = os.environ.get('JM_STAGING_RES', '')
+if _STAGING:
+    if not os.path.isdir(_STAGING):
+        raise SystemExit('JM_STAGING_RES is set but directory missing: %s' % _STAGING)
+    _RES_USE = _STAGING
+else:
+    _RES_USE = _RES
+print('[spec] resources source: %s' % _RES_USE)
+
 # 收集 libexpat.dll: conda 的 pyexpat.pyd 依赖它, 但 PyInstaller 不会自动收集
 # (该 DLL 位于 <python>\Library\bin, 不在 python 安装根目录)。缺失会导致
 # "DLL load failed while importing pyexpat" 启动崩溃。
@@ -81,7 +92,7 @@ a = Analysis(
     [os.path.join(_ROOT, 'main.py')],
     pathex=[_ROOT],
     binaries=_extra_binaries,
-    datas=[(_RES, 'resources')],
+    datas=[(_RES_USE, 'resources')],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

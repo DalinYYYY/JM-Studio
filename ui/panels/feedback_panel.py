@@ -962,7 +962,7 @@ class FeedbackPanel(QWidget):
 
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(8)
 
         self._poll_bar = self._build_poll_bar()

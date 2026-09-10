@@ -153,7 +153,7 @@ class ProtectionParam:
     protect_over_temp: float = 85.0        # C
     protect_under_temp: float = -20.0      # C
     protect_pos_error: int = 1000          # counts
-    protect_enable_mask: int = 0xFFFFFFFF
+    protect_enable: int = 1
 
 
 @dataclass
@@ -240,7 +240,7 @@ def _build_param_map():
         (78, 'protect_over_current', 'protection_param'), (79, 'protect_over_voltage', 'protection_param'),
         (80, 'protect_under_voltage', 'protection_param'), (81, 'protect_over_speed', 'protection_param'),
         (82, 'protect_over_temp', 'protection_param'), (83, 'protect_under_temp', 'protection_param'),
-        (84, 'protect_pos_error', 'protection_param'), (85, 'protect_enable_mask', 'protection_param'),
+        (84, 'protect_pos_error', 'protection_param'), (85, 'protect_enable', 'protection_param'),
     ]
     return entries
 

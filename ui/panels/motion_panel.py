@@ -50,6 +50,8 @@ class MotionPanel(QGroupBox):
 
         # 动态字段区
         self._form_host = QWidget()
+        # 裸 QWidget 会被全局 QSS 的 QWidget{background:app_bg} 命中而发黑, 置透明跟随 GroupBox 底色
+        self._form_host.setStyleSheet("background: transparent;")
         self._form = QFormLayout(self._form_host)
         self._form.setContentsMargins(0, 6, 0, 6)
         layout.addWidget(self._form_host)

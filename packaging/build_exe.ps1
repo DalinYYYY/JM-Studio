@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$Python = "",
     [string]$Name = "JointMotorController",
     [string]$Entry = "main.py",
@@ -86,6 +86,24 @@ Invoke-Step "Check PyInstaller" {
 }
 
 $SpecFile = Join-Path $ScriptDir "JointMotorController.spec"
+
+# ---- 功能裁剪: packaging/build_config.json -> build/staging/resources ----
+# 配置存在时生成裁剪版 feature_flags.json 的 staging 资源目录并注入打包;
+# 缺失时保持全功能构建, 与开发运行 main.py 用的 resources/feature_flags.json 互不影响。
+$BuildConfig = Join-Path $ScriptDir "build_config.json"
+$StagingRes  = Join-Path $ProjectRoot "build\staging\resources"
+Remove-Item Env:JM_STAGING_RES -ErrorAction SilentlyContinue
+if (Test-Path $BuildConfig) {
+    Invoke-Step "Prepare feature-trim staging" {
+        & $PythonExe (Join-Path $ScriptDir "prepare_build.py") `
+            --config $BuildConfig --out (Split-Path -Parent $StagingRes)
+    }
+    $env:JM_STAGING_RES = $StagingRes      # onefile/spec 路径消费
+    $AddData = "$StagingRes;resources"     # onedir 路径消费
+    Write-Host "Features : trimmed by build_config.json" -ForegroundColor Yellow
+} else {
+    Write-Host "Features : build_config.json not found, full-feature build" -ForegroundColor Yellow
+}
 
 if ($OneFile -and (Test-Path $SpecFile)) {
     # 单文件构建走 spec: 内含 hiddenimports/excludes, 并对 binaries/datas 二次过滤

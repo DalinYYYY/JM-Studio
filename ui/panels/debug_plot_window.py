@@ -12,7 +12,8 @@ import numpy as np
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
+    QWidget,
 )
 
 from ui.theme import theme
@@ -73,16 +74,24 @@ class _ChannelNameDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("调试通道命名")
         self.setMinimumWidth(360)
+        self.resize(420, min(520, 160 + 32 * len(channel_names)))
         self._edits: list[QLineEdit] = []
 
         layout = QVBoxLayout(self)
-        form = QFormLayout()
+        # 通道数由固件决定，使用滚动区避免 16/24 通道时命名对话框超出屏幕。
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumHeight(140)
+        scroll.setMaximumHeight(360)
+        form_widget = QWidget()
+        form = QFormLayout(form_widget)
         for i, name in enumerate(channel_names):
             edit = QLineEdit(name)
             edit.setPlaceholderText(f"DBG_{i}")
             self._edits.append(edit)
             form.addRow(f"通道 {i}:", edit)
-        layout.addLayout(form)
+        scroll.setWidget(form_widget)
+        layout.addWidget(scroll, 1)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
@@ -155,22 +164,34 @@ class DebugPlotWindow(QWidget):
 
         self._btn_pause = QPushButton("暂停")
         self._btn_pause.setCheckable(True)
+        self._btn_pause.setToolTip("暂停画面刷新，数据仍继续缓存；点击继续查看暂停期间波形")
         self._btn_pause.setFixedHeight(22)
         self._btn_pause.clicked.connect(self._on_pause_toggled)
         bar.addWidget(self._btn_pause)
 
         self._chk_follow = QCheckBox("跟随")
         self._chk_follow.setChecked(True)
+        self._chk_follow.setToolTip("跟随最新数据；取消后可拖动和缩放查看历史波形")
+        self._chk_follow.stateChanged.connect(
+            lambda _state: self._refresh(force=True))
         bar.addWidget(self._chk_follow)
 
         self._chk_auto_y = QCheckBox("Y自适应")
         self._chk_auto_y.setChecked(True)
+        self._chk_auto_y.setToolTip("根据当前可见波形自动调整 Y 轴范围")
         bar.addWidget(self._chk_auto_y)
+
+        self._chk_legend = QCheckBox("图例")
+        self._chk_legend.setChecked(True)
+        self._chk_legend.setToolTip("显示/隐藏通道图例；通道较多时可隐藏以扩大绘图区")
+        self._chk_legend.toggled.connect(self._on_legend_toggled)
+        bar.addWidget(self._chk_legend)
 
         bar.addWidget(QLabel("窗口(点):"))
         self._spin_window = QSpinBox()
         self._spin_window.setRange(100, 50000)
         self._spin_window.setValue(self._window_points)
+        self._spin_window.setToolTip("跟随模式下显示的最新数据点数")
         self._spin_window.setFixedWidth(72)
         self._spin_window.valueChanged.connect(self._on_window_changed)
         bar.addWidget(self._spin_window)
@@ -248,41 +269,56 @@ class DebugPlotWindow(QWidget):
     # ------------------------------------------------------------------
 
     def feed_debug(self, debug_tuple: tuple):
-        """接收单帧调试数据, 首次调用时动态创建通道."""
-        if pg is None or self._paused or not debug_tuple:
+        """接收单帧调试数据, 首次调用时动态创建通道.
+
+        暂停只冻结显示刷新，仍继续把收到的数据写入环形缓冲；这样恢复后
+        可以看到暂停期间的完整波形，并与实时曲线面板的暂停语义保持一致。
+        """
+        if pg is None or not debug_tuple:
             return
         idx = float(self._point_index)
         self._point_index += 1
-        if self._channel_count == 0:
+        # 固件通道数通常固定，但允许运行期间增加通道，避免新通道被静默丢弃。
+        if len(debug_tuple) > self._channel_count:
             self._init_channels(len(debug_tuple))
         for i, val in enumerate(debug_tuple):
             name = f"dbg_{i}"
-            if name in self._buffers:
-                self._buffers[name].append(idx, float(val))
+            if name not in self._buffers:
+                continue
+            try:
+                value = float(val)
+            except (TypeError, ValueError):
+                continue
+            # 无效值不写入缓冲，避免破坏 Y 轴范围和悬停插值。
+            if np.isfinite(value):
+                self._buffers[name].append(idx, value)
         if self._latest_idx is None or idx > self._latest_idx:
             self._latest_idx = idx
 
     def feed_debug_batch(self, debug_data_list: list):
         """批量接收调试数据 (逐帧全部绘制策略)."""
-        if pg is None or self._paused:
+        if pg is None:
             return
         n = len(debug_data_list)
         if n == 0:
             return
 
-        # 首次确定通道数
-        if self._channel_count == 0 and debug_data_list[0]:
-            self._init_channels(len(debug_data_list[0]))
+        # 数据点编号按收到的帧数连续推进，即使批次中包含空帧；否则下一批
+        # 数据会回退到错误的 X 位置，导致暂停/断续采样后曲线时间轴跳变。
+        start_idx = self._point_index
+        ts_arr = np.arange(start_idx, start_idx + n, dtype=np.float32)
+        self._point_index += n
+
+        # 首次确定通道数：不能只看批次首帧，UI 队列合并后首帧可能为空。
+        # 同时支持运行期间通道数增加，保留已有曲线和缓冲区。
+        max_count = max((len(d) for d in debug_data_list if d), default=0)
+        if max_count > self._channel_count:
+            self._init_channels(max_count)
 
         # 按通道收集数据
         ch_count = self._channel_count
         if ch_count == 0:
             return
-
-        # 数据点编号数组 (等间距, 与下位机采样周期无关)
-        start_idx = self._point_index
-        ts_arr = np.arange(start_idx, start_idx + n, dtype=np.float32)
-        self._point_index += n
 
         for ch in range(ch_count):
             name = f"dbg_{ch}"
@@ -298,7 +334,10 @@ class DebugPlotWindow(QWidget):
                 ys_in = np.array(
                     [float(d[ch]) for d, m in zip(debug_data_list, mask) if m],
                     dtype=np.float32)
-                buf.append_batch(ts_in, ys_in)
+                # 无效浮点值会破坏 Y 轴自适应和悬停读数，直接丢弃对应样本。
+                finite = np.isfinite(ys_in)
+                if finite.any():
+                    buf.append_batch(ts_in[finite], ys_in[finite])
 
         last_idx = float(ts_arr[-1])
         if self._latest_idx is None or last_idx > self._latest_idx:
@@ -332,7 +371,7 @@ class DebugPlotWindow(QWidget):
 
         # 通道数 >= 1 时显示图例
         if self._plot.legend is not None:
-            self._plot.legend.setVisible(count >= 1)
+            self._plot.legend.setVisible(count >= 1 and self._chk_legend.isChecked())
 
     def _get_display_name(self, index: int) -> str:
         """获取第 index 个通道的显示名称."""
@@ -365,7 +404,8 @@ class DebugPlotWindow(QWidget):
             curve = self._plot.plot([], [], pen=pen, name=display)
             self._curves[name] = curve
         if self._plot.legend is not None:
-            self._plot.legend.setVisible(self._channel_count >= 1)
+            self._plot.legend.setVisible(
+                self._channel_count >= 1 and self._chk_legend.isChecked())
         # 重建后立即重绘一次
         self._refresh(force=True)
 
@@ -382,6 +422,13 @@ class DebugPlotWindow(QWidget):
 
     def _on_window_changed(self, value: int):
         self._window_points = max(100, int(value))
+        # 参数变化后立即收缩/扩展视图，避免必须等下一帧数据才生效。
+        if pg is not None and self._latest_idx is not None:
+            self._refresh(force=True)
+
+    def _on_legend_toggled(self, checked: bool):
+        if pg is not None and self._plot.legend is not None:
+            self._plot.legend.setVisible(bool(checked) and self._channel_count >= 1)
 
     def _reset_view(self):
         if pg is None:
@@ -414,6 +461,15 @@ class DebugPlotWindow(QWidget):
                 return True
         return False
 
+    @staticmethod
+    def _slice_x_range(buf: _SeriesBuffer, x_min=None, x_max=None):
+        """读取指定 X 范围的数据，支持非跟随模式回看历史。"""
+        ts, ys = buf.arrays_view(x_min)
+        if x_max is not None and len(ts):
+            end = int(np.searchsorted(ts, float(x_max), side='right'))
+            ts, ys = ts[:end], ys[:end]
+        return ts, ys
+
     def _refresh(self, force: bool = False):
         if pg is None or (self._paused and not force):
             return
@@ -423,15 +479,31 @@ class DebugPlotWindow(QWidget):
         idx_end = self._latest_idx
         if idx_end is None:
             return
-        idx_min = max(0.0, idx_end - float(self._window_points))
+        follow = self._chk_follow.isChecked()
+        tail_min = max(0.0, idx_end - float(self._window_points))
+        if follow:
+            view_min, view_max = tail_min, max(idx_end, tail_min + 1.0)
+        else:
+            # 非跟随时保留用户当前 X 视图，并把完整历史交给 pyqtgraph，
+            # 这样拖动/缩放后不会因为只提交尾部窗口而出现空白。
+            try:
+                view_min, view_max = self._plot.viewRange()[0]
+            except Exception:
+                view_min, view_max = None, None
+            if view_min is not None and view_max is not None and view_max < view_min:
+                view_min, view_max = view_max, view_min
 
         for name, buf in self._buffers.items():
             if force or buf.dirty:
                 curve = self._curves.get(name)
                 if curve is None:
                     continue
-                ts, ys = buf.arrays_view(idx_min)
+                ts, ys = self._slice_x_range(
+                    buf, tail_min if follow else None,
+                    None)
                 if len(ts) == 0:
+                    curve.setData([], [])
+                    buf.dirty = False
                     continue
                 try:
                     curve.setData(ts, ys, avoidCopy=True)
@@ -439,24 +511,30 @@ class DebugPlotWindow(QWidget):
                     curve.setData(ts, ys)
                 buf.dirty = False
 
-        if self._chk_follow.isChecked() or force:
-            self._plot.setXRange(idx_min, max(idx_end, idx_min + 1.0), padding=0.02)
+        if follow:
+            self._plot.setXRange(view_min, view_max, padding=0.02)
 
         if self._chk_auto_y.isChecked():
             self._auto_range_counter += 1
             if self._auto_range_counter >= self._AUTO_RANGE_EVERY or force:
                 self._auto_range_counter = 0
-                self._auto_range_y(idx_min)
+                self._auto_range_y(
+                    tail_min if follow else view_min,
+                    view_max if not follow else view_max)
 
-    def _auto_range_y(self, idx_min: float):
+    def _auto_range_y(self, idx_min: float | None, idx_max: float | None = None):
         y0 = None
         y1 = None
         for name, buf in self._buffers.items():
-            _ts, ys = buf.arrays_view(idx_min)
+            _ts, ys = self._slice_x_range(buf, idx_min, idx_max)
             if not len(ys):
                 continue
-            cur_min = float(np.min(ys))
-            cur_max = float(np.max(ys))
+            # 缺失通道或无效遥测值以 NaN 表示，不能参与坐标范围计算。
+            finite = ys[np.isfinite(ys)]
+            if not len(finite):
+                continue
+            cur_min = float(np.min(finite))
+            cur_max = float(np.max(finite))
             if y0 is None:
                 y0, y1 = cur_min, cur_max
             else:
@@ -504,7 +582,7 @@ class DebugPlotWindow(QWidget):
                 continue
             val = buf.interpolate(x)
             display = self._get_display_name(i)
-            val_text = "--" if val is None else f"{val:.4f}"
+            val_text = "--" if val is None or not np.isfinite(val) else f"{val:.4f}"
             parts.append(f"{display} = {val_text}")
         return "<div style='color:#F5F5F5;'>" + "<br/>".join(parts) + "</div>"
 
@@ -522,6 +600,7 @@ class DebugPlotWindow(QWidget):
             "window_points": int(self._window_points),
             "follow": self._chk_follow.isChecked(),
             "auto_y": self._chk_auto_y.isChecked(),
+            "legend": self._chk_legend.isChecked(),
             "channel_names": list(self._channel_names),
         }
 
@@ -559,6 +638,11 @@ class DebugPlotWindow(QWidget):
         # Y 自适应
         try:
             self._chk_auto_y.setChecked(bool(opts.get("auto_y", True)))
+        except Exception:
+            pass
+        # 图例显隐
+        try:
+            self._chk_legend.setChecked(bool(opts.get("legend", True)))
         except Exception:
             pass
 

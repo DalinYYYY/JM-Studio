@@ -125,7 +125,7 @@ if pg is not None:
             self._vb.sigRangeChangedManually.emit([False, True])
 
 
-class PowerPanel(QGroupBox):
+class PowerPanel(QWidget):
     """功率监控面板。"""
 
     poll_temperature = pyqtSignal()   # 周期温度采集请求(主窗口转发 client.query_temperature)
@@ -137,7 +137,7 @@ class PowerPanel(QGroupBox):
     _STYLE_GLOBAL = "background-color: #1565C0; color: white; font-weight: bold;"
 
     def __init__(self, parent=None):
-        super().__init__("功率监控", parent)
+        super().__init__(parent)
         # ---- 配置项 ----
         self._bus_depth = 30000        # BUS 存储深度(点)
         self._temp_depth = 7200        # TEMP 存储深度(点): 0.1s 周期≈12min, 1s≈2h, 10s≈20h

@@ -88,7 +88,7 @@ class BodeSweepPanel(QWidget):
 
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        root.setContentsMargins(4, 4, 4, 4)
         # ---------- 表单：2 行 × 共享列网格（两行标签/控件列严格上下对齐） ----------
         form = QGridLayout()
         form.setHorizontalSpacing(8)

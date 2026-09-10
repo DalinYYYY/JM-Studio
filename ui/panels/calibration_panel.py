@@ -129,7 +129,7 @@ _CALIB_RESULT_MAP = {
 }
 
 
-class CalibrationPanel(QGroupBox):
+class CalibrationPanel(QWidget):
     """电机标定面板 (顶级 Tab)。
 
     信号:
@@ -152,7 +152,7 @@ class CalibrationPanel(QGroupBox):
     _POLL_PERIOD_MS = 500   # 标定进行中自动查询进度周期
 
     def __init__(self, parent=None):
-        super().__init__("", parent)
+        super().__init__(parent)
         self._panel_name = "电机标定"
         self._link_active = False
         self._current_top_fsm = None
@@ -183,7 +183,7 @@ class CalibrationPanel(QGroupBox):
     # ==================== UI 构建 ====================
     def _build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(8)
 
         self._build_status_card(layout)      # 状态卡(含已标定独占列)
@@ -195,7 +195,7 @@ class CalibrationPanel(QGroupBox):
         """紧凑状态卡: 左侧主信息(2行) + 右侧已标定独占列(徽章+标记+清除), 总高 ~70px."""
         self._status_card = QFrame()
         self._status_card.setFrameShape(QFrame.Shape.StyledPanel)
-        # 需求4: 容器背景统一为 panel_bg (与外层 QGroupBox 一致), 仅保留 border 分隔
+        # 卡片底色 panel_bg 与 Tab 底 app_bg 区分, 仅保留 border 分隔
         self._status_card.setStyleSheet(f"""
             QFrame {{
                 background: {theme.hex('panel_bg')};
@@ -209,6 +209,8 @@ class CalibrationPanel(QGroupBox):
 
         # ============ 左侧: 主信息(2行) ============
         left_wrap = QWidget()
+        # 裸 QWidget 会被全局 QSS 的 QWidget{background:app_bg} 命中而发黑, 置透明跟随状态卡底色
+        left_wrap.setStyleSheet("background: transparent;")
         left_layout = QVBoxLayout(left_wrap)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(3)
@@ -273,6 +275,7 @@ class CalibrationPanel(QGroupBox):
         与标定结果面板共用同一通道, 写完后由主窗口读回 Index 16 同步实际状态。
         """
         col = QWidget()
+        col.setStyleSheet("background: transparent;")
         col.setFixedWidth(170)
         col_layout = QVBoxLayout(col)
         col_layout.setContentsMargins(12, 0, 0, 0)
@@ -334,6 +337,7 @@ class CalibrationPanel(QGroupBox):
 
         for cmd, level_name, submodes in _CALIB_LEVELS:
             page = QWidget()
+            page.setStyleSheet("background: transparent;")
             page_layout = QHBoxLayout(page)
             page_layout.setContentsMargins(8, 8, 8, 8)
             page_layout.setSpacing(8)
@@ -368,6 +372,7 @@ class CalibrationPanel(QGroupBox):
         A4: 自动查询复选框下方增加查询周期(ms) QSpinBox。
         """
         col = QWidget()
+        col.setStyleSheet("background: transparent;")
         col.setFixedWidth(120)
         col.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         col_layout = QVBoxLayout(col)
