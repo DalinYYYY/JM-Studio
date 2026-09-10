@@ -63,6 +63,8 @@ TYPE_INFO = {
     'u32': (4, False, '<I'),
     'i32': (4, False, '<i'),
     'f32': (4, True,  '<f'),
+    'u64': (8, False, '<Q'),   # v1.12: FaultParam 三级使能掩码
+    'u32_bool': (4, False, '<I'),  # u32 传输一致, 上位机按十六进制显示
 }
 
 

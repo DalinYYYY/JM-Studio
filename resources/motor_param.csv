@@ -81,7 +81,6 @@ id,param_name,description,group,access,data_type,array_size,default_value,unit,m
 80,protect_over_voltage,过压保护阈值,Protection,RW,float,1,58,V,20,100,
 81,protect_under_voltage,欠压保护阈值,Protection,RW,float,1,15,V,5,30,
 82,protect_over_speed,过速保护阈值,Protection,RW,float,1,400,rad/s,10,2000,
-83,protect_over_temp,过温保护阈值,Protection,RW,float,1,85,C,50,120,
-84,protect_under_temp,欠温保护阈值,Protection,RW,float,1,-20,C,-40,0,
 85,protect_pos_error,位置跟随误差限制,Protection,RW,int32_t,1,1000,counts,100,100000,
-86,protect_enable_mask,保护使能掩码,Protection,RW,uint32_t,1,4.294967295e+09,,0,4.294967295e+09,"bit0=过流, bit1=过压, 依此类推"
+86,protect_enable,保护总使能,Protection,RW,uint32_t,1,1,,0,1,保护功能总使能 0=全部禁用 1=启用(原逐项位掩码简化为总开关)
+87,load_sim_dead_zone_rad_s,负载模拟低速死区,LoadSimConfig,RW,float,1,0.5,rad/s,0.05,5,对拖台被动转矩方向跟随的低速死区 死区内零输出防静止抖振

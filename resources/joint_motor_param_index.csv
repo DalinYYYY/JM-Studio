@@ -84,6 +84,6 @@ param_id,参数名(代码字段),中文含义,数据类型,字节数,单位,所�
 82,protect_over_temp,过温保护阈值,f32,4,℃,保护,RW
 83,protect_under_temp,欠温保护阈值,f32,4,℃,保护,RW
 84,protect_pos_error,位置跟随误差限制,i32,4,counts,保护,RW
-85,protect_enable_mask,保护使能掩码,u32,4,位掩码,保护,RW
+85,protect_enable,保护总使能,u32,4,0/1,保护,RW
 86,load_sim_dead_zone_rad_s,负载模拟低速死区,f32,4,rad/s,负载模拟,RW
 

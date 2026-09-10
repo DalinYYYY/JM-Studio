@@ -4,8 +4,8 @@ import math
 
 
 DEFAULT_CURRENT_BW_HZ = 1000.0
-DEFAULT_VELOCITY_BW_HZ = 100.0
-DEFAULT_POSITION_BW_HZ = 20.0
+DEFAULT_VELOCITY_BW_HZ = 30.0   # 级联规则 ≤ 电流环/10, 与固件 motor_pid_autotune.c 同步
+DEFAULT_POSITION_BW_HZ = 5.0    # ≤ 速度环/5, 与固件 motor_pid_autotune.c 同步
 
 
 def _positive(values: dict, name: str, minimum: float) -> float:

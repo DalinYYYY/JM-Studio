@@ -7,6 +7,8 @@
 - cmd_def : JmCmd / JmErr / JmTlmBit / JmParamType 枚举
 - codec   : 小端编解码助手 + 按类型打包
 - feedback: FeedbackData + 各应答/遥测解析
+- smoothstart: 缓启动渐变配置(0xA3/0xA4)编解码
+- fault_diag: 故障管理诊断(0xAA/0xAB)编解码
 - registry: CSV 数据驱动注册表(命令表/参数表)
 """
 
@@ -24,18 +26,23 @@ from .cmd_def import (
     MAGIC_BOOTLOADER, MAGIC_FACTORY_RESET, MAGIC_SOFT_RESET,
 )
 from . import codec
+from . import smoothstart
+from . import fault_diag
 from .feedback import (
     FeedbackData, parse_state, parse_read_reply, parse_telemetry,
     parse_calib_status, parse_pid_autotune_ack,
 )
 from .registry import (
     ProtocolRegistry, CommandSpec, ParamSpec, Field, get_registry,
+    FAULT_PARAM_CSV,
 )
 from .fault_codes import (
     load_fault_csv, fault_code_lookup, fault_codes_by_source,
+    fault_record_by_index, fault_index_of_code, clear_fault_cache,
+    get_fault_csv_path, set_fault_csv_path, save_fault_csv,
     fault_mask_decode, fault_mask_to_str,
     err_name_cn, err_name_cn_short,
-    FAULT_BIT_INFO,
+    FAULT_BIT_INFO, COMPAT_BIT_CODES,
 )
 
 __all__ = [
@@ -56,7 +63,10 @@ __all__ = [
     'parse_calib_status', 'parse_pid_autotune_ack',
     'ProtocolRegistry', 'CommandSpec', 'ParamSpec', 'Field', 'get_registry',
     'load_fault_csv', 'fault_code_lookup', 'fault_codes_by_source',
+    'fault_record_by_index', 'fault_index_of_code', 'clear_fault_cache',
+    'get_fault_csv_path', 'set_fault_csv_path', 'save_fault_csv',
+    'FAULT_PARAM_CSV',
     'fault_mask_decode', 'fault_mask_to_str',
     'err_name_cn', 'err_name_cn_short',
-    'FAULT_BIT_INFO',
+    'FAULT_BIT_INFO', 'COMPAT_BIT_CODES',
 ]

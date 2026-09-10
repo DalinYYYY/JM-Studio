@@ -133,16 +133,28 @@ class JmCmd(IntEnum):
     CALIB_ABORT = 0x98   # 中止标定
 
     # PID 管理 0xA0~0xAF: 三环独立参数来源管理 + 实时调试
-    # 0xA0: 触发理论估计(零极点对消法)并自动设 source=2, ring_mask位掩码(bit0=电流 bit1=速度 bit2=位置), 仅IDLE态
+    # 0xA0: 触发理论估计(零极点对消法)并自动设 source=2, ring_mask位掩码(bit0=电流环 bit1=速度环 bit2=位置环), 仅IDLE态
     # 0xA1: 独立切换某环 source(0=默认 1=Flash 2=理论估计 3=调试), 仅IDLE态
     # 0xA2: 读取三环当前 source 状态
+    # 0xA3: 缓启动渐变配置逐字段写(RAM立即生效+镜像motor_info, 需0xEA固化)
+    # 0xA4: 缓启动渐变配置读(单字段4B / param_id=0xFF整块60B多帧)
     # 0xA5: 实时写单个PID参数(调试模式, 直接写profile, ISR下一拍生效)
     # 0xA6: 实时读单个PID参数
     PID_AUTOTUNE = 0xA0    # PID 理论估计
     PID_SOURCE_SET = 0xA1  # PID 来源切换
     PID_SOURCE_GET = 0xA2  # 读 PID 来源状态
+    SMOOTH_CFG_SET = 0xA3  # 缓启配置写
+    SMOOTH_CFG_GET = 0xA4  # 缓启配置读
     PID_PARAM_SET = 0xA5   # 实时写PID参数
     PID_PARAM_GET = 0xA6   # 实时读PID参数
+
+    # 故障管理 0xAA~0xAB: fault_mgr 分级故障管理(协议 v1.9)
+    # 0xAA: 故障摘要读(无载荷, 应答18B 掩码/级别活动/最高优先级/降功率)
+    # 0xAB: 故障详情读(type(0=活动优先级序/1=历史时间倒序)+idx, 应答20B 记录)
+    # 0xAC: 故障事件主动上报(M->H 无应答, 预留二期, 回 NACK(NOT_SUPPORTED))
+    FAULT_SUMMARY = 0xAA   # 故障摘要读
+    FAULT_DETAIL = 0xAB    # 故障详情读
+    FAULT_EVENT = 0xAC     # 故障事件主动上报(预留, 不实现)
 
     # 系统诊断 0xB0~0xBF
     CLEAR_FAULT = 0xB0
@@ -197,6 +209,7 @@ class JmCmd(IntEnum):
     MOTOR_INFO_SAVE = 0xEA        # 固化motor_info: {flags:u8可选}, bit0=1追加写Flash备份(默认仅EEPROM)
     MOTOR_INFO_RESET = 0xEB       # 恢复默认(param_id=0xFFFF全部)
     MOTOR_INFO_RECALIB_RESET = 0xEC  # 清除标定状态以便重新标定(保留电机本体参数)
+    MOTOR_INFO_ERASE = 0xED       # 固化清零: {magic:u32} 擦除EEPROM全部参数(RAM同回默认)
 
     # CAN管理与通用 0xF0~0xFF
     SET_CAN_ID = 0xF0
@@ -239,6 +252,7 @@ class JmErr(IntEnum):
     SAVE_LIMIT = 0x14      # 固化次数超限(寿命保护)
     EEPROM_WRITE = 0x15    # EEPROM 写入失败
     EEPROM_VERIFY = 0x16   # EEPROM 回读校验失败
+    STORAGE_NOT_INIT = 0x17  # 存储服务未初始化(Flash 设备 init 失败/未执行)
 
 
 class CalibState(IntEnum):
@@ -555,6 +569,7 @@ RUN_STATE_CN = {
 MAGIC_BOOTLOADER = 0xB00710AD
 MAGIC_FACTORY_RESET = 0xFAC70F5F
 MAGIC_SOFT_RESET = 0x5E7E7E5E
+MAGIC_STORAGE_ERASE = 0x0AEA0001
 
 
 def cmd_name(cmd: int) -> str:

@@ -39,7 +39,7 @@ calib = CalibrationPanel()
 results_panel = ParamPanel(
     reg, title="标定结果", source="motor_config",
     groups=("MotorCalibParam",), show_save=True,
-    save_text="保存标定结果到Flash/EEPROM", show_legend=False,
+    save_text="固化参数", show_legend=False,
     show_bulk_rw=True)
 calib.attach_results_panel(results_panel)
 
@@ -201,14 +201,14 @@ from ui.theme import theme as _theme
 check(_theme.hex('btn_bg') in base_dark,
       f"需求4: base 样式应含 theme.btn_bg={_theme.hex('btn_bg')}")
 
-# 23. 底部全读/全写按钮宽度=72(=列宽, 与单行按钮对齐)
+# 23. 底部全读/全写按钮宽度=88(底部功能按钮统一宽度)
 check(hasattr(results_panel, "_btn_read_all") and hasattr(results_panel, "_btn_write_all"),
       "需求5: 应有 _btn_read_all/_btn_write_all")
 if hasattr(results_panel, "_btn_read_all"):
-    check(results_panel._btn_read_all.width() == 72 or
-          results_panel._btn_read_all.minimumWidth() == 72 or
-          results_panel._btn_read_all.sizeHint().width() == 72,
-          f"需求5: 全读按钮宽度应为 72(=列宽), 实际 {results_panel._btn_read_all.width()}")
+    check(results_panel._btn_read_all.width() == 88 or
+          results_panel._btn_read_all.minimumWidth() == 88 or
+          results_panel._btn_read_all.sizeHint().width() == 88,
+          f"需求5: 全读按钮宽度应为 88(功能按钮统一宽度), 实际 {results_panel._btn_read_all.width()}")
 
 # ============ 需求1: 标定结果表格颜色与电机参数表格一致(移除 panel_bg 特殊化) ============
 # 24. 标定结果面板(show_bulk_rw)表格不再有特殊 panel_bg QSS, 用与电机参数表格相同的颜色逻辑

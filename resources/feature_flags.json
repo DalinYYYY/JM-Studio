@@ -5,10 +5,11 @@
     "motor_params": true,
     "calibration": true,
     "pid_tuning": true,
+    "softstart_cfg": true,
     "feedback_chart": true,
     "state_machine": true,
     "waveform_plot": true,
-    "bode_sweep": true,
+    "bode_sweep": false,
     "fault_info": true,
     "virtual_twin": false,
     "log_panel": true

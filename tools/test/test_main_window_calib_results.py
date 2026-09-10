@@ -54,8 +54,8 @@ check("_calib_results_panel = ParamPanel(" in src,
       "源码应创建 _calib_results_panel")
 check('groups=("MotorCalibParam",)' in src,
       "标定结果面板应过滤 MotorCalibParam 段")
-check("save_text=\"保存标定结果到Flash/EEPROM\"" in src,
-      "保存按钮文本应为 '保存标定结果到Flash/EEPROM'")
+check("save_text=\"固化参数\"" in src,
+      "保存按钮文本应为 '固化参数'")
 check("attach_results_panel(self._calib_results_panel)" in src,
       "应调用 attach_results_panel 注入标定 Tab")
 check("self._calib_results_panel.read_param.connect(" in src,
@@ -75,7 +75,7 @@ calib = CalibrationPanel()
 results = ParamPanel(
     reg, title="标定结果", source="motor_config",
     groups=("MotorCalibParam",), show_save=True,
-    save_text="保存标定结果到Flash/EEPROM")
+    save_text="固化参数")
 calib.attach_results_panel(results)
 
 # 模拟 main_window._on_param_read 的最小行为

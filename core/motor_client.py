@@ -12,7 +12,9 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 import jmproto as jp
 from jmproto import JmCmd, JmErr, codec
-from jmproto.cmd_def import MOTOR_INFO_SAVE_FLAG_FLASH
+from jmproto import smoothstart
+from jmproto import fault_diag
+from jmproto.cmd_def import MOTOR_INFO_SAVE_FLAG_FLASH, MAGIC_STORAGE_ERASE
 from transport.base import Transport
 
 # 危险操作命令集合: 发送前需 UI 二次确认
@@ -32,6 +34,7 @@ DANGER_CMDS = {
     JmCmd.MOTOR_INFO_SAVE: "电机配置保存到 Flash",
     JmCmd.MOTOR_INFO_RESET: "电机配置恢复默认",
     JmCmd.MOTOR_INFO_RECALIB_RESET: "清除标定状态",
+    JmCmd.MOTOR_INFO_ERASE: "固化清零(擦除EEPROM全部参数)",
     JmCmd.SET_CAN_ID: "设置 CAN 地址(重启生效)",
     JmCmd.SOFT_RESET: "软件复位(设备重启)",
 }
@@ -59,6 +62,9 @@ class JmClient(QObject):
     pid_autotune_result_received = pyqtSignal(dict)    # 0xA0 PID理论估计应答(parse_pid_autotune_ack 结果)
     pid_source_received = pyqtSignal(int, int, int)    # 0xA2 三环source状态(cur, vel, pos)
     pid_param_received = pyqtSignal(int, int, bytes)   # 0xA6 PID参数读取结果(ring, param_type, value4)
+    smooth_cfg_received = pyqtSignal(int, object)      # 0xA4 缓启配置读取结果(param_id, SmoothConfig整块或4B值)
+    fault_summary_received = pyqtSignal(object)        # 0xAA 故障摘要(FaultSummary)
+    fault_detail_received = pyqtSignal(int, int, object)  # 0xAB 故障详情(ftype, idx, FaultRecord)
     trace_config_received = pyqtSignal(object)      # 0xB9 TRACE 配置应答
     trace_data_received = pyqtSignal(object)         # 0xBA TRACE 主动批量数据
     bode_sweep_ack_received = pyqtSignal(object)    # 0x76 启动/停止应答
@@ -82,6 +88,8 @@ class JmClient(QObject):
         # 固件协议版本 (major, minor): 0xD0 28B 扩展应答携带, 旧固件/未查询为 None。
         # v1.4+ 才支持 0x76 十二B偏置扫频载荷与速度闭环扫频模式。
         self.fw_proto_version = None
+        # 0xAB 详情请求上下文(应答不回显 type/idx, 发送时记录, 应答时携带)
+        self._fault_detail_pending = None
         # 危险命令二次确认回调: UI 层注入, 签名 (cmd, payload) -> bool
         # None 表示无 UI 注入, 直接发送(用于脚本/无 GUI 场景)
         self._confirm_cb = None
@@ -211,11 +219,12 @@ class JmClient(QObject):
         return self._send(JmCmd.MOTOR_INFO_READ, codec.wr_u16(param_id))
 
     def motor_info_write(self, param_id: int, value: bytes):
-        """写单个电机配置(0xE7, RAM生效): {param_id:u16;value:4B}。需调 motor_info_save 固化。"""
-        if len(value) != 4:
+        """写单个电机配置(0xE7, RAM生效): {param_id:u16;value:nB}。
+        v1.12: value 长度按参数类型(4B/u64参数8B)。需调 motor_info_save 固化。"""
+        if len(value) not in (4, 8):
             self.error_occurred.emit(
-                f"motor_info_write param_id={param_id} value长度{len(value)}!=4, 已截断/补零")
-            value = value[:4].ljust(4, b'\x00')
+                f"motor_info_write param_id={param_id} value长度{len(value)}非法, 已截断/补零")
+            value = value[:8].ljust(4, b'\x00')
         return self._send(JmCmd.MOTOR_INFO_WRITE, codec.wr_u16(param_id) + value)
 
     def motor_info_read_bulk(self, start_id: int, count: int):
@@ -234,6 +243,34 @@ class JmClient(QObject):
             payload += v
         return self._send(JmCmd.MOTOR_INFO_WRITE_BULK, payload)
 
+    # ---- 缓启动渐变配置读写 0xA3/0xA4 ----
+    # RAM 立即生效 + 镜像 motor_info(softstart PID 176~190), 需 0xEA 固化。
+    def smooth_cfg_set(self, param_id: int, value):
+        """写缓启配置字段(0xA3): {param_id:u8;value:4B}。value 为 int/float, 按 param_id 类型打包。"""
+        return self._send(JmCmd.SMOOTH_CFG_SET, smoothstart.pack_set_request(param_id, value))
+
+    def smooth_cfg_get(self, param_id: int):
+        """读缓启配置(0xA4): {param_id:u8}。0xFF 读整块 60B。"""
+        return self._send(JmCmd.SMOOTH_CFG_GET, smoothstart.pack_get_request(param_id))
+
+    # ---- 故障管理诊断 0xAA/0xAB + 0xB0 ----
+    # 故障使能掩码通过 motor_info PID 192/193/194 的通用读写通道处理。
+    def fault_summary_get(self):
+        """读故障摘要(0xAA): 无载荷, 应答 18B 走 fault_summary_received 信号。"""
+        return self._send(JmCmd.FAULT_SUMMARY)
+
+    def fault_detail_get(self, ftype: int, idx: int):
+        """读故障详情(0xAB): {type:u8; idx:u8}, 应答 20B 走 fault_detail_received 信号。
+
+        应答不回显 type/idx, 由本方法记录请求上下文后随信号携带。
+        越界固件回 NACK(NOT_FOUND)。"""
+        self._fault_detail_pending = (int(ftype), int(idx))
+        return self._send(JmCmd.FAULT_DETAIL, fault_diag.pack_detail_request(ftype, idx))
+
+    def fault_clear(self, flags: int = fault_diag.CLEAR_FLAG_LATCHED):
+        """清除故障(0xB0): {flags:u8}。bit0=清锁存故障(仅 IDLE), bit1=清历史记录。"""
+        return self._send(JmCmd.CLEAR_FAULT, codec.wr_u8(flags & 0xFF))
+
     def motor_info_save(self, flags: int = 0):
         """固化motor_info(0xEA): {flags:u8}。默认(flags=0)仅写EEPROM;
         flags=MOTOR_INFO_SAVE_FLAG_FLASH 追加写Flash备份。"""
@@ -246,6 +283,11 @@ class JmClient(QObject):
     def motor_info_recalib_reset(self):
         """清除标定状态以便重新标定(0xEC): 保留电机本体参数, 仅清 RAM, 需随后 motor_info_save() 固化。"""
         return self._send(JmCmd.MOTOR_INFO_RECALIB_RESET)
+
+    def motor_info_erase(self):
+        """固化清零(0xED): {magic:u32} 擦除 EEPROM 全部参数, RAM 同步恢复默认。
+        魔数由固件校验, 防误触。"""
+        return self._send(JmCmd.MOTOR_INFO_ERASE, codec.wr_u32(MAGIC_STORAGE_ERASE))
 
     # ---- PID 管理 0xA0~0xA6 ----
     def pid_autotune(self, ring_select: int, cur_bw_hz: float = 0.0,
@@ -451,10 +493,50 @@ class JmClient(QObject):
                 self.pid_source_received.emit(payload[0], payload[1], payload[2])
             return
 
+        # SMOOTH_CFG_GET(0xA4) 应答: 整块 60B(param_id=0xFF) 或单字段 4B,
+        # 首字节是数据而非 status, 必须在通用 ACK 分支(cmd<=SINGLE_STEP)之前特判
+        if cmd == JmCmd.SMOOTH_CFG_GET:
+            if len(payload) >= smoothstart.BLOCK_LEN:
+                try:
+                    cfg = smoothstart.unpack_block(payload[:smoothstart.BLOCK_LEN])
+                    self.smooth_cfg_received.emit(smoothstart.PID_ALL, cfg)
+                except ValueError as e:
+                    self.error_occurred.emit(f"缓启配置整块解析失败: {e}")
+            elif len(payload) >= 4:
+                self.smooth_cfg_received.emit(0, payload[:4])  # 单字段: 无回显id, 由请求方跟踪
+            return
+
         # PID_PARAM_GET(0xA6) 应答: 6 字节 (ring + param_type + 4B value), 不走通用 ACK 分支
         if cmd == JmCmd.PID_PARAM_GET:
             if len(payload) >= 6:
                 self.pid_param_received.emit(payload[0], payload[1], payload[2:6])
+            return
+
+        # FAULT_SUMMARY(0xAA) 应答: 18B 摘要, 首字节是数据而非 status,
+        # 必须在通用 ACK 分支(cmd<=SINGLE_STEP)之前特判
+        if cmd == JmCmd.FAULT_SUMMARY:
+            if len(payload) >= fault_diag.SUMMARY_LEN:
+                try:
+                    self.fault_summary_received.emit(
+                        fault_diag.unpack_summary(payload[:fault_diag.SUMMARY_LEN]))
+                except ValueError as e:
+                    self.error_occurred.emit(f"故障摘要解析失败: {e}")
+            return
+
+        # FAULT_DETAIL(0xAB) 应答: 20B 详情记录, 应答不回显 type/idx,
+        # 携带 fault_detail_get 发送时记录的请求上下文(与 0xA4 单字段"请求方跟踪"同思路)
+        if cmd == JmCmd.FAULT_DETAIL:
+            if len(payload) >= fault_diag.DETAIL_LEN:
+                ftype, idx = self._fault_detail_pending if \
+                    self._fault_detail_pending is not None else (-1, -1)
+                self._fault_detail_pending = None
+                try:
+                    self.fault_detail_received.emit(
+                        ftype, idx,
+                        fault_diag.unpack_detail(payload[:fault_diag.DETAIL_LEN],
+                                                 ftype, idx))
+                except ValueError as e:
+                    self.error_occurred.emit(f"故障详情解析失败: {e}")
             return
 
         # TEST_SWEEP_FREQ(0x76): 启动 ACK{session:u16,point_count:u16,duration_x100:u32};
@@ -629,8 +711,9 @@ class JmClient(QObject):
             self.motor_info_read_bulk_result.emit(start_id, values)
             return
 
-        # MOTOR_INFO_WRITE_BULK(0xE9) / MOTOR_INFO_SAVE(0xEA): ACK{status:u8}
-        if cmd in (JmCmd.MOTOR_INFO_WRITE_BULK, JmCmd.MOTOR_INFO_SAVE) and len(payload) >= 1:
+        # MOTOR_INFO_WRITE_BULK(0xE9) / MOTOR_INFO_SAVE(0xEA) / MOTOR_INFO_ERASE(0xED): ACK{status:u8}
+        if cmd in (JmCmd.MOTOR_INFO_WRITE_BULK, JmCmd.MOTOR_INFO_SAVE,
+                   JmCmd.MOTOR_INFO_ERASE) and len(payload) >= 1:
             status = payload[0]
             if status == JmErr.OK:
                 self.ack_received.emit(cmd)

@@ -17,13 +17,16 @@ _RES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 _CMD_CSV = os.path.join(_RES_DIR, 'joint_motor_command_list.csv')
 _PARAM_CSV = os.path.join(_RES_DIR, 'joint_motor_param_index.csv')
 _MOTOR_INFO_CSV = os.path.join(_RES_DIR, 'motor_info.csv')
+# 故障码表(fault_param_gen 生成副本, 12列, 行号=index 固件码表序)
+_FAULT_PARAM_CSV = os.path.join(_RES_DIR, 'fault_param.csv')
 # 公开默认 CSV 路径(供 UI 的"恢复默认"使用)
 DEFAULT_MOTOR_CONFIG_CSV = _MOTOR_INFO_CSV
 DEFAULT_PARAMS_CSV = _PARAM_CSV
+FAULT_PARAM_CSV = _FAULT_PARAM_CSV
 
 # 载荷字段解析: 形如 pos:f32 / magic:u32=0xB00710AD / param_id:u16
 _FIELD_RE = re.compile(r'([A-Za-z_]\w*)\s*:\s*([A-Za-z]\w*(?:\[\d+\])?)\s*(?:=\s*([^;]+))?')
-_KNOWN_TYPES = {'u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'f32'}
+_KNOWN_TYPES = {'u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'f32', 'u64', 'u32_bool'}
 
 
 class Field:
@@ -132,6 +135,8 @@ def _normalize_dtype(dtype: str) -> str:
         'int16_t': 'i16',
         'uint32': 'u32',
         'uint32_t': 'u32',
+        'uint64': 'u64',
+        'uint64_t': 'u64',
         'int32': 'i32',
         'int32_t': 'i32',
         'float': 'f32',
