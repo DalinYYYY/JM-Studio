@@ -177,7 +177,7 @@ calib._active_task_key = None
 check(calib._result_param_ids_for_current_task() == [],
       "需求1: 无选中任务时应返回空列表")
 
-calib._active_task_key = (int(JmCmd.CALIB_LEVEL2), 3)  # L2>R 相电阻
+calib._active_task_key = (int(JmCmd.CALIB_LEVEL2), 3, 0)  # L2>R 相电阻 (key: cmd, sub_id, method)
 result = calib._result_param_ids_for_current_task()
 check(result == [20],
       f"需求1: 选中 L2>R 相电阻 时应返回 [20], 实际 {result}")

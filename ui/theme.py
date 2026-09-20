@@ -244,6 +244,18 @@ LIGHT = {
 
 _PALETTES = {"dark": DARK, "light": LIGHT}
 
+# 参数分组着色: 参数表格中文名列按所属分组(Color=Category)区分, 便于快速定位分组。
+# 深色主题用亮色字(深底), 浅色主题用深色字(浅底), 保证两套背景下都可读;
+# 未登记的分组回退 text 色(不着色)。
+GROUP_COLORS = {
+    "SystemParam":       {"dark": "#6FB8FF", "light": "#1565C0"},  # 蓝 系统
+    "MotorCalibParam":   {"dark": "#5FE6AC", "light": "#1E9E6A"},  # 绿 标定
+    "DeviceParam":       {"dark": "#FFB454", "light": "#C05600"},  # 橙 设备
+    "ControlParam":      {"dark": "#4DD0E1", "light": "#00838F"},  # 青 控制
+    "ProtectCommParam":  {"dark": "#F06292", "light": "#C2185B"},  # 玫红 保护通信
+    "AdvancedAlgoParam": {"dark": "#B39DDB", "light": "#6A4FA3"},  # 紫 高级算法
+}
+
 
 class _Theme(QObject):
     """全局主题单例。"""
@@ -328,6 +340,13 @@ class _Theme(QObject):
             return QColor(v)
         parts = [int(x) for x in v.split(",")]
         return QColor(*parts)
+
+    def group_color(self, group: str) -> QColor:
+        """参数分组色(表格中文名列按分组区分); 未登记分组回退 text 色。"""
+        spec = GROUP_COLORS.get(group)
+        if not spec:
+            return self.c("text")
+        return QColor(spec.get(self._name, spec["dark"]))
 
     def set(self, name: str):
         if name not in _PALETTES or name == self._name:

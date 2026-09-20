@@ -1,5 +1,5 @@
 ﻿故障码,故障来源,故障级别,故障名称,触发条件,处理方式,异常命名,处理动作,实现期,降功率档,信号源,参数Key
-0x1101,安全系统,故障级,急停触发,急停命令(0x03)或急停按钮,立即停机进入安全态,ESTOP,STOP_POWER,1,0,ctrl_cmd ESTOP,-
+0x1101,安全系统,故障级,急停触发,急停命令(0x03)或急停按钮,立即停机进入安全态,ESTOP,STOP_POWER,0,0,ctrl_cmd ESTOP,-
 0x1102,安全系统,故障级,硬限位触发,硬限位开关动作,立即停机动态刹车,HARD_LIMIT,STOP_BRAKE,0,0,无(无限位开关输入),-
 0x1201,安全系统,异常级,软限位触发,位置超出软件限位范围,停止运动允许反向运动,SOFT_LIMIT,CLAMP_POS,0,0,position_rad,soft_limit_min/max_rad
 0x1202,安全系统,异常级,碰撞检测触发,iq突增超出碰撞阈值(无力传感器用电流观测),立即停机动态刹车,COLLISION,STOP_BRAKE,0,0,iq观测,collision_iq_A
@@ -20,9 +20,9 @@
 0x3102,驱动器,故障级,峰值电流过载,相电流矢量幅值(id²+iq²开方)>过流阈值,立即停机动态刹车,I_OVER_PEAK,STOP_BRAKE,1,0,id/iq,protect_over_current
 0x3103,驱动器,故障级,累计热量过载,驱动器热积分(I²t)>保护阈值,立即停机动态刹车,THERMAL_INT,STOP_BRAKE,0,0,temp_fet热积分,thermal_i2t_limit
 0x3104,驱动器,故障级,DRV芯片初始化错误,驱动芯片SPI写入回读校验失败,立即停机切断电源,DRV_INIT,STOP_POWER,0,0,ctrl1_readback,-
-0x3105,驱动器,故障级,A相电流采样错误,A相采样值超出量程范围,立即停机切断电源,IA_RANGE,STOP_POWER,1,0,ia,adc_range_pct
-0x3106,驱动器,故障级,B相电流采样错误,B相采样值超出量程范围,立即停机切断电源,IB_RANGE,STOP_POWER,1,0,ib,adc_range_pct
-0x3107,驱动器,故障级,C相电流采样错误,C相采样值超出量程范围,立即停机切断电源,IC_RANGE,STOP_POWER,1,0,ic,adc_range_pct
+0x3105,驱动器,故障级,A相电流采样错误,A相采样值超出量程范围,立即停机切断电源,IA_RANGE,STOP_POWER,0,0,ia,adc_range_pct
+0x3106,驱动器,故障级,B相电流采样错误,B相采样值超出量程范围,立即停机切断电源,IB_RANGE,STOP_POWER,0,0,ib,adc_range_pct
+0x3107,驱动器,故障级,C相电流采样错误,C相采样值超出量程范围,立即停机切断电源,IC_RANGE,STOP_POWER,0,0,ic,adc_range_pct
 0x3108,驱动器,故障级,MCU/FPGA故障,主控硬件自检失败(外设初始化失败),立即停机切断电源,MCU_SELFTEST,STOP_POWER,0,0,外设init失败,-
 0x3201,驱动器,异常级,驱动器过温,MOSFET结温>temp_fet_over_d,降功率运行,FET_OVER_TEMP,DERATE,0,2,temp_fet,temp_fet_over_d
 0x3202,驱动器,异常级,驱动器低温,MOSFET结温<temp_under_d,禁止运行等待预热,FET_UNDER_TEMP,DENY,0,0,temp_fet,temp_under_d
@@ -91,6 +91,7 @@
 0x8301,软件与算法,警告级,算法收敛延迟,控制算法收敛时间>100ms,记录日志,CONV_SLOW,LOG,0,0,无(难界定),-
 0x8302,软件与算法,警告级,日志存储满,日志缓冲区已满,覆盖最早日志,LOG_FULL,LOG,0,0,无(无日志系统),-
 0x8303,软件与算法,警告级,参数漂移,参数值偏离出厂值>10%,记录日志,PARAM_DRIFT,LOG,0,0,出厂值快照,-
+0x8304,软件与算法,警告级,齿槽表校验失败,上电齿槽补偿表CRC校验失败(损坏/未固化/旧格式遗留),记录日志并关闭齿槽补偿,COGGING_TABLE_CRC,LOG,0,0,cogging_comp_reload结果,-
 0x9101,通信系统,故障级,总线死锁,CAN总线无法收发数据>1s,尝试总线复位失败则安全停机,BUS_DEAD,STOP_IDLE,0,0,CAN收发超时,-
 0x9102,通信系统,故障级,主节点失联,连续1s无主节点心跳包,安全停机,HOST_LOST,STOP_IDLE,0,0,CAN loss timer,can_loss_timeout_ms
 0x9103,通信系统,故障级,物理层损坏,CAN控制器进入Bus-Off状态,立即停机切断电源,BUS_OFF,STOP_POWER,0,0,CAN错误计数器,-

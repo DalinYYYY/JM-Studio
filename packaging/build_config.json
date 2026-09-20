@@ -11,9 +11,9 @@
     "state_machine": false,
     "waveform_plot": true,
     "bode_sweep": false,
-    "fault_info": false,
+    "fault_info": true,
     "virtual_twin": false,
     "log_panel": true,
-    "can_transport": false
+    "can_transport": true
   }
 }

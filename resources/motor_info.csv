@@ -1,4 +1,4 @@
-﻿VariableName,NameZh,Category,Access,DataType,DefaultValue,Min,Max,Unit,BlockOffset,Index,Remarks
+VariableName,NameZh,Category,Access,DataType,DefaultValue,Min,Max,Unit,BlockOffset,Index,Remarks
 config_version,配置版本号,SystemParam,RW,uint32_t,65536,0,4294967295,,0x0040,0,参数表版本号 主.次=(高16位.低16位) 升级时比对校验
 enable_uart,接口使能,SystemParam,RW,u32_bool,0,0,15,,0x0040,1,通信接口使能掩码 bit0:UART bit1:CAN bit2:CANFD bit3:USB
 enable_bus_sensor,总线传感器使能,SystemParam,RW,u32_bool,1,0,1,,0x0040,2,使能母线传感器(母线电压/电流监测反馈)
@@ -110,3 +110,10 @@ softstart_pos_rate,缓启动位置速率,AdvancedAlgoParam,RW,float,100,0,10000,
 softstart_vel_rate,缓启动速度速率,AdvancedAlgoParam,RW,float,500,0,100000,rad/s²,0x0300,181,速度目标变化速率上限(加速度限值)
 softstart_torque_rate,缓启动力矩速率,AdvancedAlgoParam,RW,float,20,0,10000,Nm/s,0x0300,182,力矩目标变化速率上限
 softstart_current_rate,缓启动电流速率,AdvancedAlgoParam,RW,float,100,0,100000,A/s,0x0300,183,电流目标变化速率上限
+cogging_comp_mode,齿槽标定方案,AdvancedAlgoParam,RO,uint32_t,0,0,3,,0x0300,184,当前表标定方案 0无表 1位置爬行 2静态逐点 3速度环匀速 固件写表成功后更新 协议只读
+cogging_comp_gain,齿槽补偿增益,AdvancedAlgoParam,RW,float,1,-1.5,1.5,,0x0300,185,齿槽补偿增益 负值=反相(标定方向校验用) 幅值现场微调 欠补加大过补减小
+cogging_comp_crc32,齿槽表CRC32,AdvancedAlgoParam,RO,uint32_t,0,0,4294967295,,0x0300,186,1024点2048字节补偿表CRC32 IEEE 写表回读成功后更新 随配置固化 0表示无有效表
+cogging_comp_enable,齿槽补偿使能,AdvancedAlgoParam,RW,uint32_t,0,0,1,,0x0300,187,补偿使能开关 0关闭 1开启 表有效且增益非零时输出前馈 标定成功自动置1
+cogging_comp_rms_ma,齿槽表RMS,AdvancedAlgoParam,RO,uint32_t,0,0,65535,mA,0x0300,188,上次标定表RMS(mA) 质量指标 过小提示齿槽可忽略或采集异常
+cogging_comp_asym_ma,齿槽摩擦残余,AdvancedAlgoParam,RO,uint32_t,0,0,65535,mA,0x0300,189,上次标定正反直流差的一半(mA) 摩擦残余指示 偏大说明正反平均未消净
+cogging_comp_status,齿槽补偿状态,AdvancedAlgoParam,RO,uint32_t,0,0,4294967295,,0x0300,190,状态位图 bit0表有效 bit1输出条件满足 bit2落盘失败 bit3旧格式 bit4CRC损坏 bit8-15方案

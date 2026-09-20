@@ -41,6 +41,8 @@ COL_DESC = 6
 COL_READ = 7
 COL_WRITE = 8
 
+_BASE_HEADERS = ["参数", "中文名", "ID", "类型/单位", "当前值", "修改值", "描述", "读", "写"]
+
 
 class _ColorSwatch(QFrame):
     """图例小色块。"""
@@ -75,7 +77,7 @@ class ParamPanel(QWidget):
     def __init__(self, registry, parent=None, title="电机参数",
                  source="motor_param", show_save=False, save_text="保存到Flash",
                  groups=None, show_legend=True, show_bulk_rw=False,
-                 show_import_export=False):
+                 show_import_export=False, row_plan=None):
         super().__init__(parent)
         self._panel_name = title
         self._reg = registry
@@ -91,6 +93,22 @@ class ParamPanel(QWidget):
         # 仅展示指定分组(按 motor_info.csv / param_index.csv 的 group 名);
         # None 表示不过滤(向后兼容)。
         self._groups = tuple(groups) if groups else None
+        # 行计划: [(param_id, 标定项文本), ...] — 生效时取代 groups 过滤,
+        # 按给定顺序显示并在最前插入"标定项"列(标定结果面板用)。
+        self._row_plan = [(int(pid), str(tag)) for pid, tag in row_plan] \
+            if row_plan else None
+        # 列布局: 基础 9 列(COL_*); 行计划模式在最前多 1 列"标定项", 实际列号整体 +1
+        self._tag_col = 0 if self._row_plan else None
+        _base = 1 if self._row_plan else 0
+        self.COL_NAME = _base + COL_NAME
+        self.COL_CN_NAME = _base + COL_CN_NAME
+        self.COL_ID = _base + COL_ID
+        self.COL_TYPE = _base + COL_TYPE
+        self.COL_CURRENT = _base + COL_CURRENT
+        self.COL_EDIT = _base + COL_EDIT
+        self.COL_DESC = _base + COL_DESC
+        self.COL_READ = _base + COL_READ
+        self.COL_WRITE = _base + COL_WRITE
         self._current_items = {} # param_id -> QTableWidgetItem
         self._edit_items = {}    # param_id -> QTableWidgetItem
         self._write_buttons = {} # param_id -> QPushButton
@@ -226,8 +244,9 @@ class ParamPanel(QWidget):
             legend_w.setLayout(legend)
             layout.addWidget(legend_w)
 
-        self._table = QTableWidget(0, 9)
-        self._table.setHorizontalHeaderLabels(["参数", "中文名", "ID", "类型/单位", "当前值", "修改值", "描述", "读", "写"])
+        headers = (["标定项"] + _BASE_HEADERS) if self._row_plan else _BASE_HEADERS
+        self._table = QTableWidget(0, len(headers))
+        self._table.setHorizontalHeaderLabels(headers)
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -251,9 +270,9 @@ class ParamPanel(QWidget):
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setMinimumSectionSize(48)
         hdr.setDefaultSectionSize(120)
-        hdr.setSectionResizeMode(COL_DESC, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(COL_READ, QHeaderView.ResizeMode.Fixed)
-        hdr.setSectionResizeMode(COL_WRITE, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(self.COL_DESC, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(self.COL_READ, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(self.COL_WRITE, QHeaderView.ResizeMode.Fixed)
 
         layout.addWidget(self._table, 1)
 
@@ -323,14 +342,16 @@ class ParamPanel(QWidget):
 
         self._table.itemChanged.connect(self._on_item_changed)
         self._populate()
-        self._table.setColumnWidth(COL_NAME, 200)
-        self._table.setColumnWidth(COL_CN_NAME, 140)
-        self._table.setColumnWidth(COL_ID, 60)
-        self._table.setColumnWidth(COL_TYPE, 120)
-        self._table.setColumnWidth(COL_CURRENT, 120)
-        self._table.setColumnWidth(COL_EDIT, 120)
-        self._table.setColumnWidth(COL_READ, 72)
-        self._table.setColumnWidth(COL_WRITE, 72)
+        self._table.setColumnWidth(self.COL_NAME, 200)
+        self._table.setColumnWidth(self.COL_CN_NAME, 140)
+        self._table.setColumnWidth(self.COL_ID, 60)
+        self._table.setColumnWidth(self.COL_TYPE, 120)
+        self._table.setColumnWidth(self.COL_CURRENT, 120)
+        self._table.setColumnWidth(self.COL_EDIT, 120)
+        self._table.setColumnWidth(self.COL_READ, 72)
+        self._table.setColumnWidth(self.COL_WRITE, 72)
+        if self._row_plan:
+            self._table.setColumnWidth(self._tag_col, 130)
         self._update_table_layout()
 
     def _make_group_item(self, text: str) -> QTableWidgetItem:
@@ -463,12 +484,15 @@ class ParamPanel(QWidget):
         if len(swatches) >= 2:
             swatches[0].setColor(ro)
             swatches[1].setColor(rw)
-        # 只读行重涂
+        # 只读行重涂 + 中文名列分组色重涂(随深/浅主题取对应色板)
         for pid, spec in self._param_specs.items():
             row = self._row_of_pid.get(pid)
             if row is None:
                 continue
             self._style_row(row, spec.writable)
+            cn_item = self._table.item(row, self.COL_CN_NAME)
+            if cn_item is not None:
+                cn_item.setForeground(QBrush(theme.group_color(spec.group)))
         # 需求4: 刷新全部读/写按钮样式(按 dirty 状态分别套 base/dirty 样式)
         base_css = self._btn_base_style()
         dirty_css = self._btn_dirty_style()
@@ -492,6 +516,15 @@ class ParamPanel(QWidget):
         self._pending_writes.clear()
         self._row_of_pid.clear()
 
+        if self._row_plan:
+            # 行计划模式: 按给定 (param_id, 标定项) 顺序逐行构建(不按分组)
+            specs = (self._reg.motor_config_params
+                     if self._source == "motor_config" else self._reg.params)
+            self._populate_by_plan(specs)
+            self._table.resizeRowsToContents()
+            self._syncing_table = False
+            return
+
         groups = self._params_by_group()
         for group, params in groups.items():
             # 需求3: show_bulk_rw=True 时(标定结果面板)不创建分组显示行,
@@ -506,6 +539,13 @@ class ParamPanel(QWidget):
         self._table.resizeRowsToContents()
         self._syncing_table = False
 
+    def _populate_by_plan(self, specs: dict):
+        """行计划模式: 按 _row_plan 顺序取 registry 参数构建行; registry 缺失的跳过。"""
+        for pid, tag in self._row_plan:
+            spec = specs.get(int(pid))
+            if spec is not None:
+                self._append_param_row(spec, tag=tag)
+
     def _update_table_layout(self):
         self._table.horizontalHeader().setStretchLastSection(False)
 
@@ -517,8 +557,8 @@ class ParamPanel(QWidget):
         self._group_param_ids[group] = param_ids
 
         item = self._make_group_item(group)
-        self._table.setItem(row, COL_NAME, item)
-        self._table.setSpan(row, COL_NAME, 1, COL_READ)
+        self._table.setItem(row, self.COL_NAME, item)
+        self._table.setSpan(row, self.COL_NAME, 1, self.COL_READ)
 
         read_btn = self._make_button(
             "全读", lambda _=False, ids=tuple(param_ids): self.read_params.emit(list(ids)), width=64)
@@ -526,8 +566,8 @@ class ParamPanel(QWidget):
             "全写", lambda _=False, ids=tuple(param_ids): self._on_write_group_clicked(ids), width=64)
         writable = any(getattr(p, 'writable', False) for p in params)
         write_btn.setEnabled(writable)
-        self._table.setCellWidget(row, COL_READ, self._make_button_cell(read_btn))
-        self._table.setCellWidget(row, COL_WRITE, self._make_button_cell(write_btn))
+        self._table.setCellWidget(row, self.COL_READ, self._make_button_cell(read_btn))
+        self._table.setCellWidget(row, self.COL_WRITE, self._make_button_cell(write_btn))
 
     def _build_param_tooltip(self, p) -> str:
         """构建参数详细信息的悬停提示文本(鼠标悬停描述/名称列时淡入显示)。
@@ -553,7 +593,7 @@ class ParamPanel(QWidget):
             lines.append(f"说明: {p.desc}")
         return "\n".join(lines)
 
-    def _append_param_row(self, p):
+    def _append_param_row(self, p, tag: str = None):
         row = self._table.rowCount()
         self._table.insertRow(row)
 
@@ -567,6 +607,9 @@ class ParamPanel(QWidget):
         edit_item = self._make_cell_item("--", editable=p.writable)
         desc_item = self._make_cell_item(desc)
 
+        # 中文名按所属分组着色(分组色板随深/浅主题切换), 便于快速定位分组
+        cn_item.setForeground(QBrush(theme.group_color(p.group)))
+
         # 鼠标悬停描述列/名称列时淡入显示参数详细信息(含 min/max/单位/Remarks)
         tooltip = self._build_param_tooltip(p)
         if tooltip:
@@ -574,19 +617,26 @@ class ParamPanel(QWidget):
             name_item.setToolTip(tooltip)
             cn_item.setToolTip(tooltip)
 
-        self._table.setItem(row, COL_NAME, name_item)
-        self._table.setItem(row, COL_CN_NAME, cn_item)
-        self._table.setItem(row, COL_ID, id_item)
-        self._table.setItem(row, COL_TYPE, type_item)
-        self._table.setItem(row, COL_CURRENT, current_item)
-        self._table.setItem(row, COL_EDIT, edit_item)
-        self._table.setItem(row, COL_DESC, desc_item)
+        if self._row_plan:
+            # 行计划模式: 首列"标定项"标注该参数由哪些标定项使用/产出
+            tag_item = self._make_cell_item(tag or "--")
+            tag_item.setForeground(QBrush(theme.c("muted")))
+            tag_item.setToolTip(f"使用/产出该参数的标定项: {tag or '--'}")
+            self._table.setItem(row, self._tag_col, tag_item)
+
+        self._table.setItem(row, self.COL_NAME, name_item)
+        self._table.setItem(row, self.COL_CN_NAME, cn_item)
+        self._table.setItem(row, self.COL_ID, id_item)
+        self._table.setItem(row, self.COL_TYPE, type_item)
+        self._table.setItem(row, self.COL_CURRENT, current_item)
+        self._table.setItem(row, self.COL_EDIT, edit_item)
+        self._table.setItem(row, self.COL_DESC, desc_item)
 
         read_btn = self._make_button("读", lambda _=False, pid=p.param_id: self.read_param.emit(int(pid)), width=52)
         write_btn = self._make_button("写", lambda _=False, pid=p.param_id: self._on_write_clicked(int(pid)), width=52)
         write_btn.setEnabled(p.writable)
-        self._table.setCellWidget(row, COL_READ, self._make_button_cell(read_btn))
-        self._table.setCellWidget(row, COL_WRITE, self._make_button_cell(write_btn))
+        self._table.setCellWidget(row, self.COL_READ, self._make_button_cell(read_btn))
+        self._table.setCellWidget(row, self.COL_WRITE, self._make_button_cell(write_btn))
 
         self._current_items[p.param_id] = current_item
         self._edit_items[p.param_id] = edit_item
@@ -619,7 +669,7 @@ class ParamPanel(QWidget):
             if item is not None:
                 item.setBackground(QBrush(bg))
                 # 名称/ID/类型/描述列保持原色, 仅数值列随可写性着色以增强对比
-                if col in (COL_CURRENT, COL_EDIT):
+                if col in (self.COL_CURRENT, self.COL_EDIT):
                     item.setForeground(QBrush(fg))
 
     def _on_write_clicked(self, param_id: int):
@@ -752,7 +802,7 @@ class ParamPanel(QWidget):
     def _on_item_changed(self, item: QTableWidgetItem):
         if self._syncing_table:
             return
-        if item is None or item.column() != COL_EDIT:
+        if item is None or item.column() != self.COL_EDIT:
             return
         pid = item.data(Qt.ItemDataRole.UserRole)
         if pid is None:

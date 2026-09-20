@@ -1,0 +1,911 @@
+{
+  "panel": "电机配置",
+  "source": "motor_config",
+  "param_count": 113,
+  "params": [
+    {
+      "param_id": 0,
+      "code_name": "config_version",
+      "cn_name": "配置版本号",
+      "value": "6",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 1,
+      "code_name": "enable_uart",
+      "cn_name": "接口使能",
+      "value": "0x00000000",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 2,
+      "code_name": "enable_bus_sensor",
+      "cn_name": "总线传感器使能",
+      "value": "0x00000001",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 3,
+      "code_name": "safety_limit",
+      "cn_name": "安全限制使能",
+      "value": "0x00000001",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 4,
+      "code_name": "total_runtime_s",
+      "cn_name": "累计运行时间",
+      "value": "0",
+      "unit": "s",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 5,
+      "code_name": "save_count",
+      "cn_name": "固化次数",
+      "value": "27",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 16,
+      "code_name": "is_calibrated",
+      "cn_name": "电机是否校准",
+      "value": "0x00000001",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 17,
+      "code_name": "pole_pairs",
+      "cn_name": "电机极对数 p",
+      "value": "7",
+      "unit": "pairs",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 18,
+      "code_name": "motor_type",
+      "cn_name": "电机类型",
+      "value": "0",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 19,
+      "code_name": "direction",
+      "cn_name": "电机方向",
+      "value": "1",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 20,
+      "code_name": "phase_resistance",
+      "cn_name": "相电阻 Rs",
+      "value": "1.5695",
+      "unit": "ohm",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 21,
+      "code_name": "phase_inductance_d",
+      "cn_name": "d轴相电感 Ld",
+      "value": "0.00234037",
+      "unit": "H",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 22,
+      "code_name": "phase_inductance_q",
+      "cn_name": "q轴相电感 Lq",
+      "value": "0.00234",
+      "unit": "H",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 23,
+      "code_name": "flux_linkage",
+      "cn_name": "永磁体磁链 ψf",
+      "value": "0.00935004",
+      "unit": "Wb",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 24,
+      "code_name": "torque_constant",
+      "cn_name": "转矩常数 Kt",
+      "value": "0.1",
+      "unit": "Nm/A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 25,
+      "code_name": "rotor_inertia",
+      "cn_name": "转子惯量 J",
+      "value": "8.87957e-05",
+      "unit": "kg·m²",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 26,
+      "code_name": "friction_coulomb",
+      "cn_name": "库仑摩擦力矩 Tf",
+      "value": "0",
+      "unit": "Nm",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 27,
+      "code_name": "friction_viscous",
+      "cn_name": "粘滞摩擦系数 B",
+      "value": "0",
+      "unit": "Nm/(rad/s)",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 28,
+      "code_name": "gear_ratio",
+      "cn_name": "减速比 i",
+      "value": "0",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 29,
+      "code_name": "gear_efficiency",
+      "cn_name": "减速器效率 η",
+      "value": "0",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 30,
+      "code_name": "calibration_current",
+      "cn_name": "校准电流",
+      "value": "0.5",
+      "unit": "A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 31,
+      "code_name": "resistance_calib_max_voltage",
+      "cn_name": "电阻校准最大电压",
+      "value": "3",
+      "unit": "V",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 32,
+      "code_name": "current_lim",
+      "cn_name": "峰值电流限制 Imax",
+      "value": "2",
+      "unit": "A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 33,
+      "code_name": "current_control_bandwidth",
+      "cn_name": "电流环带宽 ωc",
+      "value": "500",
+      "unit": "Hz",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 34,
+      "code_name": "enc_type",
+      "cn_name": "编码器类型",
+      "value": "1",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 35,
+      "code_name": "enc_lines",
+      "cn_name": "编码器分辨率",
+      "value": "16384",
+      "unit": "CPR",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 36,
+      "code_name": "enc_direction",
+      "cn_name": "编码器计数方向",
+      "value": "-1",
+      "unit": "",
+      "dtype": "i32"
+    },
+    {
+      "param_id": 37,
+      "code_name": "enc_offset",
+      "cn_name": "编码器位置偏移 θ0",
+      "value": "148.426",
+      "unit": "deg",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 38,
+      "code_name": "elec_angle_bias",
+      "cn_name": "电角度偏置 θe0",
+      "value": "0",
+      "unit": "rad",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 39,
+      "code_name": "pwm_freq_hz",
+      "cn_name": "PWM载波频率 fpwm",
+      "value": "10000",
+      "unit": "Hz",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 40,
+      "code_name": "dead_time_ns",
+      "cn_name": "PWM死区时间 Td",
+      "value": "500",
+      "unit": "ns",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 41,
+      "code_name": "shunt_resistance",
+      "cn_name": "电流采样电阻 Rsh",
+      "value": "0.01",
+      "unit": "ohm",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 42,
+      "code_name": "current_amp_gain",
+      "cn_name": "电流放大增益 G",
+      "value": "50",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 43,
+      "code_name": "peak_current",
+      "cn_name": "峰值电流 Ipk",
+      "value": "2.5",
+      "unit": "A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 44,
+      "code_name": "max_speed",
+      "cn_name": "最大转速 ωmax",
+      "value": "200",
+      "unit": "rad/s",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 48,
+      "code_name": "device_zero",
+      "cn_name": "设备零度",
+      "value": "0",
+      "unit": "rad",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 49,
+      "code_name": "device_time",
+      "cn_name": "设备生产日期",
+      "value": "0",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 50,
+      "code_name": "can_id",
+      "cn_name": "CAN节点ID",
+      "value": "1",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 51,
+      "code_name": "can_baudrate",
+      "cn_name": "CAN波特率",
+      "value": "1000000",
+      "unit": "bps",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 52,
+      "code_name": "can_timeout_s",
+      "cn_name": "CAN通信超时",
+      "value": "0.5",
+      "unit": "s",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 53,
+      "code_name": "can_fd_enable",
+      "cn_name": "CAN FD使能",
+      "value": "0x00000000",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 54,
+      "code_name": "can_fd_baudrate",
+      "cn_name": "CAN FD数据波特率",
+      "value": "8000000",
+      "unit": "bps",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 55,
+      "code_name": "uart_baudrate",
+      "cn_name": "UART波特率",
+      "value": "115200",
+      "unit": "bps",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 64,
+      "code_name": "kp_ld",
+      "cn_name": "d轴比例增益 Kp_d",
+      "value": "7.5",
+      "unit": "V/A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 65,
+      "code_name": "ki_ld",
+      "cn_name": "d轴积分增益 Ki_d",
+      "value": "4954",
+      "unit": "V/(A·s)",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 66,
+      "code_name": "kp_lq",
+      "cn_name": "q轴比例增益 Kp_q",
+      "value": "7.5",
+      "unit": "V/A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 67,
+      "code_name": "ki_lq",
+      "cn_name": "q轴积分增益 Ki_q",
+      "value": "4954",
+      "unit": "V/(A·s)",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 68,
+      "code_name": "integral_limit",
+      "cn_name": "积分限幅",
+      "value": "7.5",
+      "unit": "V",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 69,
+      "code_name": "decoupling_gain",
+      "cn_name": "dq轴解耦增益",
+      "value": "1",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 70,
+      "code_name": "comp_du_V",
+      "cn_name": "死区补偿电压 Δu",
+      "value": "0",
+      "unit": "V",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 71,
+      "code_name": "pwm_duty_max",
+      "cn_name": "PWM最大占空比 Dmax",
+      "value": "0.9",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 72,
+      "code_name": "kp_s",
+      "cn_name": "速度环比例增益 Kp_s",
+      "value": "0.06",
+      "unit": "A/(rad/s)",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 73,
+      "code_name": "ki_s",
+      "cn_name": "速度环积分增益 Ki_s",
+      "value": "0.9",
+      "unit": "A/rad",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 74,
+      "code_name": "speed_integral_limit",
+      "cn_name": "速度环积分限幅",
+      "value": "1",
+      "unit": "A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 75,
+      "code_name": "vff",
+      "cn_name": "速度前馈系数",
+      "value": "0",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 76,
+      "code_name": "aff",
+      "cn_name": "加速度前馈系数",
+      "value": "0",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 77,
+      "code_name": "jerk_ff",
+      "cn_name": "加加速度前馈系数",
+      "value": "0",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 78,
+      "code_name": "speed_filter_alpha",
+      "cn_name": "速度滤波系数 α",
+      "value": "0.1",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 79,
+      "code_name": "speed_filter_enable",
+      "cn_name": "速度滤波使能",
+      "value": "0x00000000",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 80,
+      "code_name": "kp_p",
+      "cn_name": "位置环比例增益 Kp_p",
+      "value": "15",
+      "unit": "Hz",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 81,
+      "code_name": "ki_p",
+      "cn_name": "位置环积分增益 Ki_p",
+      "value": "0",
+      "unit": "1/s",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 82,
+      "code_name": "position_integral_limit",
+      "cn_name": "位置环积分限幅",
+      "value": "0",
+      "unit": "rad",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 83,
+      "code_name": "position_filter_alpha",
+      "cn_name": "位置滤波系数 α",
+      "value": "0.1",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 84,
+      "code_name": "position_filter_enable",
+      "cn_name": "位置滤波使能",
+      "value": "0x00000000",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 85,
+      "code_name": "following_error_limit",
+      "cn_name": "跟随误差限制",
+      "value": "1000",
+      "unit": "P",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 86,
+      "code_name": "decouple_algo",
+      "cn_name": "交叉解耦算法",
+      "value": "1",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 87,
+      "code_name": "bemf_ff_enable",
+      "cn_name": "反电势前馈使能",
+      "value": "0x00000001",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 88,
+      "code_name": "deadtime_comp_enable",
+      "cn_name": "死区补偿使能",
+      "value": "0x00000001",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 127,
+      "code_name": "pid_source_mask",
+      "cn_name": "PID来源位掩码",
+      "value": "0x00000000",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 128,
+      "code_name": "protect_enable",
+      "cn_name": "保护总使能",
+      "value": "0x00000001",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 129,
+      "code_name": "over_current_A",
+      "cn_name": "过流保护阈值",
+      "value": "3",
+      "unit": "A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 130,
+      "code_name": "over_voltage_V",
+      "cn_name": "过压保护阈值",
+      "value": "30",
+      "unit": "V",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 131,
+      "code_name": "under_voltage_V",
+      "cn_name": "欠压保护阈值",
+      "value": "8",
+      "unit": "V",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 132,
+      "code_name": "over_speed_rad_s",
+      "cn_name": "过速保护阈值",
+      "value": "250",
+      "unit": "rad/s",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 133,
+      "code_name": "position_following_error_p",
+      "cn_name": "位置跟随误差保护",
+      "value": "1000",
+      "unit": "P",
+      "dtype": "i32"
+    },
+    {
+      "param_id": 134,
+      "code_name": "pos_limit_min",
+      "cn_name": "位置下限",
+      "value": "-1000",
+      "unit": "P",
+      "dtype": "i32"
+    },
+    {
+      "param_id": 135,
+      "code_name": "pos_limit_max",
+      "cn_name": "位置上限",
+      "value": "1000",
+      "unit": "P",
+      "dtype": "i32"
+    },
+    {
+      "param_id": 136,
+      "code_name": "ov_mid_v",
+      "cn_name": "中度过压阈值",
+      "value": "28",
+      "unit": "V",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 137,
+      "code_name": "uv_mid_v",
+      "cn_name": "中度欠压阈值",
+      "value": "10",
+      "unit": "V",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 138,
+      "code_name": "ibus_over_A",
+      "cn_name": "母线过流阈值",
+      "value": "3",
+      "unit": "A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 139,
+      "code_name": "ibus_cont_A",
+      "cn_name": "持续过流阈值",
+      "value": "2.2",
+      "unit": "A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 140,
+      "code_name": "ibus_cont_time_s",
+      "cn_name": "持续过流时长",
+      "value": "2",
+      "unit": "s",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 141,
+      "code_name": "temp_fet_over_d",
+      "cn_name": "驱动器过温阈值",
+      "value": "100",
+      "unit": "℃",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 142,
+      "code_name": "temp_motor_over_d",
+      "cn_name": "电机过温熔断阈值",
+      "value": "100",
+      "unit": "℃",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 143,
+      "code_name": "temp_motor_hot_d",
+      "cn_name": "绕组过热阈值",
+      "value": "90",
+      "unit": "℃",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 144,
+      "code_name": "temp_under_d",
+      "cn_name": "低温阈值",
+      "value": "-20",
+      "unit": "℃",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 154,
+      "code_name": "mask_critical1",
+      "cn_name": "故障级使能掩码低32位",
+      "value": "0xFFFFFFFF",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 155,
+      "code_name": "mask_critical2",
+      "cn_name": "故障级使能掩码高32位",
+      "value": "0xFFFFFFFF",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 156,
+      "code_name": "mask_exception1",
+      "cn_name": "异常级使能掩码低32位",
+      "value": "0xFFFFFFFF",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 157,
+      "code_name": "mask_exception2",
+      "cn_name": "异常级使能掩码高32位",
+      "value": "0xFFFFFFFF",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 158,
+      "code_name": "mask_warning1",
+      "cn_name": "警告级使能掩码低32位",
+      "value": "0xFFFFFFFF",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 159,
+      "code_name": "mask_warning2",
+      "cn_name": "警告级使能掩码高32位",
+      "value": "0xFFFFFFFF",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 160,
+      "code_name": "mit_kp",
+      "cn_name": "MIT位置刚度 Kp",
+      "value": "10",
+      "unit": "Nm/rad",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 161,
+      "code_name": "mit_kd",
+      "cn_name": "MIT速度阻尼 Kd",
+      "value": "0.1",
+      "unit": "Nm/(rad/s)",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 162,
+      "code_name": "mit_max_current",
+      "cn_name": "MIT最大电流 Imax",
+      "value": "2.5",
+      "unit": "A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 163,
+      "code_name": "mit_feedforward_torque",
+      "cn_name": "MIT前馈力矩 τff",
+      "value": "0",
+      "unit": "Nm",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 164,
+      "code_name": "force_kp",
+      "cn_name": "力控比例增益",
+      "value": "5.6",
+      "unit": "A/Nm",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 165,
+      "code_name": "force_ki",
+      "cn_name": "力控积分增益",
+      "value": "0.1",
+      "unit": "A/(Nm·s)",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 166,
+      "code_name": "force_limit",
+      "cn_name": "力控力矩限制",
+      "value": "0.5",
+      "unit": "Nm",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 167,
+      "code_name": "force_control_enable",
+      "cn_name": "力控使能",
+      "value": "0x00000000",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 168,
+      "code_name": "homing_method",
+      "cn_name": "回零方法",
+      "value": "0",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 169,
+      "code_name": "homing_speed",
+      "cn_name": "回零速度",
+      "value": "10",
+      "unit": "rad/s",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 170,
+      "code_name": "homing_offset",
+      "cn_name": "回零偏移",
+      "value": "0",
+      "unit": "rad",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 176,
+      "code_name": "softstart_valid",
+      "cn_name": "缓启动配置有效标志",
+      "value": "0x00000000",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 177,
+      "code_name": "softstart_enable",
+      "cn_name": "缓启动总开关",
+      "value": "0x00000001",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 178,
+      "code_name": "softstart_shape",
+      "cn_name": "缓启动渐变形状",
+      "value": "0x00000001",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 179,
+      "code_name": "softstart_duration",
+      "cn_name": "缓启动固定时长",
+      "value": "500",
+      "unit": "次",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 180,
+      "code_name": "softstart_pos_rate",
+      "cn_name": "缓启动位置速率",
+      "value": "50",
+      "unit": "rad/s",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 181,
+      "code_name": "softstart_vel_rate",
+      "cn_name": "缓启动速度速率",
+      "value": "50",
+      "unit": "rad/s²",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 182,
+      "code_name": "softstart_torque_rate",
+      "cn_name": "缓启动力矩速率",
+      "value": "1",
+      "unit": "Nm/s",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 183,
+      "code_name": "softstart_current_rate",
+      "cn_name": "缓启动电流速率",
+      "value": "10",
+      "unit": "A/s",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 184,
+      "code_name": "cogging_comp_enable",
+      "cn_name": "齿槽补偿使能",
+      "value": "0x00000001",
+      "unit": "",
+      "dtype": "u32_bool"
+    },
+    {
+      "param_id": 185,
+      "code_name": "cogging_comp_gain",
+      "cn_name": "齿槽补偿增益",
+      "value": "-1.5",
+      "unit": "",
+      "dtype": "f32"
+    }
+  ]
+}

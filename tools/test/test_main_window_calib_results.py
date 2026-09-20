@@ -3,7 +3,7 @@
 验证:
   1. main_window 模块能 import (语法正确)
   2. _connect_signals 中存在 _calib_results_panel 的连接代码
-  3. _build_ui 中创建了 _calib_results_panel (groups=MotorCalibParam, show_save=True)
+  3. _build_ui 中创建了 _calib_results_panel (row_plan=CALIB_TABLE_PLAN, show_save=True)
   4. 端到端: 手动模拟 main_window 的连接逻辑, 验证 calib_results_panel 信号能驱动
      一个 mock 队列 (复刻 _on_param_read 的行为)
 """
@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.normpath(os.path.join(_HERE, '..', '..')))
 
 from PyQt6.QtWidgets import QApplication
 from jmproto.registry import get_registry
-from ui.panels.calibration_panel import CalibrationPanel
+from ui.panels.calibration_panel import CalibrationPanel, CALIB_TABLE_PLAN
 from ui.panels.param_panel import ParamPanel
 import ui.main_window as mw_mod
 
@@ -52,8 +52,8 @@ with open(src_path, 'r', encoding='utf-8') as f:
     src = f.read()
 check("_calib_results_panel = ParamPanel(" in src,
       "源码应创建 _calib_results_panel")
-check('groups=("MotorCalibParam",)' in src,
-      "标定结果面板应过滤 MotorCalibParam 段")
+check("row_plan=CALIB_TABLE_PLAN" in src,
+      "标定结果面板应按 CALIB_TABLE_PLAN 行计划展示(标定流程排序+标定项列)")
 check("save_text=\"固化参数\"" in src,
       "保存按钮文本应为 '固化参数'")
 check("attach_results_panel(self._calib_results_panel)" in src,
@@ -74,9 +74,24 @@ reg = get_registry()
 calib = CalibrationPanel()
 results = ParamPanel(
     reg, title="标定结果", source="motor_config",
-    groups=("MotorCalibParam",), show_save=True,
+    row_plan=CALIB_TABLE_PLAN, show_save=True,
     save_text="固化参数")
 calib.attach_results_panel(results)
+
+# 行计划行为: 行数与计划一致, 首列为"标定项", 按计划顺序排列
+_tbl = results._table
+check(_tbl.columnCount() == 10,
+      f"行计划模式应为 10 列(标定项+基础9列), 实际 {_tbl.columnCount()}")
+check(_tbl.rowCount() == len(CALIB_TABLE_PLAN),
+      f"行数应等于计划行数 {len(CALIB_TABLE_PLAN)}, 实际 {_tbl.rowCount()}")
+check(_tbl.horizontalHeaderItem(0).text() == "标定项",
+      "首列列头应为 '标定项'")
+plan_ids = [pid for pid, _tag in CALIB_TABLE_PLAN]
+check(list(results._param_specs.keys()) == plan_ids,
+      "参数行顺序应严格按 CALIB_TABLE_PLAN (不按 ID 排序)")
+first_row = _tbl.item(0, 0)
+check(first_row is not None and first_row.text() == "L1>3 电流传感器",
+      f"首行标定项应为 'L1>3 电流传感器', 实际 {first_row.text() if first_row else None}")
 
 # 模拟 main_window._on_param_read 的最小行为
 queue = deque()

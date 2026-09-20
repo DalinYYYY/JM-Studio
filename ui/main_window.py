@@ -39,7 +39,7 @@ from ui.panels.telemetry_panel import TelemetryPanel
 from ui.panels.plot_panel import PlotPanel
 from ui.panels.log_panel import LogPanel
 from ui.panels.state_machine_panel import StateMachinePanel
-from ui.panels.calibration_panel import CalibrationPanel
+from ui.panels.calibration_panel import CalibrationPanel, CALIB_TABLE_PLAN
 from ui.panels.pid_panel import PidPanel, PidSource
 from ui.panels.softstart_panel import SoftstartPanel
 from ui.panels.twin_param_panel import TwinParamPanel
@@ -306,11 +306,12 @@ class MainWindow(QMainWindow):
             self._motor_preset_combo.addItem(display, name)
         self._motor_preset_apply_btn.setEnabled(False)
         # 标定结果面板: 复用 motor_config 通道(0xE6 读 / 0xE7 写 / 0xEA 固化),
-        # 仅展示 MotorCalibParam 段(Index 16~42), 注入到标定 Tab 内嵌展示。
+        # 按 CALIB_TABLE_PLAN(标定流程 L1~L7 顺序)展示标定相关参数,
+        # 首列"标定项"标注来源, 注入到标定 Tab 内嵌展示。
         # show_legend=False: 去掉图例行, 让表格直接占满
         self._calib_results_panel = ParamPanel(
             self._registry, title="标定结果", source="motor_config",
-            groups=("MotorCalibParam",), show_save=True,
+            row_plan=CALIB_TABLE_PLAN, show_save=True,
             save_text="固化参数", show_legend=False,
             show_bulk_rw=True)
         self._plot_panel = PlotPanel()

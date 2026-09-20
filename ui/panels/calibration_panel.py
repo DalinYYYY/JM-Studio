@@ -9,13 +9,14 @@ UI 布局 (紧凑, 状态卡仅 2 行 ~70px):
      - 当前选中任务行(小字, 带左侧高亮条): 级别>子项 CMD=0xXX submode=N · 描述
   2. 标定任务: 顶部 QTabWidget, L1~L7 每级一个 Tab, 选中 Tab 才显示该级子项卡片,
      点击子项卡片即启动该标定
-  3. 标定结果: 内嵌 ParamPanel(source="motor_config", groups=["MotorCalibParam"]),
-     展示下位机读回值/修改值/单位, 支持单读/单写/全读/全写/保存到Flash(0xEA)
+  3. 标定结果: 内嵌 ParamPanel(source="motor_config", row_plan=CALIB_TABLE_PLAN),
+     按标定流程 L1~L7 排序展示(首列"标定项"标注来源),
+     支持单读/单写/全读/全写/保存到Flash(0xEA)
   4. 操作历史: 时间戳 + TX/ACK/NACK 文本
 
 数据来源:
   - registry "校准" 类命令 (joint_motor_command_list.csv 第 58~66 条)
-  - motor_info.csv 的 MotorCalibParam 分段(Index 16~42, 标定结果)
+  - motor_info.csv 标定相关段(MotorCalibParam + ControlParam PID 字段, 见 CALIB_TABLE_PLAN)
   - cmd_def.JmCmd.CALIB_* / JmErr.CALIB_BUSY / TopFsm.CALIB
   - 主窗口转发的 ACK/NACK/state_updated/connected 信号
 """
@@ -39,49 +40,54 @@ from ui.theme import theme
 
 
 # ==================== L1~L7 标定级别定义 ====================
-# 每条: (cmd, 级别名称, [(sub_id, 子模式名, 描述), ...])
+# 每条: (cmd, 级别名称, [(sub_id, method, 子模式名, 描述), ...])
 # L2 子模式按固件实际实现拆分(submode 3-6 分别对应 R/Ld/Lq/flux, 各有独立测试方法)
+# method=0 表示该子项无方案参数; L5>1 齿槽三个方案卡片共用 submode=1,
+# 方案经 0x94 payload[1] 传给固件(固件端不读配置, 配置只存溯源 ID184)
 _CALIB_LEVELS = [
     (JmCmd.CALIB_LEVEL1, "L1 驱动硬件底层", [
-        (1, "ADC偏置",     "电流/电压采样通道零点偏置校正"),
-        (2, "ADC增益",     "电流/电压采样通道增益校正"),
-        (3, "电流传感器",  "相电流传感器线性度与零漂"),
-        (4, "温度传感器",  "FET/电机 NTC 温度采样校正"),
-        (5, "母线电压",    "母线电压分压比与零点校正"),
-        (6, "死区特性",    "逆变器死区时间与管压降补偿"),
+        (1, 0, "ADC偏置",     "电流/电压采样通道零点偏置校正"),
+        (2, 0, "ADC增益",     "电流/电压采样通道增益校正"),
+        (3, 0, "电流传感器",  "相电流传感器线性度与零漂"),
+        (4, 0, "温度传感器",  "FET/电机 NTC 温度采样校正"),
+        (5, 0, "母线电压",    "母线电压分压比与零点校正"),
+        (6, 0, "死区特性",    "逆变器死区时间与管压降补偿"),
     ]),
     (JmCmd.CALIB_LEVEL2, "L2 电机电气身份", [
-        (1, "相序",          "U/V/W 相序方向辨识"),
-        (2, "极对数",        "电机极对数自动辨识"),
-        (3, "R 相电阻",      "相电阻辨识 (DC法)"),
-        (4, "Ld d轴电感",    "d轴电感辨识 (阶跃响应)"),
-        (5, "Lq q轴电感",    "q轴电感辨识 (阶跃响应)"),
-        (6, "flux 磁链",     "永磁体磁链辨识 (反电势法)"),
+        (1, 0, "相序",          "U/V/W 相序方向辨识"),
+        (2, 0, "极对数",        "电机极对数自动辨识"),
+        (3, 0, "R 相电阻",      "相电阻辨识 (DC法)"),
+        (4, 0, "Ld d轴电感",    "d轴电感辨识 (阶跃响应)"),
+        (5, 0, "Lq q轴电感",    "q轴电感辨识 (阶跃响应)"),
+        (6, 0, "flux 磁链",     "永磁体磁链辨识 (反电势法)"),
     ]),
     (JmCmd.CALIB_LEVEL3, "L3 编码器校准", [
-        (1, "零位",          "编码器电角度零点对齐"),
-        (2, "方向",          "编码器计数方向校验"),
-        (3, "线性度",        "编码器非线性度扫描"),
-        (4, "正余弦/旋变",   "正余弦/旋变解码参数校准"),
-        (5, "多圈零点",      "多圈计数器零点校准"),
+        (1, 0, "零位",          "编码器电角度零点对齐"),
+        (2, 0, "方向",          "编码器计数方向校验"),
+        (3, 0, "线性度",        "编码器非线性度扫描"),
+        (4, 0, "正余弦/旋变",   "正余弦/旋变解码参数校准"),
+        (5, 0, "多圈零点",      "多圈计数器零点校准"),
     ]),
     (JmCmd.CALIB_LEVEL4, "L4 转矩基础", [
-        (1, "力矩常数 Kt",   "转矩常数 Kt 辨识"),
+        (1, 0, "力矩常数 Kt",   "转矩常数 Kt 辨识"),
     ]),
     (JmCmd.CALIB_LEVEL5, "L5 非线性补偿", [
-        (1, "齿槽",          "齿槽转矩纹波补偿表生成"),
-        (2, "摩擦",          "摩擦模型(库仑+粘性)辨识"),
-        (3, "死区补偿",      "逆变器死区非线性补偿"),
-        (4, "磁饱和",        "dq 轴磁饱和电感曲线辨识"),
+        # 仅齿槽三方案按钮单行短标题(文字过长), 其余子项保持 标题+描述 两行
+        (1, 3, "齿槽 速度环匀速", "方案3(推荐): 理论整定免调环, 云台/小惯量; 前置L6.1/L4.1/L2.3/2.5; 约25s"),
+        (1, 1, "齿槽 位置爬行",   "方案1: 用配置表手调三环, 环差时低速抖动采废表; 前置三环已调好; 约3min"),
+        (1, 2, "齿槽 静态逐点",   "方案2: 用配置表手调三环, 精度高但耗时长; 前置三环已调好; 约8~10min"),
+        (2, 0, "摩擦",          "摩擦模型(库仑+粘性)辨识"),
+        (3, 0, "死区补偿",      "逆变器死区非线性补偿"),
+        (4, 0, "磁饱和",        "dq 轴磁饱和电感曲线辨识"),
     ]),
     (JmCmd.CALIB_LEVEL6, "L6 负载系统级", [
-        (1, "惯量",          "负载转动惯量辨识"),
-        (2, "阻尼",          "负载粘性阻尼系数辨识"),
-        (3, "回程间隙",      "减速器回程间隙测量"),
-        (4, "PID 自整定",    "速度/位置环 PID 自动整定"),
+        (1, 0, "惯量",          "负载转动惯量辨识"),
+        (2, 0, "阻尼",          "负载粘性阻尼系数辨识"),
+        (3, 0, "回程间隙",      "减速器回程间隙测量"),
+        (4, 0, "PID 自整定",    "速度/位置环 PID 自动整定"),
     ]),
     (JmCmd.CALIB_LEVEL7, "L7 自动化集成", [
-        (1, "一键全自动",    "依次执行 L1~L6 全套标定"),
+        (1, 0, "一键全自动",    "依次执行 L1~L6 全套标定"),
     ]),
 ]
 
@@ -115,7 +121,7 @@ _CALIB_RESULT_MAP = {
     # L4 转矩基础 (0x93)
     (0x93, 1): [24],                # Kt -> torque_constant
     # L5 非线性补偿 (0x94)
-    (0x94, 1): [],                  # 齿槽 -> 固件内部表格
+    (0x94, 1): [184, 185, 186, 187, 188, 189, 190],  # 齿槽 -> 方案溯源/增益/CRC/使能/RMS/摩擦残余/状态(三方案共用)
     (0x94, 2): [26, 27],            # 摩擦 -> friction_coulomb, friction_viscous
     (0x94, 3): [],                  # 死区补偿 -> 固件内部曲线
     (0x94, 4): [],                  # 磁饱和 -> 固件内部曲线
@@ -123,10 +129,65 @@ _CALIB_RESULT_MAP = {
     (0x95, 1): [25],                # 惯量 -> rotor_inertia
     (0x95, 2): [27],                # 阻尼 -> friction_viscous (与 L5>2 共享字段)
     (0x95, 3): [28, 29],            # 回程间隙 -> gear_ratio, gear_efficiency
-    (0x95, 4): [33],                # PID 自整定 -> current_control_bandwidth
+    (0x95, 4): [72, 73, 74, 80, 76],  # PID自整定 -> kp_s/ki_s/speed_integral_limit/kp_p/aff
+                                      #   (固件 ring_mask=0x06 速度+位置环, 电流环不重算;
+                                      #    aff=J/Kt 由 calib_level6_system 一并写入)
     # L7 自动化集成 (0x96): 全部产出参数 + is_calibrated 总标志位
     (0x96, 1): [16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 36, 37, 38, 40],
 }
+
+
+# ==================== 标定结果表行计划 ====================
+# 标定页"标定结果"表按标定流程 L1~L7 顺序展示(不按参数 ID 排序):
+#   - 每项 = (param_id, 标定项标注); 标注文本显示在表格最前"标定项"列
+#   - 与标定无关的纯配置参数不展示(motor_type/enc_type/enc_lines/pwm_freq_hz/
+#     current_lim/peak_current/max_speed)
+#   - 标定产出但不在 MotorCalibParam 段的参数(L6.4 自整定写 ControlParam)也纳入
+#   - 16 is_calibrated 为 L7 总标志位; 30/31 为标定输入配置(标定时使用)
+# 参考: motor_info.csv + calib_level6_system.c/motor_pid_autotune.c 写入字段
+CALIB_TABLE_PLAN = [
+    # L1 驱动硬件底层 (0x90)
+    (41, "L1>3 电流传感器"),          # shunt_resistance
+    (42, "L1>3 电流传感器"),          # current_amp_gain
+    (40, "L1>6 死区特性"),            # dead_time_ns
+    # L2 电机电气身份 (0x91)
+    (19, "L2>1 相序"),                # direction
+    (17, "L2>2 极对数"),              # pole_pairs
+    (20, "L2>3 R相电阻"),             # phase_resistance
+    (21, "L2>4 Ld电感"),              # phase_inductance_d
+    (22, "L2>5 Lq电感"),              # phase_inductance_q
+    (23, "L2>6 flux磁链"),            # flux_linkage
+    # L3 编码器校准 (0x92)
+    (38, "L3>1 零位"),                # elec_angle_bias
+    (37, "L3>1 零位"),                # enc_offset
+    (36, "L3>2 方向"),                # enc_direction
+    # L4 转矩基础 (0x93)
+    (24, "L4>1 力矩常数Kt"),          # torque_constant
+    # L5 非线性补偿 (0x94)
+    (184, "L5>1 齿槽方案"),          # cogging_comp_mode (RO 溯源)
+    (185, "L5>1 齿槽增益"),          # cogging_comp_gain
+    (186, "L5>1 齿槽表CRC"),         # cogging_comp_crc32 (RO)
+    (187, "L5>1 齿槽使能"),          # cogging_comp_enable
+    (188, "L5>1 齿槽表RMS"),         # cogging_comp_rms_ma (RO 质量指标)
+    (189, "L5>1 摩擦残余"),          # cogging_comp_asym_ma (RO 质量指标)
+    (190, "L5>1 齿槽状态"),          # cogging_comp_status (RO 位图)
+    (26, "L5>2 摩擦"),                # friction_coulomb
+    (27, "L5>2 摩擦; L6>2 阻尼"),     # friction_viscous (两标定共享)
+    # L6 负载系统级 (0x95)
+    (25, "L6>1 惯量"),                # rotor_inertia
+    (28, "L6>3 回程间隙"),            # gear_ratio
+    (29, "L6>3 回程间隙"),            # gear_efficiency
+    (72, "L6>4 PID自整定"),           # kp_s
+    (73, "L6>4 PID自整定"),           # ki_s
+    (74, "L6>4 PID自整定"),           # speed_integral_limit
+    (80, "L6>4 PID自整定"),           # kp_p
+    (76, "L6>4 PID自整定"),           # aff
+    # L7 自动化集成 (0x96)
+    (16, "L7>1 一键全自动"),          # is_calibrated 总标志位
+    # 标定输入配置 (标定时使用, 非产出)
+    (30, "L2 标定输入"),              # calibration_current
+    (31, "L2>3 R标定输入"),           # resistance_calib_max_voltage
+]
 
 
 class CalibrationPanel(QWidget):
@@ -333,7 +394,7 @@ class CalibrationPanel(QWidget):
         self._task_tabs.setDocumentMode(True)
         self._task_tabs.setStyleSheet(self._tab_style())
 
-        self._task_buttons = {}  # (cmd, sub_id) -> QPushButton
+        self._task_buttons = {}  # (cmd, sub_id, method) -> QPushButton
 
         for cmd, level_name, submodes in _CALIB_LEVELS:
             page = QWidget()
@@ -342,18 +403,22 @@ class CalibrationPanel(QWidget):
             page_layout.setContentsMargins(8, 8, 8, 8)
             page_layout.setSpacing(8)
             # 左对齐: 不加前导 stretch, 仅尾部 stretch
-            for sub_id, sub_name, sub_desc in submodes:
-                btn = QPushButton(f"{sub_name}\n{sub_desc}")
-                btn.setToolTip(f"CMD=0x{int(cmd):02X}  submode={sub_id}\n{sub_desc}")
+            for sub_id, method, sub_name, sub_desc in submodes:
+                # 仅齿槽三方案文字过长: 单行短标题(详情看tooltip); 其余保持 标题+描述 两行
+                cogging = (int(cmd) == int(JmCmd.CALIB_LEVEL5)
+                           and int(sub_id) == 1 and int(method) != 0)
+                btn = QPushButton(sub_name if cogging else f"{sub_name}\n{sub_desc}")
+                method_txt = f"  method={method}" if method else ""
+                btn.setToolTip(f"CMD=0x{int(cmd):02X}  submode={sub_id}{method_txt}\n{sub_desc}")
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setMinimumWidth(130)
                 btn.setMinimumHeight(48)
                 btn.setStyleSheet(self._task_btn_style(active=False))
                 btn.clicked.connect(
-                    lambda _=False, c=int(cmd), s=int(sub_id),
+                    lambda _=False, c=int(cmd), s=int(sub_id), m=int(method),
                            ln=level_name, sn=sub_name, sd=sub_desc:
-                    self._on_task_clicked(c, s, ln, sn, sd))
-                self._task_buttons[(int(cmd), int(sub_id))] = btn
+                    self._on_task_clicked(c, s, m, ln, sn, sd))
+                self._task_buttons[(int(cmd), int(sub_id), int(method))] = btn
                 page_layout.addWidget(btn)
             page_layout.addStretch()
             tab_title = f"{level_name}  0x{int(cmd):02X}"
@@ -624,11 +689,13 @@ class CalibrationPanel(QWidget):
             btn.setStyleSheet(self._task_btn_style(active=(key == self._active_task_key)))
 
     # ==================== 任务点击 / 选中态 ====================
-    def _on_task_clicked(self, cmd: int, sub_id: int,
+    def _on_task_clicked(self, cmd: int, sub_id: int, method: int,
                          level_name: str, sub_name: str, sub_desc: str):
         """点击子项卡片: 只选中(高亮), 不发送命令; 命令由「开始」按钮统一发出."""
-        self._set_active_task(cmd, sub_id, level_name, sub_name, sub_desc)
-        self._add_history(f"[选中] {level_name} > {sub_name}  CMD=0x{cmd:02X} submode={sub_id}")
+        self._set_active_task(cmd, sub_id, method, level_name, sub_name, sub_desc)
+        method_txt = f" method={method}" if method else ""
+        self._add_history(
+            f"[选中] {level_name} > {sub_name}  CMD=0x{cmd:02X} submode={sub_id}{method_txt}")
 
     def _on_start_clicked(self):
         """点「开始」按钮: 发送当前选中任务的标定指令."""
@@ -639,24 +706,29 @@ class CalibrationPanel(QWidget):
         if self._active_task_key is None:
             self._add_history("[未选中] 请先选中一个子项")
             return
-        cmd, sub_id = self._active_task_key
-        level_name, sub_name, _ = self._lookup_task(cmd, sub_id)
+        cmd, sub_id, method = self._active_task_key
+        level_name, sub_name, _ = self._lookup_task(cmd, sub_id, method)
         if level_name is None:
             return
+        method_txt = f" method={method}" if method else ""
         self._add_history(
-            f"[TX] 启动 {cmd_name(cmd)} submode={sub_id} ({level_name}>{sub_name})")
-        self.send_command.emit(int(cmd), {"submode": int(sub_id)})
+            f"[TX] 启动 {cmd_name(cmd)} submode={sub_id}{method_txt} ({level_name}>{sub_name})")
+        values = {"submode": int(sub_id)}
+        if method:
+            values["method"] = int(method)  # 0x94 payload[1]: 标定方案
+        self.send_command.emit(int(cmd), values)
         # 需求1: 开始后固定 500ms 轮询标定进度, 直到收到完成(ACK)或手动中止
         if self._link_active:
             self._poll_timer.start()
 
-    def _set_active_task(self, cmd: int, sub_id: int,
+    def _set_active_task(self, cmd: int, sub_id: int, method: int,
                          level_name: str, sub_name: str, sub_desc: str):
         """更新当前选中任务显示与卡片高亮."""
-        self._active_task_key = (int(cmd), int(sub_id))
+        self._active_task_key = (int(cmd), int(sub_id), int(method))
+        method_txt = f", method={method}" if method else ""
         self._active_task_text = (
             f"当前选中: {level_name} > {sub_name}  "
-            f"CMD=0x{cmd:02X}, submode={sub_id}  ·  {sub_desc}")
+            f"CMD=0x{cmd:02X}, submode={sub_id}{method_txt}  ·  {sub_desc}")
         self._lbl_active_task.setText(self._active_task_text)
         self._refresh_task_buttons_style()
         # 「开始」按钮可用态: 已选中即可(未连接时点击会提示)
@@ -668,12 +740,15 @@ class CalibrationPanel(QWidget):
                     self._task_tabs.setCurrentIndex(i)
                 break
 
-    def _lookup_task(self, cmd: int, sub_id: int):
-        """根据 (cmd, sub_id) 反查 (level_name, sub_name, sub_desc), 找不到返回 (None,...)."""
+    def _lookup_task(self, cmd: int, sub_id: int, method: int = 0):
+        """按 (cmd, sub_id, method) 反查 (level_name, sub_name, sub_desc), 找不到返回 (None,...).
+
+        齿槽三方案共用 submode=1, method 才是区分键; 其余子项 method=0。
+        """
         for c, level_name, submodes in _CALIB_LEVELS:
             if int(c) == int(cmd):
-                for sid, sn, sd in submodes:
-                    if int(sid) == int(sub_id):
+                for sid, m, sn, sd in submodes:
+                    if int(sid) == int(sub_id) and int(m) == int(method):
                         return level_name, sn, sd
         return None, None, None
 
@@ -721,8 +796,8 @@ class CalibrationPanel(QWidget):
         else:
             # 启动类(0x90~0x96) ACK: 表示已进入标定态(由 state_updated 同步)
             if self._active_task_key is not None:
-                cmd2, sub_id = self._active_task_key
-                level_name, sub_name, _ = self._lookup_task(cmd2, sub_id)
+                cmd2, sub_id, method = self._active_task_key
+                level_name, sub_name, _ = self._lookup_task(cmd2, sub_id, method)
                 if level_name:
                     self._set_last_op(f"已启动: {level_name} > {sub_name}")
                     self._add_history(
@@ -830,7 +905,7 @@ class CalibrationPanel(QWidget):
         """
         if self._active_task_key is None:
             return []
-        cmd, sub_id = self._active_task_key
+        cmd, sub_id, _method = self._active_task_key
         return list(_CALIB_RESULT_MAP.get((int(cmd), int(sub_id)), []))
 
     def _param_names(self, param_ids):
@@ -1104,10 +1179,13 @@ class CalibrationPanel(QWidget):
                 pass
         if "active_task" in opts:
             try:
-                cmd, sub_id = opts["active_task"]
-                lvl_name, sub_name, sub_desc = self._lookup_task(int(cmd), int(sub_id))
+                task = list(opts["active_task"])
+                # 兼容旧 2 元组 [cmd, sub_id](method 视为 0)
+                cmd, sub_id = int(task[0]), int(task[1])
+                method = int(task[2]) if len(task) > 2 else 0
+                lvl_name, sub_name, sub_desc = self._lookup_task(cmd, sub_id, method)
                 if lvl_name:
-                    self._set_active_task(int(cmd), int(sub_id), lvl_name, sub_name, sub_desc)
+                    self._set_active_task(cmd, sub_id, method, lvl_name, sub_name, sub_desc)
             except Exception:
                 pass
         if self._config_panel is not None and isinstance(opts.get("config_panel"), dict):
