@@ -17,6 +17,7 @@ from typing import Optional
 from jmproto import (JmCmd, JmErr, JmTlmBit, JmParamType, TopFsm, RunState,
                      codec, get_registry)
 from jmproto.cmd_def import MAGIC_SOFT_RESET, MAGIC_STORAGE_ERASE
+from jmproto import position_config as pc
 
 from .digital_twin import DigitalTwinEngine
 from .twin_fsm import MotorCmd, ControlMode, SystemState
@@ -115,6 +116,12 @@ class TwinResponder:
         self._extra_params: dict = {}
         # 电机配置(motor_info)写入存储(非 MotorParam 内置字段)
         self._motor_config_store: dict = {}
+        self._position_zero = 0.0
+        self._position_origin = 0.0
+        self._position_configured = True  # 默认零位偏移 0 rad 合法，无单独持久化标记。
+        self._position_valid = False
+        self._position_saved = False
+        self._reanchor_position()
         self._pid_sources = [0, 0, 0]
         self._pid_profiles = {
             0: {1: 5.5, 2: 1500.0, 3: 0.0, 4: 24.0, 5: 200.0, 6: 1.0, 7: 1},
@@ -142,6 +149,9 @@ class TwinResponder:
         """处理一条命令, 返回需要立即回传的帧列表 [(cmd, payload)...]。"""
         cmd = int(cmd)
 
+        if cmd == int(JmCmd.POSITION_CONFIG):
+            return [self._position_config_frame(payload)]
+
         # ---- 系统控制 (命令即时生效: apply_cmd 后立即 step 一次) ----
         if cmd == int(JmCmd.ENABLE):
             self.engine.apply_cmd(MotorCmd(enable=True))
@@ -152,6 +162,8 @@ class TwinResponder:
             self.engine.step()
             return [self._ack(cmd)]
         if cmd in (int(JmCmd.STOP), int(JmCmd.BRAKE), int(JmCmd.HOLD)):
+            if cmd == int(JmCmd.HOLD) and not self._position_valid:
+                return [self._nack(cmd, int(JmErr.STATE_DENY))]
             self.engine.apply_cmd(MotorCmd(stop=True))
             self.engine.step()
             return [self._ack(cmd)]
@@ -172,10 +184,14 @@ class TwinResponder:
             self.engine.apply_cmd(MotorCmd(disable=True))
             self.engine.step()
             self.tlm_enabled = False
+            self._reanchor_position()
             return [self._ack(cmd)]
 
         # ---- 运动控制 ----
         spec = self.reg.get_command(cmd)
+        if cmd in (int(JmCmd.PP), int(JmCmd.PV), int(JmCmd.PT), int(JmCmd.JOG)):
+            # 这些模式需要轮廓/过渡状态，孪生引擎尚未实现，不能虚假 ACK。
+            return [self._nack(cmd, int(JmErr.NOT_SUPPORTED))]
         is_motion = (spec is not None and
                      spec.category in ("运动控制", "高级力控", "轨迹同步",
                                        "对拖台负载", "特殊应用与测试") and
@@ -191,6 +207,9 @@ class TwinResponder:
             mc = self._build_motion_cmd(cmd, values)
             if mc is None:
                 return [self._ack(cmd)]   # 不支持的运动模式, 仍 ACK
+            if mc.set_mode in (ControlMode.POSITION, ControlMode.IMPEDANCE) and not self._position_valid:
+                return [self._nack(cmd, int(JmErr.STATE_DENY))]
+            self._joint_to_motor_command(mc)
             self.engine.apply_cmd(mc)
             self.engine.step()   # 让状态机即时响应 start 指令
             return [self._ack(cmd)]
@@ -362,14 +381,29 @@ class TwinResponder:
             return [self._motor_info_read_frame(payload)]
         if cmd == int(JmCmd.MOTOR_INFO_WRITE):
             return [self._motor_info_write_frame(payload)]
-        if cmd in (int(JmCmd.MOTOR_INFO_SAVE), int(JmCmd.MOTOR_INFO_RESET),
-                   int(JmCmd.MOTOR_INFO_RECALIB_RESET)):
-            # 0xEC (RECALIB_RESET): 虚拟引擎不维护 is_calibrated/编码器字段语义,
-            # 仅回 ACK 让上位机烟雾测试可通过; 真实语义由下位机 motor_info_calib.c 实现
+        if cmd == int(JmCmd.MOTOR_INFO_SAVE):
+            self._position_saved = self._position_configured
+            return [self._ack(cmd)]
+        if cmd in (int(JmCmd.MOTOR_INFO_RESET), int(JmCmd.MOTOR_INFO_RECALIB_RESET)):
+            pid = codec.rd_u16(payload, 0) if len(payload) >= 2 else 0xFFFF
+            if cmd == int(JmCmd.MOTOR_INFO_RECALIB_RESET) or pid in (0xFFFF, 28, 40, 41, 48):
+                if self._top_fsm() != int(TopFsm.IDLE):
+                    return [self._nack(cmd, int(JmErr.STATE_DENY))]
+                self._reanchor_position()
+                if pid in (0xFFFF, 48) and cmd == int(JmCmd.MOTOR_INFO_RESET):
+                    self._position_zero = 0.0
+                    self._position_saved = False
+                    self._motor_config_store[48] = 0.0
             return [self._ack(cmd)]
         if cmd == int(JmCmd.MOTOR_INFO_ERASE):
             # 0xED (固化清零): 虚拟引擎同样校验魔数, 防误触语义与下位机一致
             if len(payload) >= 4 and codec.rd_u32(payload, 0) == MAGIC_STORAGE_ERASE:
+                if self._top_fsm() != int(TopFsm.IDLE):
+                    return [self._nack(cmd, int(JmErr.STATE_DENY))]
+                self._position_zero = 0.0
+                self._position_saved = False
+                self._reanchor_position()
+                self._motor_config_store[48] = 0.0
                 return [self._ack(cmd)]
             return [self._nack(cmd, int(JmErr.UNAUTHORIZED))]
 
@@ -584,9 +618,99 @@ class TwinResponder:
     def _nack(cmd: int, err: int):
         return (int(JmCmd.NACK), bytes([int(cmd) & 0xFF, int(err) & 0xFF]))
 
+    def _gear_ratio(self):
+        return max(1.0, self.engine.mp.gearbox_param.gear_ratio)
+
+    def _reanchor_position(self):
+        """以当前电机单圈角建立本次启动原点，保留配置零位（rad）及保存状态。"""
+        raw = self.engine.get_telemetry().get('pos', 0.0)
+        self._position_origin = raw % math.tau - raw if math.isfinite(raw) else 0.0
+        self._position_configured = math.isfinite(self._position_zero)
+        self._position_valid = self._position_configured and math.isfinite(raw)
+
+    def _coordinate_write_allowed(self, name, value):
+        if name not in ('device_zero', 'gear_ratio', 'gear_efficiency', 'enc_offset', 'enc_direction'):
+            return True
+        return (math.isfinite(float(value)) and self._top_fsm() == int(TopFsm.IDLE)
+                and abs(self.engine.get_telemetry().get('vel', 0.0)) <= 0.1)
+
+    def _coordinate_parameter_written(self, name, value):
+        """同步配置坐标；改减速比保留累计角，改编码器几何参数重建单圈原点。"""
+        if name == 'device_zero':
+            self._position_zero = float(value)
+            self._position_configured = True
+            self._position_saved = False
+            self._position_valid = True
+        elif name in ('enc_offset', 'enc_direction'):
+            self._reanchor_position()
+
+    def _torque_ratio(self):
+        eff = self.engine.mp.gearbox_param.gear_efficiency
+        return self._gear_ratio() * (eff if 0 < eff <= 1 else 1.0)
+
+    def _joint_to_motor_command(self, mc):
+        ratio, torque_ratio = self._gear_ratio(), self._torque_ratio()
+        if mc.set_pos is not None:
+            mc.set_pos = (mc.set_pos + self._position_zero) * ratio - self._position_origin
+        for name in ('set_vel', 'set_vel_ff'):
+            value = getattr(mc, name)
+            if value is not None:
+                setattr(mc, name, value * ratio)
+        for name in ('set_torque', 'set_torque_ff', 'set_load_torque'):
+            value = getattr(mc, name)
+            if value is not None:
+                setattr(mc, name, value / torque_ratio)
+        for name in ('set_kp', 'set_kd'):
+            value = getattr(mc, name)
+            if value is not None:
+                setattr(mc, name, value / (ratio * torque_ratio))
+
     def _tlm(self):
-        """取最新遥测快照。"""
-        return self.engine.get_telemetry()
+        """Project motor-side simulation into the firmware's joint coordinates."""
+        t = dict(self.engine.get_telemetry())
+        ratio = self._gear_ratio()
+        for name in ('pos', 'pos_ref'):
+            t[name] = (t.get(name, 0.0) + self._position_origin) / ratio - self._position_zero
+        for name in ('vel', 'vel_ref', 'vel_setpoint'):
+            t[name] = t.get(name, 0.0) / ratio
+        t['torque'] = t.get('torque', 0.0) * self._torque_ratio()
+        return t
+
+    def _position_config_frame(self, payload):
+        cmd = int(JmCmd.POSITION_CONFIG)
+        if not payload or len(payload) != (5 if payload[0] >= pc.ZERO_AT else 1):
+            return self._nack(cmd, int(JmErr.LENGTH))
+        op = payload[0]
+        if op > pc.RESTORE:
+            return self._nack(cmd, int(JmErr.OUT_OF_RANGE))
+        value = struct.unpack_from('<f', payload, 1)[0] if op >= pc.ZERO_AT else 0.0
+        if not math.isfinite(value):
+            return self._nack(cmd, int(JmErr.OUT_OF_RANGE))
+        raw_t = self.engine.get_telemetry()
+        raw = raw_t.get('pos', 0.0) + self._position_origin
+        allowed = (int(TopFsm.IDLE), int(TopFsm.READY)) if op == pc.ZERO_CURRENT else (int(TopFsm.IDLE),)
+        speed = raw_t.get('vel', 0.0)
+        if op != pc.STATUS and (self._top_fsm() not in allowed or not math.isfinite(speed) or abs(speed) > 0.1):
+            return self._nack(cmd, int(JmErr.STATE_DENY))
+        if op in (pc.ZERO_CURRENT, pc.ZERO_AT):
+            if op == pc.ZERO_AT and not self._position_valid:
+                return self._nack(cmd, int(JmErr.STATE_DENY))
+            zero = raw / self._gear_ratio() if op == pc.ZERO_CURRENT else self._position_zero + value
+            if not -12.566 <= zero <= 12.566:
+                return self._nack(cmd, int(JmErr.OUT_OF_RANGE))
+            self._position_zero = zero
+            self._position_configured = self._position_valid = self._position_saved = True
+            self._motor_config_store[48] = zero
+        elif op == pc.RESTORE:
+            if not self._position_configured:
+                return self._nack(cmd, int(JmErr.STATE_DENY))
+            desired = (value + self._position_zero) * self._gear_ratio()
+            self._position_origin += math.floor((desired - raw) / math.tau + 0.5) * math.tau
+            self._position_valid = True
+        flags = (pc.READY | (pc.CONFIGURED if self._position_configured else 0)
+                 | (pc.VALID if self._position_valid else 0) | (pc.SAVED if self._position_saved else 0))
+        result = self._tlm().get('pos', 0.0) if op == pc.RESTORE else self._position_zero
+        return cmd, struct.pack('<BBHf', op, flags, 0, result)
 
     def _top_fsm(self) -> int:
         return _SYS_TO_TOP.get(self.engine.fsm.sys_state, int(TopFsm.IDLE))
@@ -618,8 +742,8 @@ class TwinResponder:
         if cmd == int(JmCmd.READ_POS_VEL):
             return (cmd, struct.pack('<ff', t.get('pos', 0.0), t.get('vel', 0.0)))
         if cmd == int(JmCmd.READ_BUS):
-            return (cmd, struct.pack('<fff', t.get('vbus', 24.0),
-                                    t.get('ibus', 0.0), t.get('power', 0.0)))
+            return (cmd, struct.pack('<ff', t.get('vbus', 24.0),
+                                    t.get('ibus', 0.0)))
         if cmd == int(JmCmd.READ_TEMPERATURE):
             return (cmd, struct.pack('<ff', t.get('temp_fet', 25.0),
                                     t.get('temp_motor', 25.0)))
@@ -720,11 +844,14 @@ class TwinResponder:
         if spec is None:
             return self._nack(int(JmCmd.PARAM_WRITE), int(JmErr.BAD_PARAM_ID))
         val = codec.unpack_value(spec.dtype, payload[2:])
+        if not self._coordinate_write_allowed(spec.code_name, val):
+            return self._nack(int(JmCmd.PARAM_WRITE), int(JmErr.STATE_DENY))
         if not self._set_param_value(spec.code_name, val):
             self._extra_params[pid] = val
         else:
             # 写入 MotorParam 成功: 重新加载控制器 PID 配置, 使增益/限幅实时生效
             self.engine.reload_params()
+        self._coordinate_parameter_written(spec.code_name, val)
         return (int(JmCmd.PARAM_WRITE), codec.wr_u16(pid) + bytes([int(JmErr.OK)]))
 
     # ---- 电机配置(motor_info)读写: 0xE6/0xE7, 值固定4字节 ----
@@ -749,12 +876,21 @@ class TwinResponder:
         spec = self.reg.get_motor_config_param(pid)
         if spec is None:
             return self._nack(int(JmCmd.MOTOR_INFO_WRITE), int(JmErr.BAD_PARAM_ID))
+        if not spec.writable:
+            return self._nack(int(JmCmd.MOTOR_INFO_WRITE), int(JmErr.READ_ONLY))
+        if len(payload) != 2 + spec.nbytes:
+            return self._nack(int(JmCmd.MOTOR_INFO_WRITE), int(JmErr.LENGTH))
         val = codec.unpack_value(spec.dtype, payload[2:6])
+        if not self._coordinate_write_allowed(spec.code_name, val):
+            return self._nack(int(JmCmd.MOTOR_INFO_WRITE), int(JmErr.STATE_DENY))
+        if self.reg.check_spec_range(spec, str(val)) is not None:
+            return self._nack(int(JmCmd.MOTOR_INFO_WRITE), int(JmErr.OUT_OF_RANGE))
         # 优先写入 MotorParam 字段(使仿真即时生效), 否则存额外字典
         if not self._set_param_field(spec.code_name, val):
             self._motor_config_store[pid] = val
         else:
             self.engine.reload_params()
+        self._coordinate_parameter_written(spec.code_name, val)
         return (int(JmCmd.MOTOR_INFO_WRITE), codec.wr_u16(pid) + bytes([int(JmErr.OK)]))
 
     def _motor_config_value(self, spec):

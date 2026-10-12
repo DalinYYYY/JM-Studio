@@ -40,6 +40,7 @@ class JmCmd(IntEnum):
     DISABLE = 0x05
     STOP = 0x06
     SOFT_RESET = 0x07  # 软件复位: {magic:u32} ACK后延迟约200ms复位
+    POSITION_CONFIG = 0x08  # 关节零位/坐标管理，独立配置命令
 
     # 运动控制 0x10~0x2F
     OPEN_LOOP = 0x10
@@ -84,6 +85,7 @@ class JmCmd(IntEnum):
     PT = 0x5B
     ELECTRONIC_GEAR = 0x5C
     ELECTRONIC_CAM = 0x5D
+    PROFILE_CONFIG = 0x5F
 
     # 负载模拟 0x60~0x6F (0x68~0x6F 预留扩展)
     # 码值顺序即实施顺序: 0x60 第一版 → 0x61~0x64 第二版 → 0x65~0x67 按需
@@ -502,6 +504,7 @@ class RunState(IntEnum):
     DIAGNOSTIC = 53
     HIGH_SPEED_DAQ = 54
     SINGLE_STEP = 55
+    PROFILE_POSITION = 56
 
 
 # 运行子状态中文名(供 UI 显示)
@@ -562,6 +565,7 @@ RUN_STATE_CN = {
     RunState.DIAGNOSTIC: "诊断",
     RunState.HIGH_SPEED_DAQ: "高速采集",
     RunState.SINGLE_STEP: "单步调试",
+    RunState.PROFILE_POSITION: "轮廓位置",
 }
 
 

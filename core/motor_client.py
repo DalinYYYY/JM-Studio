@@ -6,14 +6,18 @@ JmClient 持有一个 Transport(串口或 CAN), 订阅其 frame_received 做业�
 """
 
 import copy
+import secrets
 import struct
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 import jmproto as jp
 from jmproto import JmCmd, JmErr, codec
 from jmproto import smoothstart
 from jmproto import fault_diag
+from jmproto import profile_config as pc
+from jmproto import position_config as position
+from jmproto.registry import validate_motion_values
 from jmproto.cmd_def import MOTOR_INFO_SAVE_FLAG_FLASH, MAGIC_STORAGE_ERASE
 from transport.base import Transport
 
@@ -47,9 +51,11 @@ class JmClient(QObject):
     feedback_updated = pyqtSignal(object)              # FeedbackData(可能部分字段)
     state_updated = pyqtSignal(int, int, int, int)     # top_fsm, run_state, ctrl_mode, enable
     ack_received = pyqtSignal(int)                     # cmd
+    position_config_received = pyqtSignal(int, int, float)  # op, flags, value(rad)
     nack_received = pyqtSignal(int, int)               # cmd, err_code
     dev_info_received = pyqtSignal(int, int, bytes)    # hw_ver, fw_ver, uid
     can_id_set_result = pyqtSignal(int, bool)          # new_id, restart_required
+    can_node_selected = pyqtSignal(int)                # selected target node
     can_node_discovered = pyqtSignal(int, int, int, bytes, int)  # source_id, hw, fw, uid, reported_id
     can_di_discovered = pyqtSignal(int, bytes, int)    # source_id, di56, guard
     can_di_set_result = pyqtSignal(int, bytes, int)    # source_id, di56, status
@@ -68,6 +74,8 @@ class JmClient(QObject):
     trace_config_received = pyqtSignal(object)      # 0xB9 TRACE 配置应答
     trace_data_received = pyqtSignal(object)         # 0xBA TRACE 主动批量数据
     bode_sweep_ack_received = pyqtSignal(object)    # 0x76 启动/停止应答
+    profile_config_received = pyqtSignal(object)     # 0x5F 配置读回/提交状态
+    profile_config_status = pyqtSignal(str)
     raw_frame = pyqtSignal(int, bytes)                 # cmd, payload(RX 入口, 日志面板格式化)
     tx_frame = pyqtSignal(int, bytes)                  # cmd, payload(TX 入口, 日志面板格式化)
 
@@ -81,10 +89,15 @@ class JmClient(QObject):
         self._tp.frame_received.connect(self._on_frame)
         self._tp.addressed_frame_received.connect(self._on_addressed_frame)
         self._tp.connected.connect(self.connected)
+        self._tp.connected.connect(self._profile_on_link)
         self._tp.error_occurred.connect(self.error_occurred)
         # 合并反馈状态: 各 READ_*/TELEMETRY 帧按 filled_fields 增量合并,
         # 让 UI 拿到的是累积完整的 FeedbackData (避免部分帧字段覆盖为默认0)
         self._last_feedback = jp.FeedbackData()
+        self._zero_refresh_timer = QTimer(self)
+        self._zero_refresh_timer.setSingleShot(True)
+        self._zero_refresh_timer.setInterval(1500)
+        self._zero_refresh_timer.timeout.connect(self._refresh_zero_after_reset)
         # 固件协议版本 (major, minor): 0xD0 28B 扩展应答携带, 旧固件/未查询为 None。
         # v1.4+ 才支持 0x76 十二B偏置扫频载荷与速度闭环扫频模式。
         self.fw_proto_version = None
@@ -93,6 +106,16 @@ class JmClient(QObject):
         # 危险命令二次确认回调: UI 层注入, 签名 (cmd, payload) -> bool
         # None 表示无 UI 注入, 直接发送(用于脚本/无 GUI 场景)
         self._confirm_cb = None
+        self._profile_timer = QTimer(self)
+        self._profile_timer.setSingleShot(True)
+        self._profile_timer.setInterval(1500)
+        self._profile_timer.timeout.connect(self._profile_timeout)
+        self._profile_pending = None
+        self._profile_cache = {}
+        self._profile_revision = 0
+        self._profile_seq = 0
+        self._profile_token = secrets.randbelow(0xFFFF) + 1
+        self._profile_unsupported = False
 
     @property
     def registry(self):
@@ -119,17 +142,20 @@ class JmClient(QObject):
         for sig, slot in ((old.frame_received, self._on_frame),
                           (old.addressed_frame_received, self._on_addressed_frame),
                           (old.connected, self.connected),
+                          (old.connected, self._profile_on_link),
                           (old.error_occurred, self.error_occurred)):
             try:
                 sig.disconnect(slot)
             except Exception:
                 pass
         self._tp = transport
+        self._profile_on_link(False)
         # 重置累积反馈, 避免旧设备数据混入新连接
         self._last_feedback = jp.FeedbackData()
         transport.frame_received.connect(self._on_frame)
         transport.addressed_frame_received.connect(self._on_addressed_frame)
         transport.connected.connect(self.connected)
+        transport.connected.connect(self._profile_on_link)
         transport.error_occurred.connect(self.error_occurred)
         transport.start()
 
@@ -144,6 +170,7 @@ class JmClient(QObject):
         return self._tp.open(**cfg)
 
     def close(self):
+        self._profile_on_link(False)
         self._tp.close()
 
     def is_open(self) -> bool:
@@ -151,6 +178,9 @@ class JmClient(QObject):
 
     # ---------------- 统一发送(含 TX 日志) ----------------
     def _send(self, cmd: int, payload: bytes = b'') -> bool:
+        if cmd in (JmCmd.IDLE, JmCmd.ESTOP, JmCmd.DISABLE, JmCmd.STOP,
+                   JmCmd.HOLD, JmCmd.BRAKE, JmCmd.SOFT_RESET):
+            self._profile_cancel()
         # 危险命令二次确认: DANGER_CMDS 中的命令发送前需 UI 确认
         # 无 _confirm_cb 时直接发送(脚本/无 GUI 场景), 保持向后兼容
         if cmd in DANGER_CMDS and self._confirm_cb is not None:
@@ -164,14 +194,170 @@ class JmClient(QObject):
                 self.error_occurred.emit(f"确认回调异常(忽略, 继续发送): {e}")
         ok = self._tp.send(cmd, payload)
         if ok:
+            if cmd == JmCmd.SOFT_RESET:
+                self._profile_on_link(False)
+                self._zero_refresh_timer.start()
             self.tx_frame.emit(cmd, payload)
         return ok
 
     # ---------------- 数据驱动命令 ----------------
     def send_command(self, cmd: int, values: dict = None) -> bool:
         """按 registry 规格打包并发送任意命令"""
+        if cmd in pc.PROFILE_FIELDS:
+            return self.send_motion_command(cmd, values or {})
         payload = self._reg.pack_command(cmd, values or {})
         return self._send(cmd, payload)
+
+    # ---- 轮廓模式：0x5F 原子配置 + 读回，随后发送单帧控制 ----
+    def _profile_on_link(self, _connected):
+        self._zero_refresh_timer.stop()
+        if not _connected:
+            self._clear_position_zero_cache()
+        self._profile_timer.stop()
+        self._profile_pending = None
+        self._profile_cache.clear()
+        self._profile_revision = 0
+        self._profile_seq = secrets.randbelow(255)
+        self._profile_unsupported = False
+
+    def _profile_cancel(self):
+        self._profile_timer.stop()
+        self._profile_pending = None
+
+    def _profile_fail(self, reason: str):
+        self._profile_cancel()
+        self._profile_cache.clear()
+        self._profile_revision = 0
+        self.error_occurred.emit(f"轮廓配置失败，运动指令未发送：{reason}")
+
+    def _profile_timeout(self):
+        pending = self._profile_pending
+        if pending is not None:
+            self._profile_fail(f"0x5F {pending['phase']} 等待应答超时")
+
+    def _profile_request(self, payload: bytes) -> bool:
+        if not self._send(JmCmd.PROFILE_CONFIG, payload):
+            self._profile_fail('0x5F 发送失败')
+            return False
+        self._profile_timer.start()
+        return True
+
+    def _profile_send_short(self, cmd: int, values: dict) -> bool:
+        if cmd == JmCmd.PP:
+            self._profile_seq = self._profile_seq % 255 + 1
+            payload = pc.pack_short(cmd, values, self._profile_revision, self._profile_seq)
+        else:
+            payload = pc.pack_short(cmd, values)
+        return self._send(cmd, payload)
+
+    def send_motion_command(self, cmd: int, values: dict) -> bool:
+        """PP 总用 0x5F+8B；经典 CAN 的 PV/PT/JOG 用配置后短帧。"""
+        cmd = JmCmd(cmd)
+        if cmd not in pc.PROFILE_FIELDS:
+            self._profile_cancel()
+            return self._send(cmd, self._reg.pack_command(cmd, values))
+        validate_motion_values(cmd, values)
+        # 松开点动必须先于任何尚未完成的参数事务生效。
+        if cmd == JmCmd.JOG and int(values['dir']) == 0:
+            self._profile_cancel()
+            if self._tp.name == 'can' and not getattr(self._tp, 'fd_mode', False):
+                return self._profile_send_short(cmd, values)
+            return self._send(cmd, self._reg.pack_command(cmd, values))
+        if cmd != JmCmd.PP and not (self._tp.name == 'can' and
+                                    not getattr(self._tp, 'fd_mode', False)):
+            self._profile_cancel()
+            return self._send(cmd, self._reg.pack_command(cmd, values))
+        if self._profile_unsupported:
+            self.error_occurred.emit('下位机不支持 0x5F；请更新固件后再发送轮廓模式')
+            return False
+        settings = pc.settings_for(cmd, values)
+        pending = self._profile_pending
+        if pending is not None:
+            if pending['cmd'] == cmd and pending['settings'] == settings:
+                pending['values'] = dict(values)  # 按键仍按住时，只保留最新目标
+                return True
+            self.error_occurred.emit('轮廓参数配置尚未完成，请稍后再发新的模式目标')
+            return False
+        if self._profile_cache.get(cmd) == settings and (
+                cmd != JmCmd.PP or self._profile_revision != 0):
+            return self._profile_send_short(cmd, values)
+        self._profile_token = self._profile_token % 0xFFFF + 1
+        self._profile_pending = {
+            'cmd': cmd, 'values': dict(values), 'settings': settings,
+            'token': self._profile_token, 'phase': 'write', 'index': 0,
+            'revision': 0,
+        }
+        field, raw = settings[0]
+        return self._profile_request(pc.pack_write(field, self._profile_token, raw))
+
+    def _profile_reply(self, payload: bytes):
+        try:
+            reply = pc.parse_reply(payload)
+        except ValueError as exc:
+            self._profile_fail(str(exc))
+            return
+        self.profile_config_received.emit(reply)
+        pending = self._profile_pending
+        if pending is None:
+            return  # 手动 STATUS/READ 或先前已取消的事务
+        phase = pending['phase']
+        token = pending['token']
+        settings = pending['settings']
+        index = pending['index']
+        if phase == 'write':
+            field, _ = settings[index]
+            if (reply['op'] != pc.WRITE or reply.get('field') != field or
+                    reply.get('token') != token):
+                self._profile_fail('WRITE 回显字段或事务号不匹配')
+                return
+            index += 1
+            pending['index'] = index
+            if index < len(settings):
+                field, raw = settings[index]
+                self._profile_request(pc.pack_write(field, token, raw))
+            else:
+                pending['phase'] = 'commit'
+                self._profile_request(pc.pack_commit(token))
+        elif phase == 'commit':
+            revision = reply.get('revision', 0)
+            if (reply['op'] != pc.COMMIT or reply.get('token') != token or
+                    revision == 0):
+                self._profile_fail('COMMIT 回显事务号或版本无效')
+                return
+            pending['revision'] = revision
+            pending['phase'] = 'read'
+            pending['index'] = 0
+            self._profile_request(pc.pack_read(settings[0][0]))
+        elif phase == 'read':
+            field, raw = settings[index]
+            if (reply['op'] != pc.READ or reply.get('field') != field or
+                    reply.get('revision') != pending['revision'] or
+                    reply.get('value') != raw):
+                self._profile_fail('READ 回读值或版本不匹配')
+                return
+            index += 1
+            pending['index'] = index
+            if index < len(settings):
+                self._profile_request(pc.pack_read(settings[index][0]))
+            else:
+                cmd, values = pending['cmd'], pending['values']
+                self._profile_revision = pending['revision']
+                self._profile_cache[cmd] = settings
+                self._profile_cancel()
+                self.profile_config_status.emit(
+                    f"0x5F 参数已确认，版本 {self._profile_revision}；发送 {cmd.name} 控制帧")
+                if not self._profile_send_short(cmd, values):
+                    self.error_occurred.emit(f'{cmd.name} 控制帧发送失败')
+
+    def query_profile_config(self, field: int) -> bool:
+        if self._profile_pending is not None:
+            return False
+        return self._send(JmCmd.PROFILE_CONFIG, pc.pack_read(field))
+
+    def query_profile_status(self) -> bool:
+        if self._profile_pending is not None:
+            return False
+        return self._send(JmCmd.PROFILE_CONFIG, bytes((pc.STATUS,)))
 
     # ---- 系统控制(无载荷) ----
     def cmd_enable(self):       return self._send(JmCmd.ENABLE)
@@ -188,6 +374,35 @@ class JmClient(QObject):
     def query_state(self):      return self._send(JmCmd.READ_STATE)
     def query_pos_vel(self):    return self._send(JmCmd.READ_POS_VEL)
     def query_bus(self):        return self._send(JmCmd.READ_BUS)
+
+    def query_position_config(self):
+        """查询 0x08 状态及配置零位，设备零位显示由应答更新。"""
+        return self._send(JmCmd.POSITION_CONFIG, position.pack_request(position.STATUS))
+
+    def _clear_position_zero_cache(self):
+        """断开、换节点或复位时清除缓存显示，避免旧设备零位继续显示。"""
+        self._last_feedback.device_zero = None
+        self._last_feedback.filled_fields = tuple(
+            field for field in self._last_feedback.filled_fields if field != 'device_zero')
+        self.feedback_updated.emit(copy.copy(self._last_feedback))
+
+    def _refresh_zero_after_reset(self):
+        """复位等待期结束后回读零位；断开连接时不发送。"""
+        if self.is_open():
+            self.query_position_config()
+
+    def set_current_position_zero(self):
+        """设置当前位置为输出轴零位并持久化；GUI 确认和固件静止检查共同约束。"""
+        return self._send(JmCmd.POSITION_CONFIG, position.pack_request(position.ZERO_CURRENT))
+
+    def set_position_zero_at(self, old_position: float):
+        """将旧坐标中的指定点(rad)设为零位并保存，供后续完整标定界面使用。"""
+        return self._send(JmCmd.POSITION_CONFIG, position.pack_request(position.ZERO_AT, old_position))
+
+    def restore_joint_position(self, known_position: float):
+        """按已知输出轴位置(rad)选择圈号，不修改设备零位，也不是启动必需步骤。"""
+        return self._send(JmCmd.POSITION_CONFIG, position.pack_request(position.RESTORE, known_position))
+
     def query_temperature(self):return self._send(JmCmd.READ_TEMPERATURE)
     def query_fault(self):      return self._send(JmCmd.READ_FAULT)
     def query_dq_current(self): return self._send(JmCmd.READ_DQ_CURRENT)
@@ -435,7 +650,13 @@ class JmClient(QObject):
     def select_can_node(self, node_id: int) -> bool:
         if self._tp.name != "can" or not self.is_open():
             return False
-        return self._tp.set_motor_id(node_id)
+        selected = self._tp.set_motor_id(node_id)
+        if selected:
+            self._clear_position_zero_cache()
+            self.position_config_received.emit(position.STATUS, 0, 0.0)
+            self.can_node_selected.emit(int(node_id))
+            self.query_position_config()
+        return selected
 
     def cmd_switch_fd_mode(self, enable: bool) -> bool:
         """切换 CAN FD 运行期模式(0xF3): 仅 CAN 传输有效, UART 传输返回 False。
@@ -472,7 +693,34 @@ class JmClient(QObject):
         # NACK
         if cmd == JmCmd.NACK:
             if len(payload) >= 2:
+                if payload[0] == JmCmd.PROFILE_CONFIG and self._profile_pending is not None:
+                    if payload[1] in (JmErr.UNSUPPORTED, JmErr.NOT_SUPPORTED):
+                        self._profile_unsupported = True
+                    self._profile_fail(f'0x5F 被拒绝，错误码 0x{payload[1]:02X}')
+                elif payload[0] == JmCmd.PP:
+                    self._profile_cache.pop(JmCmd.PP, None)
+                    self._profile_revision = 0
                 self.nack_received.emit(payload[0], payload[1])
+            return
+
+        if cmd == JmCmd.PROFILE_CONFIG:
+            self._profile_reply(payload)
+            return
+
+        if cmd == JmCmd.POSITION_CONFIG:
+            try:
+                op, flags, value = position.parse_reply(payload)
+            except ValueError:
+                return
+            if op != position.RESTORE:
+                feedback = jp.FeedbackData()
+                feedback.device_zero = value
+                feedback.filled_fields = ('device_zero',)
+                self._merge_and_emit_feedback(feedback)
+            if op != position.STATUS:
+                self.query_pos_vel()
+                self.query_position_config()
+            self.position_config_received.emit(op, flags, value)
             return
 
         # CALIB_QUERY(0x97) 详细状态应答: 8 字节 ACK, 不走通用 ACK 分支

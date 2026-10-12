@@ -8,6 +8,7 @@ CSV 缺失或解析异常时回退到内置最小命令集, 保证无 CSV 也能
 import os
 import re
 import csv
+import math
 
 from . import codec
 from .cmd_def import JmCmd
@@ -121,6 +122,54 @@ def _parse_payload_desc(desc: str, warnings=None):
     return fields
 
 
+def validate_motion_values(cmd: int, values: dict) -> None:
+    """校验交接模式的载荷语义，避免把会被固件拒绝的指令发到电机。"""
+    cmd = int(cmd)
+    if cmd not in (JmCmd.PP, JmCmd.PV, JmCmd.PT, JmCmd.JOG):
+        return
+
+    def number(name):
+        try:
+            value = float(values.get(name, 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} 必须是数字") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"{name} 必须是有限数")
+        return value
+
+    if cmd == JmCmd.PP:
+        flags = number('flags')
+        if flags != int(flags) or int(flags) & ~0x03:
+            raise ValueError("PP flags 仅允许相对位置和 S 曲线两位")
+        for name in ('pos', 'vel', 'acc', 'dec', 'jerk'):
+            number(name)
+        if any(number(name) <= 0 for name in ('vel', 'acc', 'dec')):
+            raise ValueError("PP 的速度、加速度和减速度必须大于 0")
+        if int(flags) & 0x02 and number('jerk') <= 0:
+            raise ValueError("PP 选择 S 曲线时 jerk 必须大于 0")
+    elif cmd == JmCmd.PV:
+        for name in ('vel', 'acc', 'dec', 'current_lim'):
+            number(name)
+        if number('acc') <= 0 or number('dec') <= 0:
+            raise ValueError("PV 的加速度和减速度必须大于 0")
+        if number('current_lim') < 0:
+            raise ValueError("PV 的电流上限不能小于 0")
+    elif cmd == JmCmd.PT:
+        for name in ('torque', 'slope', 'current_lim', 'vel_lim'):
+            number(name)
+        if number('slope') <= 0:
+            raise ValueError("PT 的转矩斜率必须大于 0")
+        if number('current_lim') < 0 or number('vel_lim') < 0:
+            raise ValueError("PT 的监护上限需为非负数；0 表示使用电机默认值")
+    else:
+        direction = number('dir')
+        if direction not in (-1, 0, 1):
+            raise ValueError("JOG 方向仅允许 -1、0、1")
+        for name in ('speed', 'acc', 'dec'):
+            if number(name) < 0:
+                raise ValueError(f"JOG 的 {name} 不能小于 0")
+
+
 def _normalize_dtype(dtype: str) -> str:
     """把固件/C 表类型名归一到 codec 使用的短类型名。"""
     d = (dtype or '').strip().lower()
@@ -227,6 +276,18 @@ class ProtocolRegistry:
               Field('kd', 'f32'), Field('tff', 'f32')]),
             (JmCmd.POSITION_VELOCITY, "位置+速度前馈", "运动控制",
              [Field('pos', 'f32'), Field('vel_ff', 'f32')]),
+            (JmCmd.PP, "轮廓位置PP", "轨迹同步",
+             [Field('flags', 'u8'), Field('pos', 'f32'),
+              Field('profile_rev', 'u16'), Field('seq', 'u8')]),
+            (JmCmd.PV, "轮廓速度PV", "轨迹同步",
+             [Field('vel', 'f32'), Field('acc', 'f32'), Field('dec', 'f32'),
+              Field('current_lim', 'f32')]),
+            (JmCmd.PT, "轮廓力矩PT", "轨迹同步",
+             [Field('torque', 'f32'), Field('slope', 'f32'),
+              Field('current_lim', 'f32'), Field('vel_lim', 'f32')]),
+            (JmCmd.JOG, "点动", "特殊应用",
+             [Field('dir', 'i8'), Field('speed', 'f32'),
+              Field('acc', 'f32'), Field('dec', 'f32')]),
         ]
         for cmd, name, cat, fields in fallback:
             self.commands[int(cmd)] = CommandSpec(
@@ -403,9 +464,29 @@ class ProtocolRegistry:
     # ---------------- 打包 ----------------
     def pack_command(self, cmd: int, values: dict) -> bytes:
         """按命令的 fields 顺序打包载荷(values: {字段名: 数值}); 固定字段用其默认值"""
+        if cmd == JmCmd.POSITION_CONFIG:
+            from .position_config import pack_request
+            return pack_request(values.get('op', 0), values.get('value', 0))
         spec = self.get_command(cmd)
         if spec is None or not spec.fields:
             return b''
+        if cmd == JmCmd.PP:
+            try:
+                flags = float(values.get('flags', 0))
+                pos = float(values.get('pos', 0))
+                revision = float(values.get('profile_rev', 0))
+                seq = float(values.get('seq', 0))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError('PP flags 或位置无效') from exc
+            if (not math.isfinite(flags) or flags != int(flags) or
+                    int(flags) & ~0x03 or not math.isfinite(pos)):
+                raise ValueError('PP flags 或位置超出范围')
+            if (not math.isfinite(revision) or revision != int(revision) or
+                    not math.isfinite(seq) or seq != int(seq) or
+                    not 1 <= revision <= 0xFFFF or not 1 <= seq <= 0xFF):
+                raise ValueError('PP 必须先通过 0x5F 配置参数，再填写有效版本和序号')
+        else:
+            validate_motion_values(cmd, values)
         out = bytearray()
         for f in spec.fields:
             v = f.default if f.is_fixed else values.get(f.name, 0)

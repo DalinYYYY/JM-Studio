@@ -7,6 +7,7 @@
 6,下使能,0x05,Host->Motor,系统控制,无,ACK{state:u8},0,-,-,0x0500|ID,无,CONTROL_MODE_DISABLE  READY/RUN->IDLE伺服失能
 7,停止运行,0x06,Host->Motor,系统控制,无,ACK{state:u8},0,-,-,0x0600|ID,无,CONTROL_MODE_STOP  RUN->READY停运动保持使能
 8,软件复位,0x07,Host->Motor,系统控制,{magic:u32=0x5E7E7E5E},ACK{state:u8},4,小端u32,魔数,0x0700|ID,magic[0:4],应答ACK后安全停机 延迟约200ms执行复位 CAN广播不开放
+131,关节零位坐标管理,0x08,Host->Motor,设备坐标,{op:u8;value:f32?},{op:u8;flags:u8;reserved:u16;value:f32},1/5,小端混合,输出轴rad,0x0800|ID,请求1或5B应答8B单帧,op0查询1当前位置设零并保存2指定旧坐标设零并保存3已知位置恢复圈号 当前位置设零允许IDLE或READY静止 其余修改仅IDLE静止
 9,开环电压,0x10,Host->Motor,运动控制,{ud:f32;uq:f32},ACK,8,小端float,V,0x1000|ID,ud[0:4]uq[4:8],CONTROL_MODE_OPEN_LOOP
 10,电流环,0x11,Host->Motor,运动控制,{id_ref:f32;iq_ref:f32},ACK,8,小端float,A,0x1100|ID,id[0:4]iq[4:8],CONTROL_MODE_CURRENT
 11,力矩环,0x12,Host->Motor,运动控制,{torque:f32},ACK,4,小端float,Nm,0x1200|ID,torque[0:4],CONTROL_MODE_TORQUE 输出端力矩
@@ -40,11 +41,12 @@
 39,EtherCAT CSP,0x56,Host->Motor,轨迹同步,{pos:f32},ACK,4,小端float,rad,0x5600|ID,pos[0:4],CONTROL_MODE_ETHERCAT_CSP 周期同步位置
 40,EtherCAT CSV,0x57,Host->Motor,轨迹同步,{vel:f32},ACK,4,小端float,rad/s,0x5700|ID,vel[0:4],CONTROL_MODE_ETHERCAT_CSV
 41,EtherCAT CST,0x58,Host->Motor,轨迹同步,{torque:f32},ACK,4,小端float,Nm,0x5800|ID,tq[0:4],CONTROL_MODE_ETHERCAT_CST
-42,轮廓位置PP,0x59,Host->Motor,轨迹同步,{pos:f32;vel:f32},ACK,8,小端float,rad/rad·s⁻¹,0x5900|ID,pos[0:4]vel[4:8],CONTROL_MODE_PP
-43,轮廓速度PV,0x5A,Host->Motor,轨迹同步,{vel:f32;acc:f32},ACK,8,小端float,rad·s⁻¹/rad·s⁻²,0x5A00|ID,vel[0:4]acc[4:8],CONTROL_MODE_PV
-44,轮廓力矩PT,0x5B,Host->Motor,轨迹同步,{torque:f32;slope:f32},ACK,8,小端float,Nm/Nm·s⁻¹,0x5B00|ID,tq[0:4]slp[4:8],CONTROL_MODE_PT
+42,轮廓位置PP,0x59,Host->Motor,轨迹同步,{flags:u8;pos:f32;profile_rev:u16;seq:u8},ACK,8,小端混合,rad,0x5900|ID,8B单帧;flags bit0相对 bit1 S曲线;配置由0x5F提交,CONTROL_MODE_PP
+43,轮廓速度PV,0x5A,Host->Motor,轨迹同步,{vel:f32;acc:f32;dec:f32;current_lim:f32},ACK,16,小端float,rad·s⁻¹/rad·s⁻²/A,0x5A00|ID,经典CAN可用8B短控制帧;旧12/13B兼容,CONTROL_MODE_PV 独立加减速与可选电流限幅
+44,轮廓力矩PT,0x5B,Host->Motor,轨迹同步,{torque:f32;slope:f32;current_lim:f32;vel_lim:f32},ACK,16,小端float,Nm/Nm·s⁻¹/A/rad·s⁻¹,0x5B00|ID,经典CAN可用8B短控制帧;监护上限0取电机默认,CONTROL_MODE_PT
 45,电子齿轮,0x5C,Host->Motor,轨迹同步,{ratio_num:i32;ratio_den:i32},ACK,8,小端i32,齿轮比,0x5C00|ID,num[0:4]den[4:8],CONTROL_MODE_ELECTRONIC_GEAR
 46,电子凸轮,0x5D,Host->Motor,轨迹同步,{cam_table_id:u16},ACK,2,小端u16,表索引,0x5D00|ID,id[0:2],CONTROL_MODE_ELECTRONIC_CAM
+130,轮廓参数配置,0x5F,Host->Motor,协议配置,{op:u8;field:u8;token:u16;value:f32},按op返回3/4/5/8B,1/2/3/8,小端混合,运行期参数,0x5F00|ID,经典CAN单帧;WRITE=8B COMMIT=3B READ=2B STATUS=1B ABORT=3B,配置不触发运动也不写入Flash
 47,被动恒转矩,0x60,Host->Motor,对拖台负载,{t_set:f32},ACK,4,小端float,Nm,0x6000|ID,t_set[0:4],CONTROL_MODE_PASSIVE_TORQUE 制动转矩设定 方向跟随转速 静止时输出0
 48,动态转矩,0x61,Host->Motor,对拖台负载,{waveform:u8;flags:u8;reserved:u16;amp:f32;freq:f32;bias:f32;duration:f32},ACK,20,小端混合,Nm/Hz/Nm/s,0x6100|ID,CAN需分包,CONTROL_MODE_DYNAMIC_TORQUE waveform:0=阶跃1=正弦2=方波3=单脉冲;flags.bit0=被动方向;duration=0连续
 49,平方转矩负载,0x62,Host->Motor,对拖台负载,{k:f32},ACK,4,小端float,N·m·s²/rad²,0x6200|ID,k[0:4],CONTROL_MODE_QUADRATIC_LOAD 风机水泵类 T=-sign(ω)·k·ω²
@@ -56,7 +58,7 @@
 55,脉冲方向,0x70,Host->Motor,特殊应用,{pulse_per_rev:u32},ACK,4,小端u32,脉冲/转,0x7000|ID,ppr[0:4],CONTROL_MODE_STEP_DIR
 56,模拟量输入,0x71,Host->Motor,特殊应用,{ch:u8;scale:f32},ACK,5,小端混合,通道/系数,0x7100|ID,ch[0]scale[1:5],CONTROL_MODE_ANALOG_INPUT
 57,PWM输入,0x72,Host->Motor,特殊应用,{min_us:u16;max_us:u16},ACK,4,小端u16,us,0x7200|ID,min[0:2]max[2:4],CONTROL_MODE_PWM_INPUT
-58,点动,0x73,Host->Motor,特殊应用,{dir:i8;speed:f32},ACK,5,小端混合,方向/rad·s⁻¹,0x7300|ID,dir[0]spd[1:5],CONTROL_MODE_JOG
+58,点动,0x73,Host->Motor,特殊应用,{dir:i8;speed:f32;acc:f32;dec:f32},ACK,13,小端混合,方向/rad·s⁻¹/rad·s⁻²,0x7300|ID,经典CAN自动分包;dir=0松开减速,CONTROL_MODE_JOG 扩展载荷在线更新acc/dec
 59,安全示教,0x74,Host->Motor,特殊应用,无,ACK,0,-,-,0x7400|ID,无,CONTROL_MODE_SAFE_TEACH
 60,老化测试,0x75,Host->Motor,测试,{cycles:u32},ACK,4,小端u32,次数,0x7500|ID,cyc[0:4],CONTROL_MODE_TEST_AGING
 61,扫频测试,0x76,Host->Motor,测试,{control:u8;point_cfg:u8;f_start_x10:u16;f_end_x10:u16;amp_raw:u16;bias_raw:i16;format_tag:u16},{session_id:u16;point_count:u16;duration_x100:u32},12,小端整数,模式相关,0x7600|ID,12B整数格式;bias为直流偏置;UART优先;经典CAN走分包;8B格式兼容;可选旧12B浮点,CONTROL_MODE_TEST_SWEEP_FREQ
@@ -96,7 +98,7 @@
 95,读电机状态,0xC1,Host->Motor,反馈查询,无,{top_fsm:u8;run_state:u8;ctrl_mode:u8;enable:u8},0,-,-,0xC100|ID,fsm[0]run[1]mode[2]en[3],对应top_fsm_e/run_state_e
 96,读相电流,0xC2,Host->Motor,反馈查询,无,{ia:f32;ib:f32;ic:f32},0,-,-,0xC200|ID,CAN需分包(12B)或i16压缩(6B)由编译宏决定,三相电流
 97,读DQ电流,0xC3,Host->Motor,反馈查询,无,{id:f32;iq:f32},0,-,-,0xC300|ID,id[0:4]iq[4:8],dq轴电流反馈
-98,读母线信息,0xC4,Host->Motor,反馈查询,无,{vbus:f32;ibus:f32;power:f32},0,-,-,0xC400|ID,CAN分包,母线电压电流功率
+98,读母线信息,0xC4,Host->Motor,反馈查询,无,{vbus:f32;ibus:f32},0,-,-,0xC400|ID,vbus[0:4]ibus[4:8],8B单帧 上位机计算功率Vbus乘Ibus
 99,读温度,0xC5,Host->Motor,反馈查询,无,{temp_fet:f32;temp_motor:f32},0,-,-,0xC500|ID,fet[0:4]mot[4:8],功率管/电机温度
 100,读位置速度,0xC6,Host->Motor,反馈查询,无,{pos:f32;vel:f32},0,-,-,0xC600|ID,pos[0:4]vel[4:8],输出端位置速度
 101,读多圈位置,0xC7,Host->Motor,反馈查询,无,{multiturn:i32;single:f32},0,-,-,0xC700|ID,mt[0:4]sg[4:8],多圈计数+单圈

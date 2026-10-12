@@ -940,6 +940,7 @@ class FeedbackPanel(QWidget):
     """实时反馈: 上 FOC 框图 + 下系统参数分区卡片。"""
 
     poll_state = pyqtSignal()
+    poll_position_zero = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -948,10 +949,11 @@ class FeedbackPanel(QWidget):
         self._last_state = (None, None, None, None)
         self._pole_pairs = _MotorView.DEFAULT_POLE_PAIRS
         self._elec_bias = 0.0     # elec_angle_bias (rad), 由 set_motor_params 注入
+        self._gear_ratio = 1.0
         # 位置变化死区: 静止时锁定 single, 避免编码器噪声导致数值卡片/示意图抖动;
         # 数值卡片与转子示意图共用同一滤波实例, 保证显示一致
         self._single_filter = AngleDeadZone(pos_threshold=0.05)
-        self._disp_pos = 0.0        # 解锁时缓存的 pos, 锁定时保持不变
+        self._disp_pos = 0.0        # 关节位置独立于转子单圈角显示滤波
         self._disp_multiturn = 0    # 解锁时缓存的 multiturn, 锁定时保持不变
         self._poll_timer = QTimer(self)
         self._poll_timer.setSingleShot(False)
@@ -1003,11 +1005,12 @@ class FeedbackPanel(QWidget):
             ("温度 电机", "temp_motor", "{:.1f}", "°C"),
         ])
         self._card_motion = _ParamCard("位置 / 角度 / 速度", [
-            ("电机位置", "pos", "{:+.4f}", "rad"),
-            ("电机速度", "vel", "{:+.3f}", "rad/s"),
-            ("机械角度", "_mech_deg", "{:.1f}", "°"),
+            ("关节位置", "pos", "{:+.4f}", "rad"),
+            ("关节速度", "vel", "{:+.3f}", "rad/s"),
+            ("电机机械角", "_mech_deg", "{:.1f}", "°"),
             ("电角度", "_elec_deg", "{:.1f}", "°"),
             ("多圈计数", "multiturn", "{}", ""),
+            ("设备零位", "device_zero", "{:+.5f}", "rad"),
         ])
         self._card_state = _ParamCard("状态 / 故障", [
             ("顶层状态", "_fsm", "{}", ""),
@@ -1144,6 +1147,8 @@ class FeedbackPanel(QWidget):
     def update_feedback(self, fb):
         self._card_bus.update_values(fb)
         self._card_motion.update_values(fb)
+        if getattr(fb, 'device_zero', None) is None:
+            self._card_motion.set_text('device_zero', '--')
 
         # 机械角度(单圈 0~360°) + 电角度(0~360°): 由 single + pole_pairs + elec_bias 计算。
         # theta_e = (theta_m * pp + bias) % 2π, 而 theta_m ≡ single (mod 2π),
@@ -1155,22 +1160,21 @@ class FeedbackPanel(QWidget):
         # 形成"漂移-拉回"的低频摆动, 把位置噪声放大成肉眼可见的指针晃动
         raw_single = float(getattr(fb, "single", 0.0) or 0.0)
         vel = float(getattr(fb, "vel", 0.0) or 0.0)
-        single = self._single_filter.update(raw_single, vel)
-        disp_vel = 0.0 if self._single_filter.is_locked else vel
+        motor_vel = vel * self._gear_ratio
+        single = self._single_filter.update(raw_single, motor_vel)
+        disp_motor_vel = 0.0 if self._single_filter.is_locked else motor_vel
         mech_deg = math.degrees(single) % 360.0
         elec_rad = (single * self._pole_pairs + self._elec_bias) % (2.0 * math.pi)
         elec_deg = math.degrees(elec_rad) % 360.0
         self._card_motion.set_text("_mech_deg", f"{mech_deg:.1f}")
         self._card_motion.set_text("_elec_deg", f"{elec_deg:.1f}")
-        # 速度卡片: 锁定时置零, 避免噪声速度跳动
-        self._card_motion.set_text("vel", f"{disp_vel:+.3f}")
-        # pos(多圈位置) 与 multiturn: 锁定时保持上次值不变, 避免编码器噪声导致 pos
-        # 末位抖动和 multiturn int 跳变 ±1。pos 与 single/multiturn 的关系:
-        # pos = multiturn * 2π + single, 锁定时 single 已锁定, pos/multiturn 也应锁定。
+        self._card_motion.set_text("vel", f"{vel:+.3f}")
+        # A zero change/restoration updates joint coordinates while the rotor is stationary.
+        # Always use the latest joint position; filter only raw encoder diagnostics.
+        v_pos = getattr(fb, "pos", None)
+        if v_pos is not None:
+            self._disp_pos = float(v_pos)
         if not self._single_filter.is_locked:
-            v_pos = getattr(fb, "pos", None)
-            if v_pos is not None:
-                self._disp_pos = float(v_pos)
             v_mt = getattr(fb, "multiturn", None)
             if v_mt is not None:
                 self._disp_multiturn = int(v_mt)
@@ -1179,7 +1183,7 @@ class FeedbackPanel(QWidget):
 
         # 电机旋转示意(滤波后的单圈角 + 静止置零的速度 + iq)
         self._motor.set_feedback(
-            single, disp_vel, getattr(fb, "iq", 0.0), self._enabled)
+            single, disp_motor_vel, getattr(fb, "iq", 0.0), self._enabled)
 
         # FOC 框图电气量
         def f(attr, fmt):
@@ -1196,7 +1200,7 @@ class FeedbackPanel(QWidget):
                 f"ib {f('ib','{:+.2f}')} A",
                 f"ic {f('ic','{:+.2f}')} A",
             ],
-            "thw": f"{single:.3f}rad / {disp_vel:+.2f}",
+            "thw": f"{single:.3f}rad / {disp_motor_vel:+.2f}",
         })
 
         # 故障/警告: 显示十六进制 + 解码描述(故障时加载完整中文信息)
@@ -1235,6 +1239,8 @@ class FeedbackPanel(QWidget):
         if pp > 0:
             self._pole_pairs = pp
         self._elec_bias = float(params.get("elec_angle_bias", 0.0) or 0.0)
+        ratio = float(params.get("gear_ratio", 1.0) or 1.0)
+        self._gear_ratio = ratio if math.isfinite(ratio) and ratio >= 1 else 1.0
 
     def update_state(self, top_fsm, run_state, ctrl_mode, enable):
         self._last_state = (top_fsm, run_state, ctrl_mode, enable)
@@ -1277,6 +1283,7 @@ class FeedbackPanel(QWidget):
 
     def set_link_active(self, active: bool):
         if not active:
+            self._card_motion.set_text('device_zero', '--')
             self._last_state = (None, None, None, None)
             self._enabled = False
             self._single_filter.reset(0.0)   # 断开时重置死区, 避免重连后锁定到旧值
@@ -1344,6 +1351,7 @@ class FeedbackPanel(QWidget):
     def showEvent(self, evt):
         super().showEvent(evt)
         self._restart_poll()
+        self.poll_position_zero.emit()
 
     def hideEvent(self, evt):
         super().hideEvent(evt)

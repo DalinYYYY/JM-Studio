@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import QGroupBox, QGridLayout, QPushButton
 from PyQt6.QtCore import pyqtSignal
 
 from jmproto import JmCmd
+from ui.panels.position_zero import PositionZeroController
 
 
 class ControlPanel(QGroupBox):
@@ -48,7 +49,14 @@ class ControlPanel(QGroupBox):
             btn.clicked.connect(lambda _, c=int(cmd): self.command.emit(c))
             layout.addWidget(btn, row, col)
 
+        self._btn_zero = QPushButton("设备零位设置")
+        self._btn_zero.setStyleSheet(style_normal)
+        layout.addWidget(self._btn_zero, 3, 1)
+        self._zero_controller = PositionZeroController(self._btn_zero, self)
         self._refresh_enable_buttons()
+
+    def bind_client(self, client, require_can_selection=False):
+        self._zero_controller.bind_client(client, require_can_selection)
 
     def set_enabled_state(self, enabled: bool):
         """由主窗口按上报的 enable 字段调用, 高亮当前所处态对应按钮。"""

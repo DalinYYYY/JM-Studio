@@ -71,7 +71,7 @@ class MainWindow(QMainWindow):
 
     # 电机本体参数(转发到反馈面板转子示意图), code_name 对应 CSV 参数字段
     _MOTOR_PARAM_KEYS = ("r", "ld", "lq", "flux", "kt", "ke", "pole_pairs",
-                         "elec_angle_bias")
+                         "elec_angle_bias", "gear_ratio")
 
     _PID_THEORY_PARAM_NAMES = (
         "phase_resistance", "phase_inductance_d", "phase_inductance_q",
@@ -231,6 +231,7 @@ class MainWindow(QMainWindow):
 
         self._conn_panel = ConnectionPanel()
         self._control_panel = ControlPanel()
+        self._control_panel.bind_client(self._client, require_can_selection=True)
         self._motion_panel = MotionPanel(self._registry)
         self._telemetry_panel = TelemetryPanel()
         self._feedback_panel = FeedbackPanel()
@@ -424,6 +425,7 @@ class MainWindow(QMainWindow):
             }
         """)
         self._main_splitter.addWidget(self._left_scroll)
+        self._left_scroll.setMinimumWidth(max(320, left_content.minimumSizeHint().width() + 24))
         self._main_splitter.addWidget(right)
         self._main_splitter.setStretchFactor(0, 0)  # 左侧不抢空间
         self._main_splitter.setStretchFactor(1, 1)  # 右侧吃多余空间
@@ -1081,9 +1083,12 @@ class MainWindow(QMainWindow):
         c = self._client
         c.connected.connect(self._on_connected)
         c.error_occurred.connect(self._on_error)
+        c.profile_config_status.connect(
+            lambda msg: self.statusBar().showMessage(msg, 5000))
         c.tx_frame.connect(self._log_panel.log_tx)
         c.raw_frame.connect(self._log_panel.log_rx)
         c.feedback_updated.connect(self._queue_feedback)
+        self._feedback_panel.poll_position_zero.connect(self._on_poll_position_zero)
         c.state_updated.connect(self._queue_state)
         c.ack_received.connect(self._on_ack)
         c.nack_received.connect(self._on_nack)
@@ -1608,6 +1613,7 @@ class MainWindow(QMainWindow):
             # CAN 节点选中后自动请求一次固件版本
             self._dev_info_auto_query = True
             QTimer.singleShot(100, self._client.query_dev_info)
+            QTimer.singleShot(150, self._read_coordinate_geometry)
             if self._can_device_dialog is not None:
                 self._can_device_dialog.close()
 
@@ -1806,7 +1812,18 @@ class MainWindow(QMainWindow):
         self._plot_panel.set_debug_checkbox(False)
         self._debug_window = None
 
+    def _read_coordinate_geometry(self):
+        if not self._client.is_open() or self._can_commissioning_required:
+            return
+        self._on_param_read(self._config_panel, 28)
+
+    def _on_poll_position_zero(self):
+        if (self._client.is_open() and not self._can_commissioning_required
+                and not self._control_panel._zero_controller._pending):
+            self._client.query_position_config()
+
     def _on_connected(self, connected: bool):
+        self._motion_panel.set_link_active(connected)
         self._conn_panel.set_connected(connected)
         self._feedback_panel.set_link_active(connected)
         self._state_panel.set_link_active(connected)
@@ -1817,6 +1834,8 @@ class MainWindow(QMainWindow):
         self._link_connected = connected
         is_can = (self._client.transport.name == "can")
         if not connected:
+            self._motor_params = {}
+            self._feedback_panel.set_motor_params({})
             self._pid_debug_heartbeat_timer.stop()
             self._stop_trace(send_command=False)
             self._can_commissioning_required = False
@@ -1869,6 +1888,7 @@ class MainWindow(QMainWindow):
                     self._client.query_dev_info()
                 except Exception:
                     pass
+                QTimer.singleShot(150, self._read_coordinate_geometry)
             # P0-7: CAN 模式看门狗策略 — 保守延长到 5s
             # (固件 CAN 侧是否回应用层 ACK 待联调确认; 串口维持 1s)
             self._cmd_watchdog.setInterval(5000 if is_can else 1000)
@@ -1985,7 +2005,7 @@ class MainWindow(QMainWindow):
         if not self._ensure_open():
             return
         try:
-            ok = self._client.send_command(cmd, values)
+            ok = self._client.send_motion_command(cmd, values)
             if ok:
                 self._track_pid_command_targets(cmd, values)
         except Exception as e:

@@ -14,7 +14,7 @@ from .cmd_def import (
 class FeedbackData:
     """实时反馈数据(各字段单位见注释)"""
     __slots__ = [
-        'pos', 'vel', 'torque',
+        'pos', 'vel', 'torque', 'device_zero',
         'pos_ref', 'vel_ref',
         'id', 'iq', 'ia', 'ib', 'ic',
         'id_ref', 'iq_ref',
@@ -28,9 +28,10 @@ class FeedbackData:
     ]
 
     def __init__(self):
-        self.pos = 0.0          # rad
-        self.vel = 0.0          # rad/s
-        self.torque = 0.0       # Nm
+        self.pos = 0.0          # 关节 rad，相对设备零位
+        self.vel = 0.0          # 关节 rad/s
+        self.torque = 0.0       # 输出轴 Nm
+        self.device_zero = None  # 设备零位偏移 rad；仅收到配置应答后赋值
         self.pos_ref = 0.0      # rad
         self.vel_ref = 0.0      # rad/s
         self.id = 0.0           # A
@@ -46,7 +47,7 @@ class FeedbackData:
         self.temp_fet = 0.0     # C
         self.temp_motor = 0.0   # C
         self.multiturn = 0      # 多圈计数
-        self.single = 0.0       # 单圈位置 rad
+        self.single = 0.0       # 电机编码器单圈位置 rad（不受设备零位影响）
         self.fault_mask = 0     # 故障位掩码
         self.warn_mask = 0      # 警告位掩码
         self.top_fsm = 0        # 顶层状态
@@ -91,10 +92,11 @@ def parse_read_reply(cmd: int, payload: bytes):
         fb.vel = codec.rd_f32(payload, 4)
         fb.filled_fields = ('pos', 'vel')
         return fb, ('pos', 'vel')
-    if cmd == JmCmd.READ_BUS and len(payload) >= 12:
+    if cmd == JmCmd.READ_BUS and len(payload) in (8, 12):
         fb.vbus = codec.rd_f32(payload, 0)
         fb.ibus = codec.rd_f32(payload, 4)
-        fb.power = codec.rd_f32(payload, 8)
+        # Accept the legacy 12B reply, but derive power from the same V/I sample.
+        fb.power = fb.vbus * fb.ibus
         fb.filled_fields = ('vbus', 'ibus', 'power')
         return fb, ('vbus', 'ibus', 'power')
     if cmd == JmCmd.READ_TEMPERATURE and len(payload) >= 8:

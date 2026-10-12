@@ -34,7 +34,7 @@ shunt_resistance,电流采样电阻 Rsh,MotorCalibParam,RW,float,0.01,0.0001,1,o
 current_amp_gain,电流放大增益 G,MotorCalibParam,RW,float,50,1,10000,,0x0080,42,电流采样运放增益 电流计算依赖
 peak_current,峰值电流 Ipk,MotorCalibParam,RW,float,3.7,0.1,200,A,0x0080,43,电机峰值电流限幅 切换电机型号需同步
 max_speed,最大转速 ωmax,MotorCalibParam,RW,float,200,10,1000,rad/s,0x0080,44,电机最大转速限幅 切换电机型号需同步
-device_zero,设备零度,DeviceParam,RW,float,0,-12.566,12.566,rad,0x0100,48,设备机械零点位置
+device_zero,关节零位偏移,DeviceParam,RW,float,0,-12.566,12.566,rad,0x0100,48,输出轴零位偏移 0为合法默认值 上电角度除以减速比后减去此值
 device_time,设备生产日期,DeviceParam,RW,uint32_t,0,0,99999999,,0x0100,49,设备生产日期 YYYYMMDD格式
 can_id,CAN节点ID,DeviceParam,RW,uint32_t,1,1,127,,0x0100,50,CAN节点ID 0保留为广播
 can_baudrate,CAN波特率,DeviceParam,RW,uint32_t,1000000,10000,8000000,bps,0x0100,51,CAN经典帧波特率

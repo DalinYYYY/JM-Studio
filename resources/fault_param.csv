@@ -24,15 +24,15 @@
 0x3106,驱动器,故障级,B相电流采样错误,B相采样值超出量程范围,立即停机切断电源,IB_RANGE,STOP_POWER,0,0,ib,adc_range_pct
 0x3107,驱动器,故障级,C相电流采样错误,C相采样值超出量程范围,立即停机切断电源,IC_RANGE,STOP_POWER,0,0,ic,adc_range_pct
 0x3108,驱动器,故障级,MCU/FPGA故障,主控硬件自检失败(外设初始化失败),立即停机切断电源,MCU_SELFTEST,STOP_POWER,0,0,外设init失败,-
-0x3201,驱动器,异常级,驱动器过温,MOSFET结温>temp_fet_over_d,降功率运行,FET_OVER_TEMP,DERATE,0,2,temp_fet,temp_fet_over_d
-0x3202,驱动器,异常级,驱动器低温,MOSFET结温<temp_under_d,禁止运行等待预热,FET_UNDER_TEMP,DENY,0,0,temp_fet,temp_under_d
+0x3201,驱动器,异常级,驱动器过温,MOSFET结温>temp_fet_over_d,降功率运行,FET_OVER_TEMP,DERATE,1,2,temp_fet,temp_fet_over_d
+0x3202,驱动器,异常级,驱动器低温,MOSFET结温<temp_under_d,禁止运行等待预热,FET_UNDER_TEMP,DENY,1,0,temp_fet,temp_under_d
 0x3203,驱动器,异常级,PWM占空比饱和,占空比>duty_satur_pct持续duty_satur_time_s,降功率运行,DUTY_SATUR,DERATE,0,1,duty_a/b/c,duty_satur_pct/duty_satur_time_s
 0x3204,驱动器,异常级,再生能量过载,母线电压持续升高>阈值,开启制动电阻泄能,REGEN_OVER,DERATE,0,1,无(无制动电阻;由中度过压涵盖),-
-0x3205,驱动器,异常级,驱动器温度采样异常,NTC采样电压超有效范围(开路/短路),停机待查(温度保护已失效),FET_TEMP_SAMPLE,STOP_IDLE,0,0,temp_fet采样有效性,ntc_range_v
+0x3205,驱动器,异常级,驱动器温度采样异常,NTC采样电压超有效范围(开路/短路),停机待查(温度保护已失效),FET_TEMP_SAMPLE,STOP_IDLE,1,0,temp_fet采样有效性,ntc_range_v
 0x3301,驱动器,警告级,驱动波形畸变,电流纹波比>阈值(原THD判据修订),记录日志,I_RIPPLE,LOG,0,0,ia/ib/ic纹波,i_ripple_pct
 0x3302,驱动器,警告级,风扇故障,风扇转速为0且温度>50℃,记录日志,FAN_FAULT,LOG,0,0,无(无风扇),-
-0x3303,驱动器,警告级,驱动器温度预警,MOSFET结温>过温阈值-temp_warn_offset_d,记录日志,FET_TEMP_WARN,LOG,0,0,temp_fet,temp_warn_offset_d
-0x4101,电机本体,故障级,电机过温熔断,绕组温度>temp_motor_over_d,立即停机动态刹车,MOTOR_OVER_TEMP,STOP_BRAKE,0,0,temp_motor,temp_motor_over_d
+0x3303,驱动器,警告级,驱动器温度预警,MOSFET结温>过温阈值-temp_warn_offset_d,记录日志,FET_TEMP_WARN,LOG,1,0,temp_fet,temp_warn_offset_d
+0x4101,电机本体,故障级,电机过温熔断,绕组温度>temp_motor_over_d,按缓启动逐渐停机后锁存故障,MOTOR_OVER_TEMP,STOP_RAMP,1,0,temp_motor,temp_motor_over_d
 0x4102,电机本体,故障级,相间短路,任意两相电阻<0.1Ω(维护模式静态测量),立即停机切断电源,PHASE_SHORT,STOP_POWER,0,0,无(需静态电阻测量),-
 0x4103,电机本体,故障级,电机对地短路,绕组对地绝缘电阻<1MΩ(维护模式),立即停机切断电源,GND_SHORT,STOP_POWER,0,0,无(需绝缘检测电路),-
 0x4104,电机本体,故障级,电机断路,任意一相电阻>100Ω(维护模式静态测量),立即停机切断电源,PHASE_OPEN,STOP_POWER,0,0,无(需静态电阻测量),-
@@ -41,10 +41,10 @@
 0x4201,电机本体,异常级,三相不平衡,三相电流峰值偏差>i_unbalance_pct,降功率运行,I_UNBALANCE,DERATE,0,2,ia/ib/ic,i_unbalance_pct
 0x4202,电机本体,异常级,电机堵转,速度<stall_vel且电流>stall_current持续stall_time_s,立即停机(可清障恢复),MOTOR_STALL,STOP_IDLE,1,0,velocity/iq,stall_vel/stall_current/stall_time_s
 0x4203,电机本体,异常级,磁钢退磁,反电动势系数下降>flux_drop_pct(需在线观测),降功率运行,DEMAG,DERATE,0,1,flux观测,flux_drop_pct
-0x4204,电机本体,异常级,绕组过热,绕组温度>temp_motor_hot_d,降功率运行,WINDING_HOT,DERATE,0,2,temp_motor,temp_motor_hot_d
-0x4205,电机本体,异常级,电机温度采样异常,NTC采样电压超有效范围(开路/短路),停机待查(温度保护已失效),MOTOR_TEMP_SAMPLE,STOP_IDLE,0,0,temp_motor采样有效性,ntc_range_v
+0x4204,电机本体,异常级,绕组过热,绕组温度>temp_motor_hot_d,降功率运行,WINDING_HOT,DERATE,1,2,temp_motor,temp_motor_hot_d
+0x4205,电机本体,异常级,电机温度采样异常,NTC采样电压超有效范围(开路/短路),停机待查(温度保护已失效),MOTOR_TEMP_SAMPLE,STOP_IDLE,1,0,temp_motor采样有效性,ntc_range_v
 0x4301,电机本体,警告级,电机效率下降,电机运行效率<85%,记录日志,MOTOR_EFF_LOW,LOG,0,0,power_mech/power_elec,-
-0x4302,电机本体,警告级,电机温度预警,绕组温度>过热阈值-temp_warn_offset_d,记录日志,MOTOR_TEMP_WARN,LOG,0,0,temp_motor,temp_warn_offset_d
+0x4302,电机本体,警告级,电机温度预警,绕组温度>过热阈值-temp_warn_offset_d,记录日志,MOTOR_TEMP_WARN,LOG,1,0,temp_motor,temp_warn_offset_d
 0x5101,编码器/传感器,故障级,绝对位置丢失,编码器无有效位置数据(mg INVALID),立即停机动态刹车,ENC_POS_LOST,STOP_BRAKE,0,0,mg_state,-
 0x5102,编码器/传感器,故障级,磁编码器消磁,磁场强度<最低工作阈值(mg TOO_WEAK),立即停机切断电源,ENC_DEMAG,STOP_POWER,0,0,mg_state,-
 0x5103,编码器/传感器,故障级,霍尔传感器错误,霍尔信号组合异常,立即停机动态刹车,HALL_ERR,STOP_BRAKE,0,0,无(SSI接口无霍尔),-

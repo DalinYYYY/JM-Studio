@@ -124,6 +124,7 @@ class TesterMainWindow(QMainWindow):
         22: 'lq',                # q 轴电感
         23: 'flux',              # 磁链
         24: 'kt',                # 转矩常数
+        28: 'gear_ratio',        # 关节速度换算为转子速度
         38: 'elec_angle_bias',   # 电角度偏置(电角度显示)
     }
 
@@ -196,6 +197,7 @@ class TesterMainWindow(QMainWindow):
 
         self._conn_panel = ConnectionPanel()
         self._control_panel = ControlPanel()
+        self._control_panel.bind_client(self._client)
         self._motion_panel = MotionPanel(
             self._registry, mode_subset=self._profile.get('motion_modes'))
 
@@ -264,7 +266,10 @@ class TesterMainWindow(QMainWindow):
         c = self._client
         c.connected.connect(self._on_connected)
         c.error_occurred.connect(self._on_error)
+        c.profile_config_status.connect(
+            lambda msg: self.statusBar().showMessage(msg, 5000))
         c.feedback_updated.connect(self._queue_feedback)
+        self._feedback_panel.poll_position_zero.connect(self._on_poll_position_zero)
         c.state_updated.connect(self._queue_state)
         c.dev_info_received.connect(self._on_dev_info)
         c.motor_info_read_result.connect(self._on_motor_info_value)
@@ -312,6 +317,7 @@ class TesterMainWindow(QMainWindow):
         self.statusBar().showMessage("已断开")
 
     def _on_connected(self, connected: bool):
+        self._motion_panel.set_link_active(connected)
         self._link_connected = connected
         self._conn_panel.set_connected(connected)
         self._feedback_panel.set_link_active(connected)
@@ -401,6 +407,10 @@ class TesterMainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _on_poll_position_zero(self):
+        if self._client.is_open() and not self._control_panel._zero_controller._pending:
+            self._client.query_position_config()
+
     def _apply_motor_param(self, param_id: int, value_bytes: bytes):
         """单条参数应答落地: 解包 → 收集 → 刷新转子示意图。"""
         key = self._MOTOR_PARAM_KEYS.get(int(param_id))
@@ -432,9 +442,9 @@ class TesterMainWindow(QMainWindow):
         if not self._ensure_open():
             return
         try:
-            self._client.send_command(cmd, values)
-            self.statusBar().showMessage(
-                f"已发送: {cmd_name(cmd)} (0x{cmd:02X})", 2000)
+            if self._client.send_motion_command(cmd, values):
+                self.statusBar().showMessage(
+                    f"已提交: {cmd_name(cmd)} (0x{cmd:02X})", 2000)
         except Exception as e:
             QMessageBox.critical(self, "错误", f"发送异常: {e}")
 

@@ -54,6 +54,9 @@ class VirtualResponder:
         """处理一条命令, 返回需要立即回传的帧列表 [(cmd, payload)...]。"""
         cmd = int(cmd)
 
+        if cmd == int(JmCmd.POSITION_CONFIG):
+            return [self._nack(cmd, int(JmErr.NOT_SUPPORTED))]
+
         # ---- 运动控制类(运动模式命令码) ----
         spec = self.reg.get_command(cmd)
         is_motion = spec is not None and spec.category in (
@@ -207,7 +210,7 @@ class VirtualResponder:
         if cmd == int(JmCmd.READ_POS_VEL):
             return (cmd, struct.pack('<ff', s.pos, s.vel))
         if cmd == int(JmCmd.READ_BUS):
-            return (cmd, struct.pack('<fff', s.vbus, s.ibus, s.power))
+            return (cmd, struct.pack('<ff', s.vbus, s.ibus))
         if cmd == int(JmCmd.READ_TEMPERATURE):
             return (cmd, struct.pack('<ff', s.temp_fet, s.temp_motor))
         if cmd == int(JmCmd.READ_DQ_CURRENT):

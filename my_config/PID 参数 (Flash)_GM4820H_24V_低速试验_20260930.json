@@ -1,0 +1,215 @@
+{
+  "panel": "PID 参数 (Flash)",
+  "source": "motor_config",
+  "param_count": 26,
+  "params": [
+    {
+      "param_id": 64,
+      "code_name": "kp_ld",
+      "cn_name": "d轴比例增益",
+      "value": "2.94",
+      "unit": "V/A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 65,
+      "code_name": "ki_ld",
+      "cn_name": "d轴积分增益",
+      "value": "1972",
+      "unit": "V/(A·s)",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 66,
+      "code_name": "kp_lq",
+      "cn_name": "q轴比例增益",
+      "value": "2.94",
+      "unit": "V/A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 67,
+      "code_name": "ki_lq",
+      "cn_name": "q轴积分增益",
+      "value": "1972",
+      "unit": "V/(A·s)",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 68,
+      "code_name": "integral_limit",
+      "cn_name": "积分限幅",
+      "value": "3",
+      "unit": "V",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 69,
+      "code_name": "decoupling_gain",
+      "cn_name": "dq轴解耦增益",
+      "value": "1",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 70,
+      "code_name": "comp_du_V",
+      "cn_name": "死区补偿电压",
+      "value": "0",
+      "unit": "V",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 71,
+      "code_name": "pwm_duty_max",
+      "cn_name": "PWM最大占空比",
+      "value": "0.9",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 72,
+      "code_name": "kp_s",
+      "cn_name": "速度环比例增益",
+      "value": "0.02",
+      "unit": "A/(rad/s)",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 73,
+      "code_name": "ki_s",
+      "cn_name": "速度环积分增益",
+      "value": "0.2",
+      "unit": "A/rad",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 74,
+      "code_name": "speed_integral_limit",
+      "cn_name": "速度环积分限幅",
+      "value": "0.3",
+      "unit": "A",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 75,
+      "code_name": "vff",
+      "cn_name": "速度前馈系数",
+      "value": "1",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 76,
+      "code_name": "aff",
+      "cn_name": "加速度前馈系数",
+      "value": "0",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 77,
+      "code_name": "jerk_ff",
+      "cn_name": "加加速度前馈系数",
+      "value": "0",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 78,
+      "code_name": "speed_filter_alpha",
+      "cn_name": "速度滤波系数",
+      "value": "0.1",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 79,
+      "code_name": "speed_filter_enable",
+      "cn_name": "速度滤波使能",
+      "value": "0",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 80,
+      "code_name": "kp_p",
+      "cn_name": "位置环比例增益",
+      "value": "10",
+      "unit": "Hz",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 81,
+      "code_name": "ki_p",
+      "cn_name": "位置环积分增益",
+      "value": "0",
+      "unit": "1/s",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 82,
+      "code_name": "position_integral_limit",
+      "cn_name": "位置环积分限幅",
+      "value": "0",
+      "unit": "rad",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 83,
+      "code_name": "position_filter_alpha",
+      "cn_name": "位置滤波系数",
+      "value": "0.1",
+      "unit": "",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 84,
+      "code_name": "position_filter_enable",
+      "cn_name": "位置滤波使能",
+      "value": "0",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 85,
+      "code_name": "following_error_limit",
+      "cn_name": "跟随误差限制",
+      "value": "1000",
+      "unit": "P",
+      "dtype": "f32"
+    },
+    {
+      "param_id": 86,
+      "code_name": "decouple_algo",
+      "cn_name": "交叉解耦算法",
+      "value": "1",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 87,
+      "code_name": "bemf_ff_enable",
+      "cn_name": "反电势前馈使能",
+      "value": "0",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 88,
+      "code_name": "deadtime_comp_enable",
+      "cn_name": "死区补偿使能",
+      "value": "0",
+      "unit": "",
+      "dtype": "u32"
+    },
+    {
+      "param_id": 127,
+      "code_name": "pid_source_mask",
+      "cn_name": "PID来源位掩码",
+      "value": "273",
+      "unit": "",
+      "dtype": "u32"
+    }
+  ]
+}
