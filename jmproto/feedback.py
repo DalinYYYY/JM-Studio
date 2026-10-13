@@ -6,7 +6,7 @@ from . import codec
 from .cmd_def import (
     JmCmd, JmTlmBit,
     CalibState, CalibFailReason,
-    calib_state_name, calib_fail_reason_name, calib_level_submode_name,
+    calib_state_name, calib_fail_reason_name, calib_level_submode_name, calib_detail_name,
     pid_autotune_fail_reason_name,
 )
 
@@ -249,11 +249,11 @@ def parse_telemetry(payload: bytes):
 def parse_calib_status(payload: bytes) -> dict:
     """解析 CALIB_QUERY(0x97) 应答(8字节):
     state(u8) / fail_reason(u8) / progress(u8) / level(u8) /
-    submode(u8) / step(u8) / step_total(u8) / reserved(u8)
+    submode(u8) / step(u8) / step_total(u8) / detail(u8, 原 reserved)
 
     返回 dict, 含原始数值字段 + 中文描述字段:
       state, fail_reason, progress, level, submode, step, step_total, reserved
-      state_cn, fail_reason_cn, target_cn
+      detail(保留 reserved 别名), state_cn, fail_reason_cn, target_cn, detail_cn
     不足 8 字节时缺失字段以 0 填充(兼容下位机早期版本)。
     """
     p = bytes(payload)
@@ -280,6 +280,8 @@ def parse_calib_status(payload: bytes) -> dict:
         'step': step,
         'step_total': step_total,
         'reserved': reserved,
+        'detail': reserved,
+        'detail_cn': calib_detail_name(reserved),
         'state_cn': calib_state_name(state),
         'fail_reason_cn': calib_fail_reason_name(fail_reason),
         'target_cn': target_cn,

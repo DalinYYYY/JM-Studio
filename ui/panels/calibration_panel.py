@@ -59,7 +59,7 @@ _CALIB_LEVELS = [
         (3, 0, "R 相电阻",      "相电阻辨识 (DC法)"),
         (4, 0, "Ld d轴电感",    "d轴电感辨识 (阶跃响应)"),
         (5, 0, "Lq q轴电感",    "q轴电感辨识 (阶跃响应)"),
-        (6, 0, "flux 磁链",     "永磁体磁链辨识 (反电势法)"),
+        (6, 0, "flux 磁链",     "磁链辨识(反电势法，需零位正确、空载稳速)"),
     ]),
     (JmCmd.CALIB_LEVEL3, "L3 编码器校准", [
         (1, 0, "零位",          "编码器电角度零点对齐"),
@@ -69,7 +69,7 @@ _CALIB_LEVELS = [
         (5, 0, "多圈零点",      "多圈计数器零点校准"),
     ]),
     (JmCmd.CALIB_LEVEL4, "L4 转矩基础", [
-        (1, 0, "力矩常数 Kt",   "转矩常数 Kt 辨识"),
+        (1, 0, "力矩常数 Kt",   "磁链推算 Kt=1.5×极对数×磁链；无需转动"),
     ]),
     (JmCmd.CALIB_LEVEL5, "L5 非线性补偿", [
         # 仅齿槽三方案按钮单行短标题(文字过长), 其余子项保持 标题+描述 两行
@@ -832,6 +832,9 @@ class CalibrationPanel(QWidget):
         state_cn = status.get('state_cn', '')
         fail_cn = status.get('fail_reason_cn', '')
         target_cn = status.get('target_cn', '')
+        detail = int(status.get('detail', status.get('reserved', 0)))
+        detail_cn = status.get('detail_cn', '')
+        detail_info = f" detail={detail_cn}(0x{detail:02X})" if detail else ""
 
         if state == int(CalibState.DONE):
             self._calib_running = False
@@ -861,17 +864,17 @@ class CalibrationPanel(QWidget):
             else:
                 step_info = ""
             self._set_last_op(
-                f"{state_cn} {target_cn} 进度={progress}%{step_info}")
+                f"{state_cn} {target_cn} 进度={progress}%{step_info}{detail_info}")
             self._add_history(
                 f"[进度] 0x97 {state_cn} {target_cn} 进度={progress}% "
-                f"fail_reason={fail_cn}{step_info}")
+                f"fail_reason={fail_cn}{step_info}{detail_info}")
         elif state == int(CalibState.FAILED):
             self._calib_running = False
             self._poll_timer.stop()
-            self._set_last_op(f"标定失败: {fail_cn} ({target_cn})")
+            self._set_last_op(f"标定失败: {detail_cn or fail_cn} ({target_cn})")
             self._add_history(
                 f"[失败] 0x97 {state_cn} {target_cn} fail_reason={fail_cn}(0x{fail_reason:02X}) "
-                f"step={step}/{step_total if step_total else '-'}")
+                f"step={step}/{step_total if step_total else '-'}{detail_info}")
         else:  # IDLE
             self._calib_running = False
             self._poll_timer.stop()

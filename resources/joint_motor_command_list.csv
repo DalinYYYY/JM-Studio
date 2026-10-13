@@ -36,7 +36,7 @@
 34,三次样条,0x51,Host->Motor,轨迹同步,{seg_idx:u16;coef[4]:f32},ACK,18,小端混合,样条系数,0x5100|ID,CAN需分包,CONTROL_MODE_CUBIC_SPLINE
 35,梯形轨迹,0x52,Host->Motor,轨迹同步,{target:f32;vmax:f32;acc:f32},ACK,12,小端float,rad/rad·s⁻¹/rad·s⁻²,0x5200|ID,CAN需分包,CONTROL_MODE_TRAPEZOIDAL_TRAJ
 36,S型轨迹,0x53,Host->Motor,轨迹同步,{target:f32;vmax:f32;acc:f32;jerk:f32},ACK,16,小端float,rad/v/a/jerk,0x5300|ID,CAN需分包,CONTROL_MODE_S_CURVE_TRAJ
-37,回零,0x54,Host->Motor,轨迹同步,{method:u8},ACK{homed:u8},1,u8,回零方式,0x5400|ID,method[0],CONTROL_MODE_HOMING 见homing_method参数
+37,回零,0x54,Host->Motor,轨迹同步,{method:u8},ACK{status:u8=0},1,u8,回零方式,0x5400|ID,method[0],method=0按梯形轨迹运动到已有输出轴位置0 不重设零位 速度PID169 加减速取PP配置或默认1rad/s² ACK仅表示受理 method非0未实现
 38,CANopen同步,0x55,Host->Motor,轨迹同步,无,ACK,0,-,-,0x5500|ID,无,CONTROL_MODE_CANOPEN_SYNC SYNC对象
 39,EtherCAT CSP,0x56,Host->Motor,轨迹同步,{pos:f32},ACK,4,小端float,rad,0x5600|ID,pos[0:4],CONTROL_MODE_ETHERCAT_CSP 周期同步位置
 40,EtherCAT CSV,0x57,Host->Motor,轨迹同步,{vel:f32},ACK,4,小端float,rad/s,0x5700|ID,vel[0:4],CONTROL_MODE_ETHERCAT_CSV

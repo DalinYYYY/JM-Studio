@@ -303,6 +303,49 @@ CALIB_FAIL_REASON_CN = {
 }
 
 
+class CalibDetail(IntEnum):
+    """0x97 第 8 字节的辅助细节码；旧固件 reserved=0 仍兼容。"""
+    NONE = 0
+    FLUX_SPEED_UNSTABLE = 1
+    FLUX_SPEED_LOW = 2
+    FLUX_NONFINITE = 3
+    FLUX_VOLTAGE_INVALID = 4
+    FLUX_EMF_NONPOSITIVE = 5
+    FLUX_VARIANCE_HIGH = 6
+    FLUX_D_AXIS_MISMATCH = 7
+    FLUX_PARAM_INVALID = 8
+    FLUX_POLE_PAIRS_MISMATCH = 9
+    FLUX_RESULT_INVALID = 10
+    FLUX_SUBMIT_FAILED = 11
+    FLUX_NOT_STABLE = 12
+    FLUX_DRIVE_LIMIT = 13
+
+
+CALIB_DETAIL_CN = {
+    CalibDetail.NONE: "",
+    CalibDetail.FLUX_SPEED_UNSTABLE: "采样时转速超出稳定范围",
+    CalibDetail.FLUX_SPEED_LOW: "转速过低或反向",
+    CalibDetail.FLUX_NONFINITE: "电流/转速/计算值非有限",
+    CalibDetail.FLUX_VOLTAGE_INVALID: "母线/PWM电压重建无效",
+    CalibDetail.FLUX_EMF_NONPOSITIVE: "反电势/瞬时磁链非正",
+    CalibDetail.FLUX_VARIANCE_HIGH: "磁链样本方差过大",
+    CalibDetail.FLUX_D_AXIS_MISMATCH: "d轴反电势残差过大",
+    CalibDetail.FLUX_PARAM_INVALID: "磁链辨识输入参数无效",
+    CalibDetail.FLUX_POLE_PAIRS_MISMATCH: "配置与运行期极对数不一致",
+    CalibDetail.FLUX_RESULT_INVALID: "磁链结果无效或越界",
+    CalibDetail.FLUX_SUBMIT_FAILED: "磁链结果提交失败",
+    CalibDetail.FLUX_NOT_STABLE: "未形成完整稳定采样窗口",
+    CalibDetail.FLUX_DRIVE_LIMIT: "限流/限压下无法达到目标转速",
+}
+
+
+def calib_detail_name(detail: int) -> str:
+    try:
+        return CALIB_DETAIL_CN[CalibDetail(detail)]
+    except (ValueError, KeyError):
+        return f"未知细节(0x{detail:02X})"
+
+
 class PidAutotuneFailReason(IntEnum):
     """PID 理论估计失败原因码, 与固件 jm_proto_ops.c:app_pid_autotune 一致 (0x9A ACK 字段 1)"""
     NONE = 0              # 无失败
