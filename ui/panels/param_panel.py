@@ -77,9 +77,10 @@ class ParamPanel(QWidget):
     def __init__(self, registry, parent=None, title="电机参数",
                  source="motor_param", show_save=False, save_text="保存到Flash",
                  groups=None, show_legend=True, show_bulk_rw=False,
-                 show_import_export=False, row_plan=None):
+                 show_import_export=False, row_plan=None, fit_rows=False):
         super().__init__(parent)
         self._panel_name = title
+        self._fit_rows = bool(fit_rows)
         self._reg = registry
         self._source = source
         self._show_save = bool(show_save)
@@ -124,6 +125,36 @@ class ParamPanel(QWidget):
         self._fresh_ids = set()              # 需求2: 标定完成新读到的参数集合(加粗彩色显示)
         # 需求4: 按钮样式改用主题键(随主题切换), 不再硬编码 #2A2A2A/#EF6C00 等
         self._build()
+        if self._fit_rows:
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self._table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self._btn_row.setVisible(self._show_save or self._show_bulk_rw or self._show_import_export)
+            self._table.horizontalHeader().geometriesChanged.connect(self._fit_table_height)
+            self._table.verticalHeader().sectionResized.connect(self._fit_table_height)
+            self._table.horizontalScrollBar().rangeChanged.connect(self._fit_table_height)
+            self._fit_table_height()
+
+    def _fit_table_height(self, *_):
+        """补充参数表只占实际行高，列较宽时额外保留横向滚动条高度。"""
+        if not self._fit_rows:
+            return
+        table = self._table
+        height = table.verticalHeader().length() + 2 * table.frameWidth()
+        if not table.horizontalHeader().isHidden():
+            height += table.horizontalHeader().height()
+        bar = table.horizontalScrollBar()
+        if bar.maximum() > bar.minimum():
+            height += bar.sizeHint().height()
+        table.setFixedHeight(height)
+        self.updateGeometry()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_table_height()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_table_height()
 
     def panel_name(self) -> str:
         return self._panel_name
@@ -313,16 +344,21 @@ class ParamPanel(QWidget):
             "参数导出", self._on_export_clicked, "plot_ibus")
         self._btn_import = self._make_func_btn(
             "参数导入", self._on_import_clicked, "plot_ibus")
+        self._btn_clear_edits = self._make_func_btn(
+            "清空修改值", self.clear_edit_values, "plot_ibus")
+        self._btn_clear_edits.setToolTip("清空本地修改值及导入文件提示，不发送设备命令；写入期间暂不可用")
         self._lbl_import_file = QLabel("")
         self._lbl_import_file.setStyleSheet(
             f"color: {theme.hex('muted')}; font-style: italic;"
         )
         btn_layout.addWidget(self._btn_export)
         btn_layout.addWidget(self._btn_import)
+        btn_layout.addWidget(self._btn_clear_edits)
         btn_layout.addWidget(self._lbl_import_file)
         has_ie = self._show_import_export
         self._btn_export.setVisible(has_ie)
         self._btn_import.setVisible(has_ie)
+        self._btn_clear_edits.setVisible(has_ie)
         self._lbl_import_file.setVisible(has_ie)
         # 需求3: 保存按钮后的注入位(放历史开关等), 在 stretch 之前
         self._footer_after_save = QHBoxLayout()
@@ -514,6 +550,7 @@ class ParamPanel(QWidget):
         self._group_param_ids.clear()
         self._row_state.clear()
         self._pending_writes.clear()
+        self._btn_clear_edits.setEnabled(True)
         self._row_of_pid.clear()
 
         if self._row_plan:
@@ -523,6 +560,7 @@ class ParamPanel(QWidget):
             self._populate_by_plan(specs)
             self._table.resizeRowsToContents()
             self._syncing_table = False
+            self._fit_table_height()
             return
 
         groups = self._params_by_group()
@@ -538,6 +576,7 @@ class ParamPanel(QWidget):
 
         self._table.resizeRowsToContents()
         self._syncing_table = False
+        self._fit_table_height()
 
     def _populate_by_plan(self, specs: dict):
         """行计划模式: 按 _row_plan 顺序取 registry 参数构建行; registry 缺失的跳过。"""
@@ -673,6 +712,9 @@ class ParamPanel(QWidget):
                     item.setForeground(QBrush(fg))
 
     def _on_write_clicked(self, param_id: int):
+        state = self._row_state.get(int(param_id))
+        if not state or not state.get('writable'):
+            return
         item = self._edit_items.get(int(param_id))
         if item is None:
             return
@@ -749,6 +791,7 @@ class ParamPanel(QWidget):
             return
         state['dirty'] = bool(dirty)
         state['pending'] = bool(pending)
+        self._btn_clear_edits.setEnabled(not self._pending_writes)
         if dirty:
             btn.setStyleSheet(self._btn_dirty_style())
             btn.setToolTip("当前值已修改，等待写入")
@@ -898,6 +941,20 @@ class ParamPanel(QWidget):
                     pass
 
     # ==================== 导入/导出参数 ====================
+    def clear_edit_values(self):
+        """清空本地修改列，保留设备读回值及只读权限。"""
+        if self._pending_writes:
+            return
+        self._table.clearFocus()
+        self._syncing_table = True
+        try:
+            for pid, item in self._edit_items.items():
+                item.setText("--")
+                self._set_write_button_state(pid, False, False)
+        finally:
+            self._syncing_table = False
+        self._lbl_import_file.clear()
+
     def _on_export_clicked(self):
         """导出当前面板参数到 JSON 文件。值取"当前值"列(读回值)。"""
         params_data = []

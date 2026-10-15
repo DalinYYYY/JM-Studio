@@ -3,6 +3,7 @@
 
 对应固件 ctrl_transition.h 的 ref_smooth_cfg_t + 跨模式兜底时长:
 - param_id 0~13 与固件 jm_cmd_def.h JM_SMOOTH_PID_* 一一对应
+- 当前固件仅支持 0~6 写入，7~13 只读。
 - 0xA4 param_id=0xFF 整块 52B:
   enable(u8) + shape(u8) + rsv(2) + duration(u32) + rate[4](f32) + thresh[6](f32) + fallback(u32)
 """
@@ -34,14 +35,15 @@ BLOCK_LEN = 52
 _U32_PIDS = {PID_ENABLE, PID_SHAPE, PID_DURATION, PID_MODE_SW_FALLBACK}
 
 # 编译期默认值 (与固件 ref_smooth_cfg_init_defaults + g_run_state_trans_count 一致)
+WRITABLE_PIDS = frozenset(range(PID_CURRENT_RATE + 1))
 DEFAULTS = {
     PID_ENABLE: 1,
-    PID_SHAPE: 0,
+    PID_SHAPE: 1,
     PID_DURATION: 500,
-    PID_POS_RATE: 100.0,
-    PID_VEL_RATE: 500.0,
-    PID_TORQUE_RATE: 20.0,
-    PID_CURRENT_RATE: 100.0,
+    PID_POS_RATE: 5.0,
+    PID_VEL_RATE: 20.0,
+    PID_TORQUE_RATE: 2.0,
+    PID_CURRENT_RATE: 20.0,
     PID_POS_THRESH: 0.1,
     PID_VEL_THRESH: 1.0,
     PID_TORQUE_THRESH: 0.1,
@@ -74,12 +76,12 @@ PID_NAMES = {
 class SmoothConfig:
     """缓启动渐变配置运行时快照 (字段与 param_id 对应)"""
     enable: int = 1
-    shape: int = 0
+    shape: int = 1
     duration: int = 500
-    pos_rate: float = 100.0
-    vel_rate: float = 500.0
-    torque_rate: float = 20.0
-    current_rate: float = 100.0
+    pos_rate: float = 5.0
+    vel_rate: float = 20.0
+    torque_rate: float = 2.0
+    current_rate: float = 20.0
     pos_thresh: float = 0.1
     vel_thresh: float = 1.0
     torque_thresh: float = 0.1
@@ -114,6 +116,8 @@ def pack_set_request(param_id: int, value) -> bytes:
     """编码 0xA3 写请求: param_id(1) + value(4) 小端"""
     if param_id not in DEFAULTS:
         raise ValueError(f"未知 param_id: {param_id:#04x}")
+    if param_id not in WRITABLE_PIDS:
+        raise ValueError(f"缓启动参数只读: {param_id:#04x}")
     if param_id in _U32_PIDS:
         return wr_u8(param_id) + wr_u32(int(value))
     return wr_u8(param_id) + wr_f32(float(value))

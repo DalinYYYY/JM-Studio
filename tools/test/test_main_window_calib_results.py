@@ -64,8 +64,8 @@ check("self._calib_results_panel.save_all.connect(self._on_config_save)" in src,
       "应连接 save_all 到 _on_config_save (0xEA)")
 
 # Task 5: Index 16 (is_calibrated) 读回值应转发到 calib_panel.set_calibrated_value
-check("if param_id == 16:" in src,
-      "_on_param_result 应有 param_id == 16 分支")
+check('if panel.source() == "motor_config" and param_id == 16:' in src,
+      "标定状态应只接受配置通道 ID16 应答")
 check("self._calib_panel.set_calibrated_value(disp)" in src,
       "Index 16 读回值应转发到 calib_panel.set_calibrated_value")
 

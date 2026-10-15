@@ -43,7 +43,7 @@ from ui.theme import theme
 # 每条: (cmd, 级别名称, [(sub_id, method, 子模式名, 描述), ...])
 # L2 子模式按固件实际实现拆分(submode 3-6 分别对应 R/Ld/Lq/flux, 各有独立测试方法)
 # method=0 表示该子项无方案参数; L5>1 齿槽三个方案卡片共用 submode=1,
-# 方案经 0x94 payload[1] 传给固件(固件端不读配置, 配置只存溯源 ID184)
+# 方案经 0x94 payload[1] 传给固件(来源为运行参数 ID86，使能仍为配置 ID184)
 _CALIB_LEVELS = [
     (JmCmd.CALIB_LEVEL1, "L1 驱动硬件底层", [
         (1, 0, "ADC偏置",     "电流/电压采样通道零点偏置校正"),
@@ -73,9 +73,9 @@ _CALIB_LEVELS = [
     ]),
     (JmCmd.CALIB_LEVEL5, "L5 非线性补偿", [
         # 仅齿槽三方案按钮单行短标题(文字过长), 其余子项保持 标题+描述 两行
-        (1, 3, "齿槽 速度环匀速", "方案3(推荐): 理论整定免调环, 云台/小惯量; 前置L6.1/L4.1/L2.3/2.5; 约25s"),
-        (1, 1, "齿槽 位置爬行",   "方案1: 用配置表手调三环, 环差时低速抖动采废表; 前置三环已调好; 约3min"),
-        (1, 2, "齿槽 静态逐点",   "方案2: 用配置表手调三环, 精度高但耗时长; 前置三环已调好; 约8~10min"),
+        (1, 3, "齿槽 速度环匀速", "方案3: 临时理论参数速度闭环1rad/s; 需有效R/L/J/Kt; 正反各2圈; 通常约35s"),
+        (1, 1, "齿槽 位置爬行",   "方案1: 当前三环参数, 位置轨迹0.25rad/s正反爬行; 需三环稳定; 通常约2~3min"),
+        (1, 2, "齿槽 静态逐点",   "方案2: 当前三环参数, 正反逐点保持1008个bin中心; 稳定50ms后采样100ms; 最长15min"),
         (2, 0, "摩擦",          "摩擦模型(库仑+粘性)辨识"),
         (3, 0, "死区补偿",      "逆变器死区非线性补偿"),
         (4, 0, "磁饱和",        "dq 轴磁饱和电感曲线辨识"),
@@ -121,7 +121,7 @@ _CALIB_RESULT_MAP = {
     # L4 转矩基础 (0x93)
     (0x93, 1): [24],                # Kt -> torque_constant
     # L5 非线性补偿 (0x94)
-    (0x94, 1): [184, 185, 186, 187, 188, 189, 190],  # 齿槽 -> 方案溯源/增益/CRC/使能/RMS/摩擦残余/状态(三方案共用)
+    (0x94, 1): [184, 185],           # 持久配置仅使能/增益；诊断走运行时参数85~89
     (0x94, 2): [26, 27],            # 摩擦 -> friction_coulomb, friction_viscous
     (0x94, 3): [],                  # 死区补偿 -> 固件内部曲线
     (0x94, 4): [],                  # 磁饱和 -> 固件内部曲线
@@ -164,13 +164,8 @@ CALIB_TABLE_PLAN = [
     # L4 转矩基础 (0x93)
     (24, "L4>1 力矩常数Kt"),          # torque_constant
     # L5 非线性补偿 (0x94)
-    (184, "L5>1 齿槽方案"),          # cogging_comp_mode (RO 溯源)
+    (184, "L5>1 齿槽使能"),
     (185, "L5>1 齿槽增益"),          # cogging_comp_gain
-    (186, "L5>1 齿槽表CRC"),         # cogging_comp_crc32 (RO)
-    (187, "L5>1 齿槽使能"),          # cogging_comp_enable
-    (188, "L5>1 齿槽表RMS"),         # cogging_comp_rms_ma (RO 质量指标)
-    (189, "L5>1 摩擦残余"),          # cogging_comp_asym_ma (RO 质量指标)
-    (190, "L5>1 齿槽状态"),          # cogging_comp_status (RO 位图)
     (26, "L5>2 摩擦"),                # friction_coulomb
     (27, "L5>2 摩擦; L6>2 阻尼"),     # friction_viscous (两标定共享)
     # L6 负载系统级 (0x95)
@@ -218,6 +213,7 @@ class CalibrationPanel(QWidget):
         self._link_active = False
         self._current_top_fsm = None
         self._calib_running = False     # 本地推测: 标定是否进行中
+        self._cogging_wait_flash = False
         self._last_op = ""              # 最近一次操作结果文本
         self._history = deque(maxlen=self._MAX_HISTORY)
         # 当前选中任务: (cmd, sub_id, level_name, sub_name, sub_desc)
@@ -225,6 +221,9 @@ class CalibrationPanel(QWidget):
         self._active_task_text = "当前选中: —"
         # Task 3 注入的内嵌标定结果面板
         self._config_panel = None
+        self._runtime_panel = None
+        self._runtime_group = None
+        self._runtime_read_key = None
         # Task 5: 已标定徽章当前文本 ("未读取" / "已标定" / "未标定")
         # Index 16 (is_calibrated) 读回值驱动, 主窗口在 _on_param_result 中转发
         self._calib_flag_text = "未读取"
@@ -325,15 +324,14 @@ class CalibrationPanel(QWidget):
         parent_layout.addWidget(self._status_card)
 
     def _build_calib_flag_controls(self, outer_layout):
-        """右侧已标定独占列: 徽章(大字醒目) + 标记/清除按钮横排.
+        """右侧只读标定状态徽章。
 
         徽章文本由 Index 16 (is_calibrated) 读回值驱动:
           - "1"  -> "已标定" (绿/accent)
           - "0"  -> "未标定" (红/danger)
           - 其他 -> "未读取" (灰/muted)
 
-        标记/清除按钮走 _config_panel.write_param(16, "1"/"0") -> 0xE7 motor_info_write,
-        与标定结果面板共用同一通道, 写完后由主窗口读回 Index 16 同步实际状态。
+        完成标定后由固件更新，清除使用专用重新标定命令。
         """
         col = QWidget()
         col.setStyleSheet("background: transparent;")
@@ -355,20 +353,22 @@ class CalibrationPanel(QWidget):
         self._btn_mark_calibrated = QPushButton("标记")
         self._btn_mark_calibrated.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_mark_calibrated.setFixedHeight(22)
-        self._btn_mark_calibrated.setToolTip("标记为已标定 (写 Index 16 = 1, 走 0xE7)")
+        self._btn_mark_calibrated.setToolTip("标定状态由固件维护，完成全自动标定后更新")
         self._btn_mark_calibrated.setStyleSheet(self._calib_action_btn_style())
         self._btn_mark_calibrated.clicked.connect(self._on_mark_calibrated)
         self._btn_mark_calibrated.setEnabled(False)
         btn_row.addWidget(self._btn_mark_calibrated)
+        self._btn_mark_calibrated.setVisible(False)
 
         self._btn_clear_calibrated = QPushButton("清除")
         self._btn_clear_calibrated.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_clear_calibrated.setFixedHeight(22)
-        self._btn_clear_calibrated.setToolTip("清除已标定 (写 Index 16 = 0, 走 0xE7)")
+        self._btn_clear_calibrated.setToolTip("清除标定请使用电机配置页的重新标定功能")
         self._btn_clear_calibrated.setStyleSheet(self._calib_action_btn_style())
         self._btn_clear_calibrated.clicked.connect(self._on_clear_calibrated)
         self._btn_clear_calibrated.setEnabled(False)
         btn_row.addWidget(self._btn_clear_calibrated)
+        self._btn_clear_calibrated.setVisible(False)
         col_layout.addLayout(btn_row)
 
         outer_layout.addWidget(col)
@@ -424,6 +424,7 @@ class CalibrationPanel(QWidget):
             tab_title = f"{level_name}  0x{int(cmd):02X}"
             self._task_tabs.addTab(page, tab_title)
 
+        self._task_tabs.currentChanged.connect(lambda _: self.refresh_runtime_panel())
         outer.addWidget(self._task_tabs, 1)
 
         # ============ 右侧: 操作列 (开始/中止/查询/自动) ============
@@ -589,7 +590,7 @@ class CalibrationPanel(QWidget):
             w = item.widget()
             if w is not None:
                 w.setParent(None)
-        lay.addWidget(panel)
+        lay.addWidget(panel, 1)
 
         # A3: 历史开关按钮 — 注入到 ParamPanel 保存按钮同行最右
         self._btn_history_toggle = QPushButton("历史: 隐")
@@ -683,6 +684,37 @@ class CalibrationPanel(QWidget):
             f"}}"
         )
 
+    def attach_runtime_panel(self, panel):
+        """齿槽只读诊断按选中项显示，按内容高度贴在配置表下方。"""
+        if self._runtime_panel is not None:
+            return
+        self._runtime_panel = panel
+        group = QGroupBox("齿槽诊断（运行时，只读）", self._results_container)
+        self._runtime_group = group
+        group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 6, 4, 4)
+        layout.addWidget(panel)
+        self._results_container.layout().addWidget(group, 0, Qt.AlignmentFlag.AlignBottom)
+        self.refresh_runtime_panel()
+
+    def refresh_runtime_panel(self, *, force_read=False):
+        """仅选中 L5 齿槽三方案时显示/读取诊断；离线或标定页隐藏时不发读取。"""
+        if self._runtime_panel is None:
+            return
+        key = self._active_task_key
+        tab = self._task_tabs.currentIndex()
+        selected = (key is not None and key[0] == int(JmCmd.CALIB_LEVEL5)
+                    and key[1] == 1 and key[2] in (1, 2, 3)
+                    and tab >= 0 and int(_CALIB_LEVELS[tab][0]) == key[0])
+        self._runtime_group.setVisible(selected)
+        if not selected:
+            self._runtime_read_key = None
+        elif (self._link_active and self.isVisible()
+              and (force_read or self._runtime_read_key != key)):
+            self._runtime_read_key = key
+            self._runtime_panel.read_all()
+
     def _refresh_task_buttons_style(self):
         """刷新所有任务卡片样式 (按当前选中态)."""
         for key, btn in self._task_buttons.items():
@@ -705,6 +737,9 @@ class CalibrationPanel(QWidget):
             return
         if self._active_task_key is None:
             self._add_history("[未选中] 请先选中一个子项")
+            return
+        if self._cogging_wait_flash:
+            self._set_last_op("齿槽表待落盘，请先退出到待机")
             return
         cmd, sub_id, method = self._active_task_key
         level_name, sub_name, _ = self._lookup_task(cmd, sub_id, method)
@@ -739,6 +774,7 @@ class CalibrationPanel(QWidget):
                 if self._task_tabs.currentIndex() != i:
                     self._task_tabs.setCurrentIndex(i)
                 break
+        self.refresh_runtime_panel()
 
     def _lookup_task(self, cmd: int, sub_id: int, method: int = 0):
         """按 (cmd, sub_id, method) 反查 (level_name, sub_name, sub_desc), 找不到返回 (None,...).
@@ -757,7 +793,10 @@ class CalibrationPanel(QWidget):
         self._link_active = bool(active)
         if not active:
             self._calib_running = False
+            self._cogging_wait_flash = False
             self._poll_timer.stop()
+            self._runtime_read_key = None
+        self.refresh_runtime_panel(force_read=bool(active))
         self._refresh_status()
         # Task 5: 标记/清除按钮可用态跟随连接
         self._refresh_calib_flag()
@@ -777,7 +816,8 @@ class CalibrationPanel(QWidget):
         # 离开 CALIB 态: 停止查询
         elif not in_calib and prev_in_calib:
             self._calib_running = False
-            self._poll_timer.stop()
+            if not self._cogging_wait_flash:
+                self._poll_timer.stop()
             self._add_history(f"[退出标定态] top_fsm={top_fsm_name(top_fsm)}")
         self._refresh_status()
 
@@ -842,6 +882,13 @@ class CalibrationPanel(QWidget):
             self._set_last_op(f"标定完成 ({target_cn})")
             self._add_history(
                 f"[ACK] 0x97 标定完成 level={level} submode={submode} ({target_cn})")
+            if level == 5 and submode == 1 and self._runtime_panel is not None:
+                self._cogging_wait_flash = True
+                self._set_last_op("齿槽采集完成，退出到待机后写入 Flash")
+                if self._link_active:
+                    self._poll_timer.start()
+                    self._runtime_panel.mark_fresh([85, 86, 87, 88, 89])
+                    self._runtime_panel.read_params.emit([85, 86, 87, 88, 89])
             # 标定完成 -> 主动读回本次产出的结果参数(加粗彩色显示)
             if self._config_panel is not None and self._link_active:
                 param_ids = self._result_param_ids_for_current_task()
@@ -855,6 +902,7 @@ class CalibrationPanel(QWidget):
                     self._add_history(
                         "[TX] 本次标定子项无 motor_info 字段产出 (固件内部表格), 跳过读回")
         elif state == int(CalibState.RUNNING):
+            self._cogging_wait_flash = False
             self._calib_running = True
             if self._link_active and not self._poll_timer.isActive():
                 self._poll_timer.start()
@@ -869,6 +917,7 @@ class CalibrationPanel(QWidget):
                 f"[进度] 0x97 {state_cn} {target_cn} 进度={progress}% "
                 f"fail_reason={fail_cn}{step_info}{detail_info}")
         elif state == int(CalibState.FAILED):
+            self._cogging_wait_flash = False
             self._calib_running = False
             self._poll_timer.stop()
             self._set_last_op(f"标定失败: {detail_cn or fail_cn} ({target_cn})")
@@ -942,7 +991,36 @@ class CalibrationPanel(QWidget):
     def _on_poll_tick(self):
         # 需求1: 定时器在跑(开始后启动, 完成/中止后停止)且连接就发查询进度
         if self._link_active:
-            self.send_command.emit(int(JmCmd.CALIB_QUERY), {})
+            if self._cogging_wait_flash and self._runtime_panel is not None:
+                if self._config_panel is not None:
+                    self._config_panel.read_params.emit([184, 185])
+                self._runtime_panel.read_params.emit([85, 86, 87, 88, 89])
+            else:
+                self.send_command.emit(int(JmCmd.CALIB_QUERY), {})
+
+    def on_cogging_result(self, param_id: int, value):
+        """0x97 DONE 是采集完成；运行参数ID89确认异步落盘结果。"""
+        if not self._cogging_wait_flash or int(param_id) != 89:
+            return
+        try:
+            status = int(value)
+        except (ValueError, TypeError):
+            return
+        if status & (1 << 5):
+            self._set_last_op("齿槽表待写 Flash，请退出到待机")
+            return
+        self._cogging_wait_flash = False
+        self._poll_timer.stop()
+        if status & (1 << 2):
+            message = "齿槽表落盘失败，补偿已关闭"
+        elif status & 1:
+            method = (status >> 8) & 0xFF
+            name = {1: "位置爬行", 2: "静态逐点", 3: "速度环匀速"}.get(method, "未知来源")
+            message = f"齿槽表已写入并校验，方案：{name}"
+        else:
+            message = "齿槽采集完成，但 Flash 表无效"
+        self._set_last_op(message)
+        self._add_history(f"[齿槽结果] {message}")
 
     # ==================== 历史记录 ====================
     def _add_history(self, text: str):
@@ -991,32 +1069,19 @@ class CalibrationPanel(QWidget):
         self._refresh_calib_flag()
 
     def _refresh_calib_flag(self):
-        """刷新徽章文本/样式 + 按钮可用态 (跟随 _link_active)."""
+        """刷新固件读回的徽章状态；旧写入入口保持禁用。"""
         self._lbl_calib_flag.setText(self._calib_flag_text)
         self._lbl_calib_flag.setStyleSheet(self._calib_flag_style())
-        enabled = self._link_active
-        self._btn_mark_calibrated.setEnabled(enabled)
-        self._btn_clear_calibrated.setEnabled(enabled)
+        self._btn_mark_calibrated.setEnabled(False)
+        self._btn_clear_calibrated.setEnabled(False)
 
     def _on_mark_calibrated(self):
-        """点 "标记": 乐观更新为已标定 + 发 write_param(16, "1") 走 0xE7 通道."""
-        if not self._link_active:
-            return
-        self._calib_flag_text = "已标定"
-        self._refresh_calib_flag()
-        if self._config_panel is not None:
-            self._config_panel.write_param.emit(16, "1")
-        self._add_history("[TX] 标记已标定 (write is_calibrated=1, Index 16, 0xE7)")
+        """兼容旧调用，标定状态只接受固件读回。"""
+        return
 
     def _on_clear_calibrated(self):
-        """点 "清除": 乐观更新为未标定 + 发 write_param(16, "0")."""
-        if not self._link_active:
-            return
-        self._calib_flag_text = "未标定"
-        self._refresh_calib_flag()
-        if self._config_panel is not None:
-            self._config_panel.write_param.emit(16, "0")
-        self._add_history("[TX] 清除已标定 (write is_calibrated=0, Index 16, 0xE7)")
+        """兼容旧调用；清除使用重新标定专用命令。"""
+        return
 
     def _calib_flag_style(self) -> str:
         """徽章样式: 已标定绿 / 未标定红 / 未读取灰."""
@@ -1139,6 +1204,8 @@ class CalibrationPanel(QWidget):
             fn = getattr(self._config_panel, "apply_theme", None)
             if callable(fn):
                 fn()
+        if self._runtime_panel is not None:
+            self._runtime_panel.apply_theme()
         self._refresh_status()
 
     # ==================== 配置持久化 ====================
@@ -1155,6 +1222,11 @@ class CalibrationPanel(QWidget):
         if self._config_panel is not None:
             try:
                 opts["config_panel"] = self._config_panel.get_opts()
+            except Exception:
+                pass
+        if self._runtime_panel is not None:
+            try:
+                opts["runtime_panel"] = self._runtime_panel.get_opts()
             except Exception:
                 pass
         return opts
@@ -1194,5 +1266,10 @@ class CalibrationPanel(QWidget):
         if self._config_panel is not None and isinstance(opts.get("config_panel"), dict):
             try:
                 self._config_panel.set_opts(opts["config_panel"])
+            except Exception:
+                pass
+        if self._runtime_panel is not None and isinstance(opts.get("runtime_panel"), dict):
+            try:
+                self._runtime_panel.set_opts(opts["runtime_panel"])
             except Exception:
                 pass

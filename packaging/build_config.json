@@ -5,7 +5,7 @@
     "motor_params": false,
     "calibration": true,
     "pid_tuning": false,
-    "softstart_cfg": false,
+    "softstart_cfg": true,
     "feedback_chart": true,
     "power_monitor": true,
     "state_machine": false,

@@ -383,9 +383,20 @@ class TwinResponder:
             return [self._motor_info_write_frame(payload)]
         if cmd == int(JmCmd.MOTOR_INFO_SAVE):
             self._position_saved = self._position_configured
+            spec = self.reg.get_motor_config_param(5)
+            if spec is not None:
+                self._motor_config_store[5] = min(0xFFFFFFFF, int(self._motor_config_value(spec)) + 1)
             return [self._ack(cmd)]
         if cmd in (int(JmCmd.MOTOR_INFO_RESET), int(JmCmd.MOTOR_INFO_RECALIB_RESET)):
+            if cmd == int(JmCmd.MOTOR_INFO_RESET) and len(payload) != 2:
+                return [self._nack(cmd, int(JmErr.LENGTH))]
             pid = codec.rd_u16(payload, 0) if len(payload) >= 2 else 0xFFFF
+            if cmd == int(JmCmd.MOTOR_INFO_RESET) and pid != 0xFFFF:
+                spec = self.reg.get_motor_config_param(pid)
+                if spec is None:
+                    return [self._nack(cmd, int(JmErr.BAD_PARAM_ID))]
+                if not spec.writable:
+                    return [self._nack(cmd, int(JmErr.READ_ONLY))]
             if cmd == int(JmCmd.MOTOR_INFO_RECALIB_RESET) or pid in (0xFFFF, 28, 40, 41, 48):
                 if self._top_fsm() != int(TopFsm.IDLE):
                     return [self._nack(cmd, int(JmErr.STATE_DENY))]
@@ -394,6 +405,8 @@ class TwinResponder:
                     self._position_zero = 0.0
                     self._position_saved = False
                     self._motor_config_store[48] = 0.0
+            if cmd == int(JmCmd.MOTOR_INFO_RESET) and pid in (0xFFFF, 176):
+                self._motor_config_store[176] = 0
             return [self._ack(cmd)]
         if cmd == int(JmCmd.MOTOR_INFO_ERASE):
             # 0xED (固化清零): 虚拟引擎同样校验魔数, 防误触语义与下位机一致
@@ -843,6 +856,8 @@ class TwinResponder:
         spec = self.reg.get_param(pid)
         if spec is None:
             return self._nack(int(JmCmd.PARAM_WRITE), int(JmErr.BAD_PARAM_ID))
+        if not spec.writable:
+            return self._nack(int(JmCmd.PARAM_WRITE), int(JmErr.READ_ONLY))
         val = codec.unpack_value(spec.dtype, payload[2:])
         if not self._coordinate_write_allowed(spec.code_name, val):
             return self._nack(int(JmCmd.PARAM_WRITE), int(JmErr.STATE_DENY))

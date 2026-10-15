@@ -6,13 +6,14 @@
 """
 
 import colorsys
+import csv
 
 import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
+    QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
     QWidget,
 )
 
@@ -183,7 +184,7 @@ class DebugPlotWindow(QWidget):
 
         self._chk_legend = QCheckBox("图例")
         self._chk_legend.setChecked(True)
-        self._chk_legend.setToolTip("显示/隐藏通道图例；通道较多时可隐藏以扩大绘图区")
+        self._chk_legend.setToolTip("点击图例颜色线段可切换曲线显示；Y 自适应只统计可见曲线")
         self._chk_legend.toggled.connect(self._on_legend_toggled)
         bar.addWidget(self._chk_legend)
 
@@ -200,6 +201,12 @@ class DebugPlotWindow(QWidget):
         self._btn_rename.setFixedHeight(22)
         self._btn_rename.clicked.connect(self._on_rename_channels)
         bar.addWidget(self._btn_rename)
+
+        self._btn_export = QPushButton("导出 CSV")
+        self._btn_export.setFixedHeight(22)
+        self._btn_export.setToolTip("导出全部缓存通道，包括隐藏曲线；每行记录数据点、通道号、名称和值")
+        self._btn_export.clicked.connect(self._on_export_csv)
+        bar.addWidget(self._btn_export)
 
         self._btn_clear = QPushButton("清空")
         self._btn_clear.setFixedHeight(22)
@@ -430,6 +437,34 @@ class DebugPlotWindow(QWidget):
         if pg is not None and self._plot.legend is not None:
             self._plot.legend.setVisible(bool(checked) and self._channel_count >= 1)
 
+    def _on_export_csv(self):
+        if self._latest_idx is None:
+            QMessageBox.information(self, "导出 CSV", "当前没有调试数据。")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出调试通道", "homing_debug.csv", "CSV 文件 (*.csv)")
+        if not path:
+            return
+        try:
+            self._write_csv(path)
+        except OSError as exc:
+            QMessageBox.warning(self, "导出失败", str(exc))
+
+    def _write_csv(self, path):
+        """按通道导出全部缓存，保留缺帧时各通道独立的数据点编号。"""
+        with open(path, 'w', encoding='utf-8-sig', newline='') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(('data_point', 'channel', 'name', 'value'))
+            for ch in range(self._channel_count):
+                buf = self._buffers.get(f"dbg_{ch}")
+                if buf is None:
+                    continue
+                ts, ys = buf.arrays_view(None)
+                display = self._get_display_name(ch)
+                for idx, val in zip(ts, ys):
+                    writer.writerow((format(float(idx), '.0f'), ch, display,
+                                     format(float(val), '.9g')))
+
     def _reset_view(self):
         if pg is None:
             return
@@ -526,6 +561,9 @@ class DebugPlotWindow(QWidget):
         y0 = None
         y1 = None
         for name, buf in self._buffers.items():
+            curve = self._curves.get(name)
+            if curve is None or not curve.isVisible():
+                continue
             _ts, ys = self._slice_x_range(buf, idx_min, idx_max)
             if not len(ys):
                 continue

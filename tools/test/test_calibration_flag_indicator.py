@@ -63,7 +63,7 @@ panel.set_calibrated_value("abc")
 check("未读取" in panel._lbl_calib_flag.text(),
       f"非数字应显示 '未读取', 实际 {panel._lbl_calib_flag.text()!r}")
 
-# 7. 点 "标记" 按钮: 乐观更新为已标定 + 发 _config_panel.write_param(16, "1")
+# 7. 标定状态只读；旧标记/清除入口隐藏且禁用，不产生外部写入。
 #    先注入一个 mock results_panel 捕获 write_param
 from jmproto.registry import get_registry
 from ui.panels.param_panel import ParamPanel
@@ -74,22 +74,22 @@ panel.attach_results_panel(mock_results)
 panel.set_link_active(True)
 writes = []
 mock_results.write_param.connect(lambda pid, text: writes.append((int(pid), text)))
+before = panel._lbl_calib_flag.text()
+check(panel._btn_mark_calibrated.isHidden() and not panel._btn_mark_calibrated.isEnabled(),
+      "标记按钮应隐藏并禁用")
 panel._btn_mark_calibrated.click()
-check("已标定" in panel._lbl_calib_flag.text(),
-      f"点标记后应乐观显示 '已标定', 实际 {panel._lbl_calib_flag.text()!r}")
-check(len(writes) == 1, f"点标记应发 1 条 write_param, 实际 {len(writes)}")
-if writes:
-    check(writes[0][0] == 16, f"应写 Index 16 (is_calibrated), 实际 {writes[0][0]}")
-    check(writes[0][1] == "1", f"应写值 '1', 实际 {writes[0][1]!r}")
+panel._on_mark_calibrated()
+check(panel._lbl_calib_flag.text() == before, "旧标记入口不能改变读回状态")
+check(not writes, "旧标记入口不能写入只读字段")
 
-# 8. 点 "清除" 按钮: 乐观更新为未标定 + 发 write_param(16, "0")
+# 8. 清除状态使用专用重新标定接口，旧入口不直接改写 ID16。
 writes.clear()
 panel._btn_clear_calibrated.click()
-check("未标定" in panel._lbl_calib_flag.text(),
-      f"点清除后应乐观显示 '未标定', 实际 {panel._lbl_calib_flag.text()!r}")
-check(len(writes) == 1, f"点清除应发 1 条 write_param, 实际 {len(writes)}")
-if writes:
-    check(writes[0] == (16, "0"), f"应写 (16, '0'), 实际 {writes[0]}")
+panel._on_clear_calibrated()
+check(panel._btn_clear_calibrated.isHidden() and not panel._btn_clear_calibrated.isEnabled(),
+      "清除按钮应隐藏并禁用")
+check(panel._lbl_calib_flag.text() == before, "旧清除入口不能改变读回状态")
+check(not writes, "旧清除入口不能写入只读字段")
 
 # 9. 未连接时点按钮: 不发 write_param
 panel.set_link_active(False)

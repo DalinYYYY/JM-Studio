@@ -81,9 +81,11 @@ param_id,参数名(代码字段),中文含义,数据类型,字节数,单位,所�
 79,protect_over_voltage,过压保护阈值,f32,4,V,保护,RW
 80,protect_under_voltage,欠压保护阈值,f32,4,V,保护,RW
 81,protect_over_speed,过速保护阈值,f32,4,rad/s,保护,RW
-82,protect_over_temp,过温保护阈值,f32,4,℃,保护,RW
-83,protect_under_temp,欠温保护阈值,f32,4,℃,保护,RW
-84,protect_pos_error,位置跟随误差限制,i32,4,counts,保护,RW
-85,protect_enable,保护总使能,u32,4,0/1,保护,RW
-86,load_sim_dead_zone_rad_s,负载模拟低速死区,f32,4,rad/s,负载模拟,RW
-
+82,protect_pos_error,位置跟随误差限制,i32,4,counts,保护,RW
+83,protect_enable,保护总使能,u32,4,0/1,保护,RW
+84,load_sim_dead_zone_rad_s,负载模拟低速死区,f32,4,rad/s,负载模拟,RW
+85,cogging_comp_crc32,齿槽表CRC32C,u32,4,-,齿槽诊断,RO
+86,cogging_comp_mode,齿槽标定方案,u32,4,-,齿槽诊断,RO
+87,cogging_comp_rms_ma,齿槽表RMS,u32,4,mA,齿槽诊断,RO
+88,cogging_comp_asym_ma,齿槽正反差,u32,4,mA,齿槽诊断,RO
+89,cogging_comp_status,齿槽补偿状态,u32,4,-,齿槽诊断,RO

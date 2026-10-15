@@ -17,6 +17,13 @@ from .cmd_def import JmCmd
 _RES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'resources')
 _CMD_CSV = os.path.join(_RES_DIR, 'joint_motor_command_list.csv')
 _PARAM_CSV = os.path.join(_RES_DIR, 'joint_motor_param_index.csv')
+
+# 固件维护的配置字段；加载旧 CSV 时也不能把它们恢复成可写。
+MOTOR_CONFIG_READONLY_NAMES = frozenset({
+    'config_version', 'total_runtime_s', 'save_count', 'is_calibrated',
+    'pid_source_mask',
+})
+MOTOR_CONFIG_READONLY_IDS = frozenset({0, 4, 5, 16, 127})
 _MOTOR_INFO_CSV = os.path.join(_RES_DIR, 'motor_info.csv')
 # 故障码表(fault_param_gen 生成副本, 12列, 行号=index 固件码表序)
 _FAULT_PARAM_CSV = os.path.join(_RES_DIR, 'fault_param.csv')
@@ -125,6 +132,19 @@ def _parse_payload_desc(desc: str, warnings=None):
 def validate_motion_values(cmd: int, values: dict) -> None:
     """校验交接模式的载荷语义，避免把会被固件拒绝的指令发到电机。"""
     cmd = int(cmd)
+    if cmd == JmCmd.CALIB_LEVEL5:
+        try:
+            submode = float(values.get('submode', 0))
+            method = float(values.get('method', 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("L5 子模式和齿槽方案必须是整数") from exc
+        if not math.isfinite(submode) or submode != int(submode) or not 1 <= submode <= 4:
+            raise ValueError("L5 子模式必须为 1~4")
+        if not math.isfinite(method) or method != int(method):
+            raise ValueError("齿槽方案必须是整数")
+        if (submode == 1 and method not in (1, 2, 3)) or (submode != 1 and method != 0):
+            raise ValueError("齿槽方案必须为 1位置爬行、2静态逐点或3速度闭环")
+        return
     if cmd not in (JmCmd.PP, JmCmd.PV, JmCmd.PT, JmCmd.JOG):
         return
 
@@ -402,7 +422,7 @@ class ProtocolRegistry:
                         nbytes=nbytes,
                         unit=_col(row, 'Unit', 'unit'),
                         group=_col(row, 'Category', 'group') or '其他',
-                        rw=_col(row, 'Access', 'access') or 'RW',
+                        rw='RO' if pid in MOTOR_CONFIG_READONLY_IDS or name in MOTOR_CONFIG_READONLY_NAMES else (_col(row, 'Access', 'access') or 'RW'),
                         desc='; '.join(desc_parts),
                         vmin=vmin,
                         vmax=vmax,

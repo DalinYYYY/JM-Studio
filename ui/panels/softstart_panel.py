@@ -20,7 +20,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
     QDoubleSpinBox, QSpinBox, QComboBox, QScrollArea, QWidget, QGridLayout,
-    QMessageBox, QSizePolicy, QButtonGroup, QBoxLayout, QStyle,
+    QMessageBox, QSizePolicy, QButtonGroup, QBoxLayout, QStyle, QAbstractSpinBox,
 )
 
 from jmproto import smoothstart as ss
@@ -57,10 +57,11 @@ _THRESH_FIELDS = [
 class _SpinField:
     """字段条目: 控件 + 单位标签 + dirty 基准跟踪"""
 
-    def __init__(self, name, spin, unit_label=None):
+    def __init__(self, name, spin, unit_label=None, writable=True):
         self.name = name
         self.spin = spin
         self.unit_label = unit_label
+        self.writable = writable
         self.baseline = None  # 读取回填时记录基准值
 
     def set_baseline(self, value):
@@ -73,7 +74,7 @@ class _SpinField:
         return self.spin.value()
 
     def is_dirty(self):
-        if self.baseline is None:
+        if not self.writable or self.baseline is None:
             return False
         return abs(self.current() - self.baseline) > 1e-9
 
@@ -300,14 +301,19 @@ class SoftstartPanel(QWidget):
             "① 读取配置 → ② 修改参数 → ③ 下发修改 → ④ 固化 EEPROM"
             "<br>"
             "<b>生效机制</b><br>"
-            "0xA3 下发即写入 RAM 立即生效；0xEA 固化到 EEPROM+Flash 双备份后断电保持"
+            "开关、形状、时长及四类速率可下发；阈值和跨模式时长由固件维护，只读。"
+            "0xA3 下发后立即生效，0xEA 固化到 EEPROM 后断电保持"
             "<br>"
             "<b>过渡时长</b><br>"
             "速率模式：|Δ目标| / rate，随目标阶跃自适应；"
             "rate 全 0 时改由兜底时长决定"
             "<br>"
             "<b>突变阈值</b><br>"
-            "单拍目标变化小于阈值 → 直接透传不渐变，避免微小调节被拖慢"
+            "同模式单拍目标变化小于等于阈值 → 直接透传不渐变；位置默认阈值 0.1 rad（约 5.73°）"
+            "<br>"
+            "<b>位置与回零</b><br>"
+            "位置速率使用输出轴 rad/s，减速比为 1 时即电机轴速率。"
+            "PP / 回零由独立轨迹的速度、加减速度控制，不使用本页的同模式位置渐变"
             "<br>"
             "<b>渐变形状</b><br>"
             "线性：恒斜率；S 曲线：起停柔和，峰值斜率≈平均 1.5 倍"
@@ -414,9 +420,11 @@ class SoftstartPanel(QWidget):
             row.addWidget(self._muted_label("tick"))
             self._global_cells[col].layout().addLayout(row)
             self._global_cells[col].layout().addWidget(converted)
-            self._fields[name] = _SpinField(name, spin)
+            self._fields[name] = _SpinField(name, spin, writable=(name == "duration"))
         self._duration_spin.setToolTip("控制环调用次数，1 tick = 0.1 ms；4 个速率均为 0 时生效")
-        self._fallback_spin.setToolTip("使能 / 跨模式切换的兜底时长；1 tick = 0.1 ms")
+        self._fallback_spin.setReadOnly(True)
+        self._fallback_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self._fallback_spin.setToolTip("固件维护，只读；使能 / 跨模式切换时长，1 tick = 0.1 ms")
         self._duration_spin.setAccessibleName("常规兜底时长")
         self._fallback_spin.setAccessibleName("跨模式兜底时长")
         self._enable_baseline = None
@@ -445,7 +453,7 @@ class SoftstartPanel(QWidget):
             if col == 1:
                 label.setToolTip("rate=0 时该字段不参与速率模式")
             elif col == 3:
-                label.setToolTip("单拍目标变化小于阈值时直接透传")
+                label.setToolTip("固件维护，只读；同模式单拍目标变化小于等于阈值时直接透传")
             grid.addWidget(label, 0, col, 1, span)
         for row, threshold in enumerate(_THRESH_FIELDS, 1):
             grid.addWidget(QLabel(threshold[1]), row, 0)
@@ -462,7 +470,12 @@ class SoftstartPanel(QWidget):
                 unit_label = self._muted_label(unit)
                 grid.addWidget(spin, row, col)
                 grid.addWidget(unit_label, row, col + 1)
-                self._fields[name] = _SpinField(name, spin, unit_label)
+                writable = col == 1
+                if not writable:
+                    spin.setReadOnly(True)
+                    spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+                    spin.setToolTip("固件维护，只读；当前固件不支持通过0xA3修改阈值")
+                self._fields[name] = _SpinField(name, spin, unit_label, writable=writable)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
         lay.addLayout(grid)
@@ -478,7 +491,7 @@ class SoftstartPanel(QWidget):
         lay = QVBoxLayout(box)
         lay.setContentsMargins(16, 18, 16, 16)
         lay.setSpacing(12)
-        heading = QLabel("过渡预览")
+        heading = QLabel("同模式目标变化预览")
         heading.setProperty("softstartRole", "heading")
         lay.addWidget(heading)
         grid = QGridLayout()
@@ -592,6 +605,7 @@ class SoftstartPanel(QWidget):
 
     def _on_checkbox_changed(self, _checked):
         self._update_state_label()
+        self._update_estimate()
 
     def _on_combo_changed(self, _idx):
         self._update_state_label()
@@ -665,6 +679,13 @@ class SoftstartPanel(QWidget):
         rate = getattr(cfg, rate_field)
         rate_unit = next(unit for name, _, unit, _ in _RATE_FIELDS if name == rate_field)
         self._estim_metrics.setText(f"当前 rate  {rate:g} {rate_unit}")
+        threshold = getattr(cfg, rate_field.replace("_rate", "_thresh"))
+        if not cfg.enable or abs(delta) <= threshold:
+            self._estim_result.setText("0.00 s")
+            self._estim_note.setText("缓启动已关闭，目标直接透传" if not cfg.enable else
+                                     f"目标变化未超过 {threshold:g} {_unit} 阈值，直接透传")
+            self._curve_preview.set_state(cfg.shape, 0.0)
+            return
         if rate <= 0:
             self._estim_result.setText("—")
             self._estim_note.setText("该字段 rate=0，不参与速率模式")
@@ -711,7 +732,7 @@ class SoftstartPanel(QWidget):
                     self.smooth_cfg_set_requested.emit(pid, value)
         ret = QMessageBox.question(
             self, "固化确认",
-            "将把当前配置写入 EEPROM + Flash 双备份。\nEEPROM 有写入寿命，确认固化？",
+            "将把当前配置写入 EEPROM，断电后保持。\n确认固化？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if ret == QMessageBox.StandardButton.Yes:
             self.smooth_cfg_save_requested.emit()
@@ -721,9 +742,9 @@ class SoftstartPanel(QWidget):
         self._enable_check.setChecked(bool(ss.DEFAULTS[ss.PID_ENABLE]))
         self._shape_buttons.button(ss.DEFAULTS[ss.PID_SHAPE]).setChecked(True)
         self._duration_spin.setValue(ss.DEFAULTS[ss.PID_DURATION])
-        self._fallback_spin.setValue(ss.DEFAULTS[ss.PID_MODE_SW_FALLBACK])
         for f in self._fields.values():
-            f.spin.setValue(ss.DEFAULTS[self._field_pid(f.name)])
+            if f.writable:
+                f.spin.setValue(ss.DEFAULTS[self._field_pid(f.name)])
         self._duration_ms.setText(self._ms_text(self._duration_spin.value()))
         self._fallback_ms.setText(self._ms_text(self._fallback_spin.value()))
         self._update_state_label()

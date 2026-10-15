@@ -50,6 +50,7 @@ class SoftstartPanelTest(unittest.TestCase):
 
     def read_config(self, **kwargs):
         self.panel.set_link_active(True)
+        kwargs.setdefault('shape', 0)  # 使用明确的线性读回样本，与编译期默认独立。
         self.panel.apply_config(ss.SmoothConfig(**kwargs))
 
     def test_disconnected_actions_and_initial_values(self):
@@ -64,7 +65,7 @@ class SoftstartPanelTest(unittest.TestCase):
         self.assertIn("50 ms", self.panel._duration_ms.text())
         self.assertIn("100 ms", self.panel._fallback_ms.text())
 
-    def test_all_fourteen_fields_round_trip_and_send(self):
+    def test_read_fourteen_fields_but_send_only_seven_writable_fields(self):
         self.read_config()
         self.assertEqual(self.panel._dirty_pids(), [])
         for field in self.panel._fields.values():
@@ -72,8 +73,8 @@ class SoftstartPanelTest(unittest.TestCase):
         self.panel._enable_check.click()
         self.panel._shape_buttons.button(1).click()
         expected = {pid: value for pid, value, _ in self.panel._dirty_pids()}
-        self.assertEqual(set(expected), set(ss.DEFAULTS))
-        self.assertIn("14", self.panel._state_label.text())
+        self.assertEqual(set(expected), set(ss.WRITABLE_PIDS))
+        self.assertIn("7", self.panel._state_label.text())
         self.assertTrue(self.panel._send_btn.isEnabled())
         self.assertEqual(self.sent, [])
         self.panel._send_btn.click()
@@ -111,28 +112,51 @@ class SoftstartPanelTest(unittest.TestCase):
         self.panel.set_link_active(True)
         self.panel.apply_config(ss.unpack_block(raw))
         self.assertEqual(self.panel._dirty_pids(), [])
-        self.panel._fields["pos_thresh"].spin.setValue(.101)
-        self.assertEqual(self.panel._dirty_pids(), [(ss.PID_POS_THRESH, .101, .1)])
-        self.panel._fields["pos_thresh"].spin.setValue(.1)
+        self.panel._fields["pos_rate"].spin.setValue(5.1)
+        self.assertEqual(self.panel._dirty_pids(), [(ss.PID_POS_RATE, 5.1, 5.0)])
+        self.panel._fields["pos_rate"].spin.setValue(5.0)
         self.assertEqual(self.panel._dirty_pids(), [])
 
     def test_defaults_remain_local_and_save_requires_confirmation(self):
-        self.read_config(shape=1, duration=800, mode_sw_fallback=3000, pos_rate=12)
+        self.read_config(shape=0, duration=800, mode_sw_fallback=3000, pos_rate=12)
         self.panel._reset_btn.click()
         self.assertEqual(self.sent, [])
         self.assertEqual(self.saves, [])
         cfg = self.panel._current_config()
-        for pid, value in ss.DEFAULTS.items():
+        for pid in ss.WRITABLE_PIDS:
+            value = ss.DEFAULTS[pid]
             self.assertEqual(cfg.get_by_pid(pid), value)
+        self.assertEqual(cfg.mode_sw_fallback, 3000)  # 保留固件读回的只读值。
         self.assertEqual({pid for pid, _, _ in self.panel._dirty_pids()},
-                         {ss.PID_SHAPE, ss.PID_DURATION, ss.PID_MODE_SW_FALLBACK, ss.PID_POS_RATE})
+                         {ss.PID_SHAPE, ss.PID_DURATION, ss.PID_POS_RATE})
         with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Cancel):
             self.panel._save_btn.click()
         self.assertEqual((self.sent, self.saves), ([], []))
         with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
             self.panel._save_btn.click()
-        self.assertEqual(len(self.sent), 4)
+        self.assertEqual(len(self.sent), 3)
         self.assertEqual(self.saves, [True])
+
+    def test_readonly_thresholds_and_trigger_aware_preview(self):
+        self.read_config()
+        for name, field in self.panel._fields.items():
+            if not field.writable:
+                self.assertTrue(field.spin.isReadOnly(), name)
+                field.spin.setValue(field.current() + 1)
+        self.assertEqual(self.panel._dirty_pids(), [])
+        self.read_config()
+        for delta in (0.05, 0.1):
+            self.panel._estim_delta.setValue(delta)
+            self.assertEqual(self.panel._estim_result.text(), '0.00 s')
+            self.assertIn('阈值', self.panel._estim_note.text())
+        self.panel._estim_delta.setValue(1.0)
+        self.assertNotEqual(self.panel._estim_result.text(), '0.00 s')
+        self.panel._enable_check.click()
+        self.assertEqual(self.panel._estim_result.text(), '0.00 s')
+        self.assertIn('关闭', self.panel._estim_note.text())
+        for pid in set(ss.DEFAULTS) - ss.WRITABLE_PIDS:
+            with self.assertRaises(ValueError):
+                ss.pack_set_request(pid, ss.DEFAULTS[pid])
 
     def test_help_and_responsive_layout_without_overlapping_controls(self):
         self.assertFalse(self.panel._help_panel.isVisible())

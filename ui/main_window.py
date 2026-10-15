@@ -315,6 +315,10 @@ class MainWindow(QMainWindow):
             row_plan=CALIB_TABLE_PLAN, show_save=True,
             save_text="固化参数", show_legend=False,
             show_bulk_rw=True)
+        self._cogging_diag_panel = ParamPanel(
+            self._registry, title="齿槽诊断（运行时，只读）", source="motor_param",
+            groups=("齿槽诊断", "CoggingDiagnostics"), show_save=False, show_legend=False,
+            show_bulk_rw=False, fit_rows=True)
         self._plot_panel = PlotPanel()
         self._power_panel = PowerPanel()
         self._state_panel = StateMachinePanel(registry=self._registry)
@@ -1132,6 +1136,13 @@ class MainWindow(QMainWindow):
         self._calib_panel.send_command.connect(self._on_motion_command)
         # 标定结果面板: 注入标定 Tab 内嵌, 复用 motor_config 通道(0xE6/0xE7/0xEA)
         self._calib_panel.attach_results_panel(self._calib_results_panel)
+        self._calib_panel.attach_runtime_panel(self._cogging_diag_panel)
+        self._cogging_diag_panel.read_param.connect(
+            lambda param_id, panel=self._cogging_diag_panel:
+                self._on_param_read(panel, param_id))
+        self._cogging_diag_panel.read_params.connect(
+            lambda param_ids, panel=self._cogging_diag_panel:
+                self._on_param_read_many(panel, param_ids))
         self._calib_results_panel.read_param.connect(
             lambda param_id, panel=self._calib_results_panel:
                 self._on_param_read(panel, param_id))
@@ -2328,6 +2339,7 @@ class MainWindow(QMainWindow):
             # 已连接: 触发标定结果面板批量读取 (含 Index 16 is_calibrated)
             try:
                 self._calib_results_panel.read_all()
+                self._calib_panel.refresh_runtime_panel(force_read=True)
             except Exception:
                 pass
             return
@@ -2412,6 +2424,10 @@ class MainWindow(QMainWindow):
     def _on_param_write(self, panel: ParamPanel, param_id: int, text: str):
         if not self._panel_remote_supported(panel):
             return
+        spec = panel.get_param(param_id)
+        if spec is None or not spec.writable:
+            self._log_panel.log_warn(f"{panel.panel_name()} 参数只读或不存在，跳过写入: id={param_id}")
+            return
         if not self._ensure_open():
             return
         try:
@@ -2439,6 +2455,10 @@ class MainWindow(QMainWindow):
             return
         queued = 0
         for param_id, text in writes:
+            spec = panel.get_param(param_id)
+            if spec is None or not spec.writable:
+                self._log_panel.log_warn(f"{panel.panel_name()} 参数只读或不存在，跳过写入: id={param_id}")
+                continue
             try:
                 value = panel.pack_value(param_id, text)
             except Exception:
@@ -2532,7 +2552,7 @@ class MainWindow(QMainWindow):
     def _reload_all_param_panels(self):
         """CSV 重新加载后, 重建所有依赖 registry 的 ParamPanel 表格(保留列宽)。"""
         panels = [self._param_panel, self._config_panel,
-                  self._calib_results_panel, self._pid_params_panel]
+                  self._calib_results_panel, self._pid_params_panel, self._cogging_diag_panel]
         # 清空读写队列: 在途读/写可能指向 reload 后已失效的 param_id
         self._pending_param_reads.clear()
         self._param_read_queue.clear()
@@ -2873,6 +2893,9 @@ class MainWindow(QMainWindow):
             if pid not in valid_pids:
                 skipped.append(f"{pid}(当前CSV无此字段)")
                 continue
+            if not self._registry.get_motor_config_param(pid).writable:
+                skipped.append(f"{pid}(只读)")
+                continue
             writes.append((pid, str(value)))
         if skipped:
             self._log_panel.log_warn(f"[导入] 部分字段跳过: {', '.join(skipped[:5])}{'...' if len(skipped) > 5 else ''}")
@@ -2945,6 +2968,8 @@ class MainWindow(QMainWindow):
         else:
             disp = str(val)
         panel.set_value(param_id, disp)
+        if panel.source() == "motor_param" and 85 <= int(param_id) <= 89:
+            self._calib_panel.on_cogging_result(param_id, val)
         name = spec.code_name if spec else f"id={param_id}"
         self._log_panel.log(f"[RX] {panel.panel_name()} {name}(id={param_id}) = {disp}")
         if self._pid_theory_pending is not None and panel is self._config_panel:
@@ -2982,7 +3007,7 @@ class MainWindow(QMainWindow):
                 self._finalize_export()
         # Task 5: Index 16 (is_calibrated) 读回值同步到标定面板的已标定徽章
         # (无论哪个 panel 收到, 都转发给 calib_panel; 写后 ACK 不自动读回时徽章靠乐观更新)
-        if param_id == 16:
+        if panel.source() == "motor_config" and param_id == 16:
             self._calib_panel.set_calibrated_value(disp)
         # 电机本体参数转发到反馈面板的转子示意图(电阻/电感/磁链/转矩常数/极对数等)
         if spec is not None and val is not None and spec.code_name in self._MOTOR_PARAM_KEYS:

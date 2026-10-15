@@ -93,7 +93,8 @@ check(payload[0] == int(JmCmd.MOTOR_INFO_READ), "NACK payload[0] 应为 0xE6")
 # ---- 5. MOTOR_INFO_SAVE / MOTOR_INFO_RESET / MOTOR_INFO_RECALIB_RESET 返回 ACK ----
 for cmd_code in (JmCmd.MOTOR_INFO_SAVE, JmCmd.MOTOR_INFO_RESET,
                  JmCmd.MOTOR_INFO_RECALIB_RESET):
-    frame = resp.on_command(int(cmd_code), b'')
+    request = codec.wr_u16(0xFFFF) if cmd_code == JmCmd.MOTOR_INFO_RESET else b''
+    frame = resp.on_command(int(cmd_code), request)
     cmd, payload = frame[0]
     check(cmd == int(cmd_code) and payload == bytes([int(JmErr.OK)]),
           f"{cmd_code.name} 应返回 ACK, 实际 cmd=0x{cmd:02X}")
