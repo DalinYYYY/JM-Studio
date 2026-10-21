@@ -73,8 +73,8 @@ _CALIB_LEVELS = [
     ]),
     (JmCmd.CALIB_LEVEL5, "L5 非线性补偿", [
         # 仅齿槽三方案按钮单行短标题(文字过长), 其余子项保持 标题+描述 两行
-        (1, 3, "齿槽 速度环匀速", "方案3: 临时理论参数速度闭环1rad/s; 需有效R/L/J/Kt; 正反各2圈; 通常约35s"),
-        (1, 1, "齿槽 位置爬行",   "方案1: 当前三环参数, 位置轨迹0.25rad/s正反爬行; 需三环稳定; 通常约2~3min"),
+        (1, 3, "齿槽 速度环匀速", "方案3: 速度闭环0.5rad/s; 需有效R/L/J/Kt; 正反各3圈并扣除惯性电流; 通常约90s"),
+        (1, 1, "齿槽 位置爬行",   "方案1: 位置轨迹0.25rad/s; 独立三环参数及本地测速; 需有效R/L/J/Kt; 正反各3圈; 通常约3min"),
         (1, 2, "齿槽 静态逐点",   "方案2: 当前三环参数, 正反逐点保持1008个bin中心; 稳定50ms后采样100ms; 最长15min"),
         (2, 0, "摩擦",          "摩擦模型(库仑+粘性)辨识"),
         (3, 0, "死区补偿",      "逆变器死区非线性补偿"),
@@ -888,7 +888,7 @@ class CalibrationPanel(QWidget):
                 if self._link_active:
                     self._poll_timer.start()
                     self._runtime_panel.mark_fresh([85, 86, 87, 88, 89])
-                    self._runtime_panel.read_params.emit([85, 86, 87, 88, 89])
+                    self._runtime_panel.read_params.emit([89])
             # 标定完成 -> 主动读回本次产出的结果参数(加粗彩色显示)
             if self._config_panel is not None and self._link_active:
                 param_ids = self._result_param_ids_for_current_task()
@@ -977,6 +977,11 @@ class CalibrationPanel(QWidget):
             self._add_history("[未连接] 请先连接电机")
             self._set_last_op("未连接, 无法查询")
             return
+        if self._cogging_wait_flash and self._runtime_panel is not None:
+            self._add_history("[TX] 重试读取齿槽落盘状态")
+            self._poll_timer.start()
+            self._runtime_panel.read_params.emit([89])
+            return
         self._add_history("[TX] 查询标定进度 (0x97)")
         self.send_command.emit(int(JmCmd.CALIB_QUERY), {})
 
@@ -992,11 +997,16 @@ class CalibrationPanel(QWidget):
         # 需求1: 定时器在跑(开始后启动, 完成/中止后停止)且连接就发查询进度
         if self._link_active:
             if self._cogging_wait_flash and self._runtime_panel is not None:
-                if self._config_panel is not None:
-                    self._config_panel.read_params.emit([184, 185])
-                self._runtime_panel.read_params.emit([85, 86, 87, 88, 89])
+                self._runtime_panel.read_params.emit([89])
             else:
                 self.send_command.emit(int(JmCmd.CALIB_QUERY), {})
+
+    def on_cogging_read_timeout(self):
+        """停止失去应答时的自动重排，不将通信超时解释为 Flash 失败。"""
+        if self._cogging_wait_flash:
+            self._poll_timer.stop()
+            self._set_last_op("齿槽落盘状态读取超时；可点击查询重试")
+            self._add_history("[通信超时] 未确认落盘结果，暂停自动查询")
 
     def on_cogging_result(self, param_id: int, value):
         """0x97 DONE 是采集完成；运行参数ID89确认异步落盘结果。"""
@@ -1007,7 +1017,11 @@ class CalibrationPanel(QWidget):
         except (ValueError, TypeError):
             return
         if status & (1 << 5):
-            self._set_last_op("齿槽表待写 Flash，请退出到待机")
+            self._set_last_op("齿槽表待保存，请点击待机")
+            return
+        if status & (1 << 6):
+            self._poll_timer.stop()
+            self._set_last_op("齿槽候选表待确认，尚未写入 Flash")
             return
         self._cogging_wait_flash = False
         self._poll_timer.stop()
@@ -1021,6 +1035,11 @@ class CalibrationPanel(QWidget):
             message = "齿槽采集完成，但 Flash 表无效"
         self._set_last_op(message)
         self._add_history(f"[齿槽结果] {message}")
+        if self._link_active:
+            if self._runtime_panel is not None:
+                self._runtime_panel.read_params.emit([85, 86, 87, 88])
+            if self._config_panel is not None:
+                self._config_panel.read_params.emit([184, 185])
 
     # ==================== 历史记录 ====================
     def _add_history(self, text: str):

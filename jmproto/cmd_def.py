@@ -324,6 +324,8 @@ class CalibDetail(IntEnum):
     COG_POINT_TIMEOUT = 16
     COG_DRIVE_LIMIT = 17
     COG_NOT_STABLE = 18
+    COG_ENCODER_JUMP = 19
+    COG_SPEED_LIMIT = 20
 
 
 CALIB_DETAIL_CN = {
@@ -345,7 +347,9 @@ CALIB_DETAIL_CN = {
     CalibDetail.COG_BIN_MISSING: "齿槽正反采样未覆盖全部角度",
     CalibDetail.COG_POINT_TIMEOUT: "齿槽静态点未达到位置和速度稳定条件",
     CalibDetail.COG_DRIVE_LIMIT: "齿槽标定持续限流，驱动能力不足",
-    CalibDetail.COG_NOT_STABLE: "齿槽标定结束减速未稳定",
+    CalibDetail.COG_NOT_STABLE: "齿槽标定起步、换向或减速未稳定",
+    CalibDetail.COG_ENCODER_JUMP: "齿槽标定编码器角度持续跳变",
+    CalibDetail.COG_SPEED_LIMIT: "齿槽标定PLL机械速度连续超限10ms",
 }
 
 

@@ -114,6 +114,7 @@ class MainWindow(QMainWindow):
         self._pending_param_writes = deque()
         self._param_read_queue = deque()
         self._param_write_queue = deque()
+        self._param_read_active = None  # (panel, id)，用于去重及迟到应答匹配
         # 保护总览: PID128 读在途标志(独立于配置页 FIFO 读队列, 应答按 param_id==128 拦截)
         self._protect_mask_pending = False
         # 故障级别使能掩码 PID154~159 读在途集合(独立于配置页 FIFO)
@@ -1104,8 +1105,10 @@ class MainWindow(QMainWindow):
         c.can_di_set_result.connect(self._on_can_di_set_result)
         c.can_di_identify_result.connect(self._on_can_di_identify_result)
         c.dev_name_received.connect(self._on_dev_name)
-        c.param_read_result.connect(self._on_param_result)
-        c.motor_info_read_result.connect(self._on_param_result)
+        c.param_read_result.connect(
+            lambda pid, ptype, value: self._on_param_result(pid, ptype, value, 'motor_param'))
+        c.motor_info_read_result.connect(
+            lambda pid, ptype, value: self._on_param_result(pid, ptype, value, 'motor_config'))
         c.pid_autotune_result_received.connect(self._on_pid_autotune_result)
         c.pid_source_received.connect(self._on_pid_source_received)
         c.pid_param_received.connect(self._on_pid_param_received)
@@ -2405,8 +2408,16 @@ class MainWindow(QMainWindow):
         if not self._panel_remote_supported(panel):
             return
         if self._ensure_open():
-            self._param_read_queue.append((panel, int(param_id)))
+            self._enqueue_param_read(panel, param_id)
             self._pump_param_read_queue()
+
+    def _enqueue_param_read(self, panel: ParamPanel, param_id: int) -> bool:
+        key = (panel, int(param_id))
+        if key in self._param_read_queue or (
+                self._pending_param_reads and self._param_read_active == key):
+            return False
+        self._param_read_queue.append(key)
+        return True
 
     def _on_param_read_many(self, panel: ParamPanel, param_ids):
         if not self._panel_remote_supported(panel):
@@ -2415,8 +2426,7 @@ class MainWindow(QMainWindow):
             return
         queued = 0
         for param_id in param_ids:
-            self._param_read_queue.append((panel, int(param_id)))
-            queued += 1
+            queued += self._enqueue_param_read(panel, param_id)
         if queued:
             self._pump_param_read_queue()
             self._log_panel.log(f"[TX] {panel.panel_name()} 批量读取 {queued} 项, 应答驱动")
@@ -2475,13 +2485,20 @@ class MainWindow(QMainWindow):
             self._log_panel.log(f"[TX] {panel.panel_name()} 批量写入 {queued} 项, 应答驱动")
 
     def _pump_param_read_queue(self):
-        if self._pending_param_reads or not self._param_read_queue:
+        if self._pending_param_reads:
+            return
+        self._param_read_active = None
+        # 同一看门狗下只允许一个参数读/写在途；显式写入优先于轮询读取。
+        if self._pending_param_writes or self._param_write_queue:
+            self._pump_param_write_queue()
+            return
+        if not self._param_read_queue:
             return
         panel, param_id = self._param_read_queue.popleft()
         self._send_param_read_queued(panel, param_id)
 
     def _pump_param_write_queue(self):
-        if self._pending_param_writes or not self._param_write_queue:
+        if self._pending_param_reads or self._pending_param_writes or not self._param_write_queue:
             return
         panel, param_id, value = self._param_write_queue.popleft()
         self._send_param_write_queued(panel, param_id, value)
@@ -2493,12 +2510,14 @@ class MainWindow(QMainWindow):
         if panel.source() == "motor_config":
             if self._client.motor_info_read(int(param_id)):
                 self._pending_param_reads.append(panel)
+                self._param_read_active = (panel, int(param_id))
                 self._cmd_watchdog.start()
             elif self._pid_commit_phase == 'verifying':
                 self._cancel_pid_commit('E6读回命令发送失败')
         else:
             if self._client.param_read(int(param_id)):
                 self._pending_param_reads.append(panel)
+                self._param_read_active = (panel, int(param_id))
                 self._cmd_watchdog.start()
 
     def _send_param_write_queued(self, panel: ParamPanel, param_id: int, value: bytes):
@@ -2922,10 +2941,10 @@ class MainWindow(QMainWindow):
             "  2. 重启设备 (断电重上 或 发送 RESET 命令)",
             QMessageBox.StandardButton.Ok)
 
-    def _on_param_result(self, param_id: int, ptype: int, value_bytes: bytes):
+    def _on_param_result(self, param_id: int, ptype: int, value_bytes: bytes, source=None):
         # 保护总览上下文: PID128(protect_enable) 应答转发故障面板,
         # 不进电机配置页 FIFO 读队列(面板用独立 pending 上下文区分来源)
-        if self._protect_mask_pending and int(param_id) == 128:
+        if source != 'motor_config' and self._protect_mask_pending and int(param_id) == 128:
             self._protect_mask_pending = False
             try:
                 self._fault_info_panel.on_protect_mask_received(
@@ -2938,7 +2957,7 @@ class MainWindow(QMainWindow):
             return
         # 保护总览上下文: PID154~159 三级故障使能掩码(低/高32位对)应答转发故障面板(独立 pending 集合)
         _FAULT_MASK_PIDS = (154, 155, 156, 157, 158, 159)
-        if self._fault_level_pending and int(param_id) in _FAULT_MASK_PIDS:
+        if source != 'motor_config' and self._fault_level_pending and int(param_id) in _FAULT_MASK_PIDS:
             self._fault_level_pending.discard(int(param_id))
             try:
                 self._fault_info_panel.on_fault_enable_mask_received(
@@ -2953,6 +2972,12 @@ class MainWindow(QMainWindow):
         if not self._pending_param_reads:
             # 无待处理读请求(设备主动上报/重复帧/自愈误触), 丢弃避免误填默认面板
             self._log_panel.log(f"[WARN] 收到意外参数应答 id={param_id}, 无待处理读请求")
+            return
+        active = getattr(self, '_param_read_active', None)
+        if active is not None and (int(param_id) != active[1] or
+                (source is not None and source != active[0].source())):
+            self._log_panel.log(
+                f"[WARN] 丢弃迟到或不匹配的参数应答 source={source} id={param_id}")
             return
         panel = self._pending_param_reads.popleft()
         val = panel.unpack_value(param_id, value_bytes)
@@ -3031,6 +3056,12 @@ class MainWindow(QMainWindow):
         if self._pending_param_reads:
             panel = self._pending_param_reads.popleft()
             timed_out.append(f"读({panel.panel_name()})")
+            if panel is self._cogging_diag_panel and self._calib_panel._cogging_wait_flash:
+                self._calib_panel.on_cogging_read_timeout()
+                # 清除同轮自动查询的剩余读取，用户写入无需等待旧轮询耗尽。
+                self._param_read_queue = deque(
+                    item for item in self._param_read_queue
+                    if item[0] not in (self._cogging_diag_panel, self._calib_results_panel))
             if panel is self._config_panel and self._pid_theory_pending is not None:
                 self._cancel_pid_theory("读取电机参数超时")
             self._pump_param_read_queue()
@@ -3039,6 +3070,7 @@ class MainWindow(QMainWindow):
             panel.reject_pending_write()
             timed_out.append(f"写({panel.panel_name()})")
             self._pump_param_write_queue()
+            self._pump_param_read_queue()
         if timed_out:
             if self._pid_commit_phase in ('writing', 'verifying'):
                 self._cancel_pid_commit(
@@ -3130,6 +3162,7 @@ class MainWindow(QMainWindow):
                 if (cmd == JmCmd.MOTOR_INFO_WRITE and self._pid_commit_phase == 'writing'
                         and not self._pending_param_writes and not self._param_write_queue):
                     self._start_pid_commit_verify()
+                self._pump_param_read_queue()
         if cmd == JmCmd.PID_SOURCE_SET and self._pid_commit_phase == 'switching':
             self._pid_commit_phase = 'saving'
             # PID 固化是显式写Flash流程(A1已切Flash来源), 故带 FLASH 标志
@@ -3238,6 +3271,7 @@ class MainWindow(QMainWindow):
                 panel.reject_pending_write()
                 self._cmd_watchdog.stop()
                 self._pump_param_write_queue()
+                self._pump_param_read_queue()
 
     def _on_calib_status(self, status: dict):
         """0x97 CALIB_QUERY 详细状态应答 (JmClient.calib_status_received 信号).

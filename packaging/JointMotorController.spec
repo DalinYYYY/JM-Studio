@@ -60,6 +60,9 @@ excludes = [
 
 # 需要剔除的 Qt 二进制(按文件名), 均为可选运行时文件, 无硬依赖
 _BIN_EXCLUDE = {
+    # Qt 在 Windows 使用系统 ICU。PATH 上 Poppler 的同名 ICU 会被
+    # PyInstaller 误收集，覆盖系统版本并使 QtWidgets 导入失败。
+    'icuuc.dll',
     # 软件 OpenGL 渲染器(体积最大), 无 GPU 时才动态加载; 本应用用 QPainter 渲染
     'opengl32sw.dll',
     # 未使用的 Qt 模块库

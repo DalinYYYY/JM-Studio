@@ -84,7 +84,7 @@ assert len(transport.frames) == before
 panel.update_state(int(TopFsm.READY), 0, 0, 0)
 assert panel._poll_timer.isActive()
 panel._on_poll_tick()
-assert reads[-1] == list(range(85, 90))
+assert reads[-1] == [89]
 panel.on_cogging_result(89, 3 | (3 << 8))
 assert not panel._cogging_wait_flash and not panel._poll_timer.isActive()
 assert '已写入并校验' in panel._last_op
