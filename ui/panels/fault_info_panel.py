@@ -103,6 +103,7 @@ class FaultInfoPanel(QWidget):
 
     # ---- 请求信号 (主窗口连接到 JmClient) ----
     fault_summary_requested = pyqtSignal()
+    state_requested = pyqtSignal()                    # 0xC1 与摘要一起读取，防止故障态被空摘要误报正常
     fault_detail_requested = pyqtSignal(int, int)      # ftype, idx
     fault_enable_masks_read_requested = pyqtSignal()
     fault_enable_mask_write_requested = pyqtSignal(int, int)  # 掩码 PID(154~159 区段), u32 值(每级低/高32位对分两次写)
@@ -125,6 +126,7 @@ class FaultInfoPanel(QWidget):
         self._link_active = False
         self._tab_visible = False        # 主窗口在 tab 切换时维护
         self._summary = None             # 最近一次 0xAA 摘要
+        self._top_fsm = None             # 最近一次 0xC1/STATE 遥测，不能由空故障掩码推断
         self._hist_load_pending = False  # 等摘要返回后拉历史
         # 0xAB 逐条拉取队列(单请求在途, 应答/NACK 驱动推进)
         self._pull_queue = deque()
@@ -829,14 +831,17 @@ class FaultInfoPanel(QWidget):
         self._legend_counts = {}
         for key, bg, border, text in (
                 ("gray", self._HEAT_GRAY, None, "未实现"),
+                ("unknown", self._HEAT_UNKNOWN, theme.hex('border'), "未读取"),
                 ("blue", self._HEAT_BLUE, None, "已禁用"),
                 ("green", self._HEAT_GREEN, None, "使能中"),
                 ("red", self._HEAT_RED, None, "报错活动"),
                 ("pend", "transparent", self._HEAT_PEND, "待下发")):
             sw = QFrame()
             sw.setFixedSize(11, 11)
+            border_css = "none" if border is None else \
+                f"1px {'dashed' if key == 'unknown' else 'solid'} {border}"
             sw.setStyleSheet(
-                f"background:{bg}; border:{'none' if border is None else f'1px solid {border}'}; "
+                f"background:{bg}; border:{border_css}; "
                 f"border-radius:2px;")
             legend.addWidget(sw)
             lab = QLabel(f"{text} 0")
@@ -907,7 +912,7 @@ class FaultInfoPanel(QWidget):
 
     def _update_heatmap(self):
         """按 合并视图掩码 + 活动故障集合 刷新 3×64 格颜色与 tooltip。
-        颜色: 灰=未实现/保留位  蓝=已禁用  绿=使能中  红=使能且报错活动;
+        颜色: 灰=未实现/保留位  蓝=已禁用  绿=使能中  红=报错活动;
         虚框=掩码尚未读取; 待下发修改的位加黄色边框。"""
         # 级别 lo PID -> 级别内 bit -> 故障记录
         bit_map = {}
@@ -941,12 +946,14 @@ class FaultInfoPanel(QWidget):
                            f"级别: {rec['level']}"]
                     if not impl:
                         color, border, st = self._HEAT_GRAY, "none", "未实现(固件预留, 不会触发)"
+                    elif active:
+                        color, border, st = self._HEAT_RED, "none", "报错活动!"
+                        if m is not None and not ((m >> bit) & 1):
+                            st += "（常规检测已屏蔽，停机记录仍保留）"
                     elif m is None:
                         color = self._HEAT_UNKNOWN
                         border = f"1px dashed {theme.hex('border')}"
                         st = "尚未读取掩码(点\"读取全部状态\")"
-                    elif active:
-                        color, border, st = self._HEAT_RED, "none", "使能中且报错活动!"
                     elif (m >> bit) & 1:
                         color, border, st = self._HEAT_GREEN, "none", "使能中"
                     else:
@@ -1266,7 +1273,7 @@ class FaultInfoPanel(QWidget):
     def _update_protect_chips(self):
         """重算图例计数(口径与 _update_heatmap 一致: 活动故障优先红色)并应用筛选。
         使能掩码/活动故障/PID128 更新后调用。"""
-        buckets = {"gray": [], "blue": [], "green": [], "red": []}
+        buckets = {"gray": [], "unknown": [], "blue": [], "green": [], "red": []}
         impl_bits = {}   # 级别 lo PID -> 实现项位掩码(64bit)
         for rec in jp.load_fault_csv():
             if rec['stage'] == '0':
@@ -1277,11 +1284,12 @@ class FaultInfoPanel(QWidget):
                 impl_bits[pid] = impl_bits.get(pid, 0) | (1 << rec['level_bit'])
             if rec['code_int'] in self._active_codes:
                 buckets['red'].append(rec)
-            elif self._fault_level_enabled(rec) is False:
-                buckets['blue'].append(rec)
             else:
-                buckets['green'].append(rec)
-        tips = {"gray": "未实现", "blue": "已禁用", "green": "使能中", "red": "报错活动"}
+                enabled = self._fault_level_enabled(rec)
+                key = 'unknown' if enabled is None else ('green' if enabled else 'blue')
+                buckets[key].append(rec)
+        tips = {"gray": "未实现", "unknown": "未读取", "blue": "已禁用",
+                "green": "使能中", "red": "报错活动"}
         for key, recs in buckets.items():
             lbl = self._legend_counts[key]
             lbl.setText(f"{tips[key]} {len(recs)}")
@@ -1385,6 +1393,8 @@ class FaultInfoPanel(QWidget):
         for code in list(self._active_codes)[:3]:
             rec = jp.fault_code_lookup(code)
             names.append(rec['name'] if rec else f"0x{code:04X}")
+        if not names and self._missing_stop_code():
+            names.append("故障停机（未上报故障码）")
         self.active_faults_changed.emit(names)
 
     def _on_enable_all(self):
@@ -1573,43 +1583,63 @@ class FaultInfoPanel(QWidget):
         self._err_table.setColumnWidth(COL_ERRNAME, 160)
 
     # ==================== 摘要卡刷新 ====================
+    def _missing_stop_code(self):
+        return (self._top_fsm == int(jp.TopFsm.FAULT) and
+                (self._summary is None or self._summary.active_cnt == 0))
+
+    def update_state(self, top_fsm, run_state, ctrl_mode, enable):
+        """故障态与摘要分别来自设备；空摘要不能覆盖已确认的FAULT。"""
+        top_fsm = int(top_fsm)
+        if self._top_fsm == top_fsm:
+            return
+        self._top_fsm = top_fsm
+        self._refresh_status_card()
+        self._refresh_compat()
+        self._refresh_active_ui()
+
+    def _refresh_status_card(self):
+        s = self._summary
+        missing = self._missing_stop_code()
+        if s is not None and s.active_cnt > 0:
+            title = f"● 设备故障状态: 故障 ({s.active_cnt} 项)"
+            color = 'danger'
+        elif missing:
+            title, color = "● 设备已故障停机，但未上报故障码", 'danger'
+        elif self._current_mask:
+            title, color = "● 设备有故障标志，等待故障详情", 'danger'
+        elif s is None:
+            title, color = "● 设备故障状态: 等待摘要", 'muted'
+        elif self._top_fsm is None:
+            title, color = "● 故障摘要无活动记录，等待设备状态", 'muted'
+        else:
+            title, color = "● 设备故障状态: 正常", 'accent'
+        self._lbl_title.setText(title)
+        self._lbl_title.setStyleSheet(
+            f"color:{theme.hex(color)}; font-size:13px; font-weight:bold; border:none;")
+        self._status_card.setStyleSheet(f"""
+            QFrame {{
+                background: {theme.hex('card_bottom')};
+                border: 1px solid {theme.hex(color)};
+                border-radius: 4px;
+            }}
+        """)
+        if s is not None and s.top_code:
+            rec = jp.fault_code_lookup(s.top_code)
+            name = rec['name'] if rec else f"未知码(0x{s.top_code:04X})"
+            top, top_color = f"最高故障: 0x{s.top_code:04X} {name}", 'danger'
+        elif missing:
+            top, top_color = "最高故障: 未上报", 'danger'
+        else:
+            top, top_color = "最高故障: 无" if s is not None else "最高故障: —", 'accent'
+        self._lbl_top.setText(top)
+        self._lbl_top.setStyleSheet(
+            f"color:{theme.hex(top_color)}; font-size:13px; border:none;")
+
     def on_summary_received(self, s: fd.FaultSummary):
         """0xAA 摘要应答(由主窗口转发 client.fault_summary_received)。"""
         self._summary = s
-        # 标题 + 卡片边框随故障态变化
-        if s.active_cnt > 0:
-            self._lbl_title.setText(f"● 设备故障状态: 故障 ({s.active_cnt} 项)")
-            self._lbl_title.setStyleSheet(
-                f"color:{theme.hex('danger')}; font-size:13px; font-weight:bold; border:none;")
-            self._status_card.setStyleSheet(f"""
-                QFrame {{
-                    background: {theme.hex('card_bottom')};
-                    border: 1px solid {theme.hex('danger')};
-                    border-radius: 4px;
-                }}
-            """)
-        else:
-            self._lbl_title.setText("● 设备故障状态: 正常")
-            self._lbl_title.setStyleSheet(
-                f"color:{theme.hex('accent')}; font-size:13px; font-weight:bold; border:none;")
-            self._status_card.setStyleSheet(f"""
-                QFrame {{
-                    background: {theme.hex('card_bottom')};
-                    border: 1px solid {theme.hex('accent')};
-                    border-radius: 4px;
-                }}
-            """)
-        # 最高故障码 + 中文名
-        if s.top_code:
-            rec = jp.fault_code_lookup(s.top_code)
-            name = rec['name'] if rec else f"未知码(0x{s.top_code:04X})"
-            self._lbl_top.setText(f"最高故障: 0x{s.top_code:04X} {name}")
-            self._lbl_top.setStyleSheet(
-                f"color:{theme.hex('danger')}; font-size:13px; font-weight:bold; border:none;")
-        else:
-            self._lbl_top.setText("最高故障: 无")
-            self._lbl_top.setStyleSheet(
-                f"color:{theme.hex('accent')}; font-size:13px; border:none;")
+        self._refresh_status_card()
+        self._refresh_compat()
         self._lbl_active.setText(f"活动数: {s.active_cnt}")
         # derate_pct 为剩余功率百分比(固件 derate×100), 100=不降额
         self._lbl_derate.setText(f"降功率: {s.derate_pct}%"
@@ -1782,7 +1812,7 @@ class FaultInfoPanel(QWidget):
         if self._summary is None:
             self._hist_load_pending = True
             self._append_recent("加载历史: 先读取摘要获取条数")
-            self.fault_summary_requested.emit()
+            self._on_read_summary()
             return
         if self._summary.hist_cnt <= 0:
             self._hist_table.setRowCount(0)
@@ -1927,6 +1957,7 @@ class FaultInfoPanel(QWidget):
             self._history.appendleft(f"[{ts}] 0x{mask:08X} {desc}")
             self._refresh_recent()
         self._refresh_compat()
+        self._refresh_status_card()
 
     def show_active_fault(self, mask: int, source: str = ""):
         """报错时由主窗口调用: 记录 compat 摘要与事件。"""
@@ -1938,6 +1969,7 @@ class FaultInfoPanel(QWidget):
             self._history.appendleft(f"[{ts}] {source or 'FAULT'} 0x{mask:08X} {desc}")
             self._refresh_recent()
         self._refresh_compat()
+        self._refresh_status_card()
 
     def show_nack_error(self, cmd: int, err: int):
         """NACK 报错: 记录事件; 0xAB 拉取被拒(如越界竞态)时推进队列防卡死。"""
@@ -1977,6 +2009,10 @@ class FaultInfoPanel(QWidget):
                     "遥测兼容掩码: 0x0000 (活动故障不在旧协议低 13 位映射, 见活动列表)")
                 self._lbl_compat.setStyleSheet(
                     f"color:{theme.hex('muted')}; font-size:11px; border:none;")
+            elif self._missing_stop_code():
+                self._lbl_compat.setText("遥测兼容掩码: 0x0000（设备已故障停机，未上报故障码）")
+                self._lbl_compat.setStyleSheet(
+                    f"color:{theme.hex('danger')}; font-size:11px; border:none;")
             else:
                 self._lbl_compat.setText("遥测兼容掩码: 0x0000 无故障")
                 self._lbl_compat.setStyleSheet(
@@ -2003,6 +2039,8 @@ class FaultInfoPanel(QWidget):
             self._pull_active = False
             self._pull_queue.clear()
             self._summary = None
+            self._top_fsm = None
+            self._current_mask = 0
             self._hist_load_pending = False
             self._active_wall.clear()
             self._active_table.setRowCount(0)
@@ -2017,7 +2055,7 @@ class FaultInfoPanel(QWidget):
             for _n, lo, _hi in _FAULT_LEVEL_PARAMS:
                 self._pending_masks[lo] = None
             self._update_level_mask_label()
-            self._update_heatmap()
+            self._refresh_fault_level_ui()
             self._lbl_title.setText("● 设备故障状态")
             self._lbl_title.setStyleSheet(
                 f"color:{theme.hex('title')}; font-size:13px; font-weight:bold; border:none;")
@@ -2034,6 +2072,9 @@ class FaultInfoPanel(QWidget):
             self._lbl_active.setText("活动数: —")
             self._lbl_derate.setText("降功率: —")
             self._lbl_hist.setText("历史: — 条")
+            self._lbl_compat.setText("遥测兼容掩码: —")
+            self._lbl_compat.setStyleSheet(
+                f"color:{theme.hex('muted')}; font-size:11px; border:none;")
             for lamp in self._lamps.values():
                 lamp.setStyleSheet(
                     f"color:{theme.hex('muted')}; font-size:12px; border:none;")
@@ -2053,7 +2094,7 @@ class FaultInfoPanel(QWidget):
         self._tab_visible = True
         if not self._link_active:
             return
-        self.fault_summary_requested.emit()
+        self._on_read_summary()
         self.fault_enable_masks_read_requested.emit()
         self.protect_mask_read_requested.emit()
         if self._chk_auto.isChecked():
@@ -2067,14 +2108,15 @@ class FaultInfoPanel(QWidget):
     def refresh_after_clear(self):
         """0xB0 清除成功 ACK 后由主窗口调用: 立即重读摘要刷新计数/历史。"""
         if self._link_active:
-            self.fault_summary_requested.emit()
+            self._on_read_summary()
 
     def _on_read_summary(self):
+        self.state_requested.emit()
         self.fault_summary_requested.emit()
 
     def _on_auto_toggled(self, checked: bool):
         if checked and self._link_active and self._tab_visible:
-            self.fault_summary_requested.emit()
+            self._on_read_summary()
             self._auto_timer.start()
         else:
             self._auto_timer.stop()
@@ -2083,7 +2125,7 @@ class FaultInfoPanel(QWidget):
         if not (self._link_active and self._tab_visible and self._chk_auto.isChecked()):
             self._auto_timer.stop()
             return
-        self.fault_summary_requested.emit()
+        self._on_read_summary()
 
     def _on_reload_csv(self):
         """重新加载 CSV (用户更新 CSV 后)。"""
@@ -2142,3 +2184,5 @@ class FaultInfoPanel(QWidget):
         if self._summary is not None:
             self._refresh_summary()
             self._active_table.setRowCount(self._summary.active_cnt)
+        else:
+            self._refresh_status_card()

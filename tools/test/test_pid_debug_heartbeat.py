@@ -41,6 +41,10 @@ class SpyClient:
         self.calls.append(("state_get",))
         return True
 
+    def query_temperature(self):
+        self.calls.append(("temperature_get",))
+        return True
+
     def set_telemetry(self, enable, mask, period_ms):
         self.calls.append(("telemetry", enable, mask, period_ms))
         return True

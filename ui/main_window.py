@@ -1189,6 +1189,8 @@ class MainWindow(QMainWindow):
         # 故障信息面板: 0xAA/0xAB/0xB0 诊断命令 + PID154~159 使能掩码走 motor_info 通道
         self._fault_info_panel.fault_summary_requested.connect(
             lambda: self._client.fault_summary_get() if self._client.is_open() else None)
+        self._fault_info_panel.state_requested.connect(
+            lambda: self._client.query_state() if self._client.is_open() else None)
         self._fault_info_panel.fault_detail_requested.connect(
             lambda ftype, idx: self._client.fault_detail_get(ftype, idx)
             if self._client.is_open() else None)
@@ -1770,6 +1772,7 @@ class MainWindow(QMainWindow):
         self._param_write_queue.clear()
         self._pid_theory_pending = None
         self._protect_mask_pending = False
+        self._fault_level_pending.clear()
         self._cmd_watchdog.stop()
         # 清除各 ParamPanel 内部待确认写状态, 防止"等待返回"高亮卡死
         for pnl in (self._param_panel, self._config_panel,
@@ -2944,29 +2947,31 @@ class MainWindow(QMainWindow):
     def _on_param_result(self, param_id: int, ptype: int, value_bytes: bytes, source=None):
         # 保护总览上下文: PID128(protect_enable) 应答转发故障面板,
         # 不进电机配置页 FIFO 读队列(面板用独立 pending 上下文区分来源)
-        if source != 'motor_config' and self._protect_mask_pending and int(param_id) == 128:
+        if source == 'motor_config' and self._protect_mask_pending and int(param_id) == 128:
             self._protect_mask_pending = False
             try:
                 self._fault_info_panel.on_protect_mask_received(
                     int.from_bytes(bytes(value_bytes[:4]), 'little'))
             except (ValueError, TypeError, IndexError):
                 pass
-            self._cmd_watchdog.stop()
-            if self._pending_param_reads:
+            if (self._fault_level_pending or self._pending_param_reads or
+                    self._pending_param_writes):
                 self._cmd_watchdog.start()
+            else:
+                self._cmd_watchdog.stop()
             return
         # 保护总览上下文: PID154~159 三级故障使能掩码(低/高32位对)应答转发故障面板(独立 pending 集合)
-        _FAULT_MASK_PIDS = (154, 155, 156, 157, 158, 159)
-        if source != 'motor_config' and self._fault_level_pending and int(param_id) in _FAULT_MASK_PIDS:
+        if source == 'motor_config' and int(param_id) in self._fault_level_pending:
             self._fault_level_pending.discard(int(param_id))
             try:
                 self._fault_info_panel.on_fault_enable_mask_received(
                     int(param_id), int.from_bytes(bytes(value_bytes[:4]), 'little'))
             except (ValueError, TypeError, IndexError):
                 pass
-            if self._fault_level_pending:
-                self._cmd_watchdog.start()   # 尚有在途掩码读, 续期看门狗
-            elif not self._pending_param_reads and not self._pending_param_writes:
+            if (self._protect_mask_pending or self._fault_level_pending or
+                    self._pending_param_reads or self._pending_param_writes):
+                self._cmd_watchdog.start()   # 尚有在途请求, 续期看门狗
+            else:
                 self._cmd_watchdog.stop()
             return
         if not self._pending_param_reads:
@@ -3097,6 +3102,7 @@ class MainWindow(QMainWindow):
             self._state_panel.update_state(*self._latest_state)
             self._calib_panel.update_state(*self._latest_state)
             self._pid_panel.update_state(*self._latest_state)
+            self._fault_info_panel.update_state(*self._latest_state)
             self._control_panel.set_enabled_state(bool(self._latest_state[3]))
             self._latest_state = None
 

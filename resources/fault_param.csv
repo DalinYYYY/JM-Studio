@@ -82,7 +82,7 @@
 0x8107,软件与算法,故障级,固件校验错误,固件CRC校验失败,系统复位,FW_CRC,RESET,0,0,无(bootloader职责),-
 0x8108,软件与算法,故障级,跟随误差过大,位置跟随误差>protect_pos_error,立即停机动态刹车,FOLLOW_ERR,STOP_BRAKE,0,0,pos_ref-pos,protect_pos_error
 0x8109,软件与算法,故障级,未标定运行,电机未完成标定就尝试使能运行,禁止运行,NOT_CALIB,DENY,1,0,标定状态块,-
-0x810A,软件与算法,故障级,算法发散,控制量或反馈出现NaN/Inf或持续发散,立即停机动态刹车,ALGO_DIVERGE,STOP_BRAKE,0,0,id/iq/vel/vbus有限性,-
+0x810A,软件与算法,故障级,算法发散,电流环Id/Iq或机械测速出现NaN/Inf,立即停机动态刹车,ALGO_DIVERGE,STOP_BRAKE,1,0,current_loop Id/Iq/PLL/raw速度有限性,-
 0x8201,软件与算法,异常级,轨迹规划超限,目标位置超出软限位,截断轨迹至安全范围,TRAJ_CLAMP,CLAMP_POS,0,0,ref.pos,soft_limit_min/max_rad
 0x8202,软件与算法,异常级,运行模式错误,非法的运行模式切换,保持当前安全模式,MODE_INVALID,LOG,0,0,状态机拒绝转移,-
 0x8203,软件与算法,异常级,单位转换错误,单位转换计算失败,使用默认单位,UNIT_ERR,LOG,0,0,无(难界定),-

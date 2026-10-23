@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QCheckBox, QSpinBox,
 )
 
-from jmproto import top_fsm_name, run_state_name, motion_state_name, cmd_name, fault_mask_to_str
+from jmproto import TopFsm, top_fsm_name, run_state_name, motion_state_name, cmd_name, fault_mask_to_str
 from ui.panels._edit_mixin import LayoutEditMixin
 from ui import layout_store
 from ui.theme import theme
@@ -947,6 +947,7 @@ class FeedbackPanel(QWidget):
         self.setObjectName("fbRoot")
         self._enabled = False
         self._last_state = (None, None, None, None)
+        self._last_fault_mask = None
         self._pole_pairs = _MotorView.DEFAULT_POLE_PAIRS
         self._elec_bias = 0.0     # elec_angle_bias (rad), 由 set_motor_params 注入
         self._gear_ratio = 1.0
@@ -1203,21 +1204,8 @@ class FeedbackPanel(QWidget):
             "thw": f"{single:.3f}rad / {disp_motor_vel:+.2f}",
         })
 
-        # 故障/警告: 显示十六进制 + 解码描述(故障时加载完整中文信息)
-        fault_mask = fb.fault_mask
-        fault_lbl = self._card_state._val_labels.get("_fault")
-        if fault_mask:
-            full_desc = fault_mask_to_str(fault_mask)
-            # 单行过长时截断, 完整描述见故障信息 tab + tooltip
-            short = full_desc if len(full_desc) <= 24 else full_desc[:22] + "..."
-            self._card_state.set_text(
-                "_fault", f"0x{fault_mask:04X} {short}", "#FF6B6B")
-            if fault_lbl is not None:
-                fault_lbl.setToolTip(f"故障掩码 0x{fault_mask:04X}\n{full_desc}\n详见 [故障信息] tab")
-        else:
-            self._card_state.set_text("_fault", "0x0000 无故障", "#7FD4FF")
-            if fault_lbl is not None:
-                fault_lbl.setToolTip("无故障")
+        self._last_fault_mask = int(fb.fault_mask or 0)
+        self._refresh_fault_display()
         self._card_state.set_text(
             "_warn", f"0x{fb.warn_mask:04X}",
             "#FFB454" if fb.warn_mask else "#7FD4FF")
@@ -1231,6 +1219,28 @@ class FeedbackPanel(QWidget):
 
         self._refresh_state_styles()
         self._foc.flush()  # FOC 框图脏标记刷新(避免 set_values 每次直接 update)
+
+    def _refresh_fault_display(self):
+        """零兼容掩码不能覆盖设备已经上报的FAULT状态。"""
+        mask = self._last_fault_mask
+        fault = self._last_state[0] == int(TopFsm.FAULT)
+        if mask:
+            desc = fault_mask_to_str(mask)
+            short = desc if len(desc) <= 24 else desc[:22] + "..."
+            text, color = f"0x{mask:04X} {short}", "#FF6B6B"
+            tip = f"故障掩码 0x{mask:04X}\n{desc}\n详见 [故障信息] tab"
+        elif fault:
+            text = "0x0000 故障态，查故障信息" if mask is not None else "故障态，等待故障掩码"
+            color = "#FF6B6B"
+            tip = "设备已进入FAULT。兼容掩码不能定位停机原因，请到故障信息读取摘要和活动记录。"
+        elif mask is None:
+            text, color, tip = "—", "#8890A4", "等待故障掩码"
+        else:
+            text, color, tip = "0x0000 无故障", "#7FD4FF", "无故障"
+        self._card_state.set_text("_fault", text, color)
+        label = self._card_state._val_labels.get("_fault")
+        if label is not None:
+            label.setToolTip(tip)
 
     def set_motor_params(self, params: dict):
         """电机本体参数(r/ld/lq/flux/kt/ke/pole_pairs), 转发到转子示意图下方显示。"""
@@ -1255,6 +1265,7 @@ class FeedbackPanel(QWidget):
         self._card_state.set_text("_ctrl", cmd_name(ctrl_mode))
         self._card_state.set_text("_en", "ON" if enable else "OFF",
                                   "#5FE6AC" if enable else "#8890A4")
+        self._refresh_fault_display()
         self._refresh_state_styles()
 
     def _refresh_state_styles(self):
@@ -1285,6 +1296,8 @@ class FeedbackPanel(QWidget):
         if not active:
             self._card_motion.set_text('device_zero', '--')
             self._last_state = (None, None, None, None)
+            self._last_fault_mask = None
+            self._refresh_fault_display()
             self._enabled = False
             self._single_filter.reset(0.0)   # 断开时重置死区, 避免重连后锁定到旧值
             self._disp_pos = 0.0
