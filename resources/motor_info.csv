@@ -5,7 +5,7 @@ enable_bus_sensor,总线传感器使能,SystemParam,RW,u32_bool,1,0,1,,0x0040,2,
 safety_limit,安全限制使能,SystemParam,RW,u32_bool,1,0,1,,0x0040,3,安全限幅使能 0禁1启 调试期建议关闭
 total_runtime_s,累计运行时间,SystemParam,RO,uint32_t,0,0,4294967295,s,0x0040,4,累计电机运行时间 RUN和CALIB态按秒累计 固化时掉电保存 上位机只读
 save_count,固化次数,SystemParam,RO,uint32_t,0,0,4294967295,,0x0040,5,成功固化次数由存储服务维护 每次保存成功自增 上位机只读
-is_calibrated,电机是否校准,MotorCalibParam,RO,u32_bool,0,0,1,,0x0080,16,全流程标定完成状态由标定服务维护 重新标定使用专用命令 上位机只读
+is_calibrated,电机是否校准,MotorCalibParam,RW,u32_bool,0,0,1,,0x0080,16,标定状态可手动设置 0未标定 1已标定 L7完成自动置1 修改后需0xEA固化 不修改标定参数
 pole_pairs,电机极对数 p,MotorCalibParam,RW,uint32_t,7,1,128,pairs,0x0080,17,电机极对数 电角度=机械角×极对数
 motor_type,电机类型,MotorCalibParam,RW,uint32_t,0,0,2,,0x0080,18,电机类型 0:SPMSM 1:IPMSM 2:BLDC
 direction,电机方向,MotorCalibParam,RW,uint32_t,0,0,1,,0x0080,19,电机输出方向 0正向 1反向

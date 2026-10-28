@@ -20,10 +20,10 @@ _PARAM_CSV = os.path.join(_RES_DIR, 'joint_motor_param_index.csv')
 
 # 固件维护的配置字段；加载旧 CSV 时也不能把它们恢复成可写。
 MOTOR_CONFIG_READONLY_NAMES = frozenset({
-    'config_version', 'total_runtime_s', 'save_count', 'is_calibrated',
+    'config_version', 'total_runtime_s', 'save_count',
     'pid_source_mask',
 })
-MOTOR_CONFIG_READONLY_IDS = frozenset({0, 4, 5, 16, 127})
+MOTOR_CONFIG_READONLY_IDS = frozenset({0, 4, 5, 127})
 _MOTOR_INFO_CSV = os.path.join(_RES_DIR, 'motor_info.csv')
 # 故障码表(fault_param_gen 生成副本, 12列, 行号=index 固件码表序)
 _FAULT_PARAM_CSV = os.path.join(_RES_DIR, 'fault_param.csv')
@@ -414,6 +414,12 @@ class ProtocolRegistry:
                         desc_parts.append(remarks)
                     vmin = _parse_num(_col(row, 'Min', 'min_value'))
                     vmax = _parse_num(_col(row, 'Max', 'max_value'))
+                    access = _col(row, 'Access', 'access') or 'RW'
+                    if pid == 16:
+                        # 标定总标志已开放手动设置；兼容旧 CSV 的 RO 定义。
+                        access, dtype, nbytes = 'RW', 'u32_bool', 4
+                        vmin, vmax = 0, 1
+                        desc_parts = ['默认: 0', '0=未标定，1=已标定；可手动修改；L7完成自动置1；修改后需固化；不修改标定参数']
                     new_params[pid] = ParamSpec(
                         param_id=pid,
                         code_name=name,
@@ -422,7 +428,7 @@ class ProtocolRegistry:
                         nbytes=nbytes,
                         unit=_col(row, 'Unit', 'unit'),
                         group=_col(row, 'Category', 'group') or '其他',
-                        rw='RO' if pid in MOTOR_CONFIG_READONLY_IDS or name in MOTOR_CONFIG_READONLY_NAMES else (_col(row, 'Access', 'access') or 'RW'),
+                        rw='RO' if pid in MOTOR_CONFIG_READONLY_IDS or name in MOTOR_CONFIG_READONLY_NAMES else access,
                         desc='; '.join(desc_parts),
                         vmin=vmin,
                         vmax=vmax,
@@ -528,8 +534,10 @@ class ProtocolRegistry:
 
     @staticmethod
     def _pack_spec_value(spec: ParamSpec, text: str) -> bytes:
-        """按类型打包(仅格式转换, 不做范围检查)。范围检查见 check_spec_range。"""
+        """按类型打包；0/1 标志严格校验，其余数值范围见 check_spec_range。"""
         dtype = spec.dtype
+        if dtype == 'u32_bool' and spec.vmin == 0 and spec.vmax == 1:
+            return codec.pack_value(dtype, ProtocolRegistry._parse_binary_flag(text))
         if dtype.startswith('char['):
             return codec.pack_value(dtype, text)
         if codec.is_float_type(dtype):
@@ -542,6 +550,20 @@ class ProtocolRegistry:
         return codec.pack_value(dtype, value)
 
     @staticmethod
+    def _parse_binary_flag(text) -> int:
+        """接受 0/1（含十六进制和 0.0/1.0），拒绝截断小数或非有限数。"""
+        try:
+            try:
+                value = int(text, 0)
+            except (ValueError, TypeError):
+                value = float(text)
+            if value in (0, 1):
+                return int(value)
+        except (ValueError, TypeError, OverflowError):
+            pass
+        raise ValueError('标志位仅允许 0（未设置）或 1（已设置）')
+
+    @staticmethod
     def check_spec_range(spec: ParamSpec, text: str):
         """检查文本值是否在 spec.vmin/vmax 范围内。
 
@@ -551,6 +573,12 @@ class ProtocolRegistry:
         if spec.vmin is None and spec.vmax is None:
             return None
         dtype = spec.dtype
+        if dtype == 'u32_bool' and spec.vmin == 0 and spec.vmax == 1:
+            try:
+                ProtocolRegistry._parse_binary_flag(text)
+            except ValueError as exc:
+                return f"{spec.cn_name or spec.code_name}: {exc}"
+            return None
         if dtype.startswith('char['):
             return None
         try:

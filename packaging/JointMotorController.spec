@@ -6,9 +6,10 @@
 # 主程序仅用 QtWidgets/Core/Gui/OpenGLWidgets, 且 pyqtgraph 走 QPainter 渲染,
 # 不依赖软件 OpenGL, 故这些剔除项不构成硬依赖(均已核对导入表)。
 import glob
+import json
 import os
 import sys
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
 # 以 spec 所在目录定位工程根, 避免相对路径随运行目录漂移
 _HERE = os.path.abspath(SPECPATH)          # SPECPATH 即 spec 所在目录
@@ -40,15 +41,29 @@ for _d in _EXPAT_SEARCH:
         _extra_binaries.append((_f, '.'))
         break
 
+_can_dll = os.environ.get('JM_PCAN_DLL') or os.path.join(
+    os.environ.get('WINDIR', r'C:\Windows'), 'System32', 'PCANBasic.dll')
+if not os.path.isfile(_can_dll):
+    raise SystemExit('64-bit PCANBasic.dll is required for the CAN-enabled Windows release')
+_extra_binaries.append((_can_dll, '.'))
+with open(os.path.join(_RES_USE, 'feature_flags.json'), encoding='utf-8') as _flags:
+    if json.load(_flags).get('features', {}).get('can_transport') is not True:
+        raise SystemExit('Windows release must enable can_transport')
+_datas = [(_RES_USE, 'resources')]
+for _distribution in ('python-can', 'pyserial', 'PyQt6', 'pyqtgraph', 'numpy'):
+    _datas += copy_metadata(_distribution)
+
 # ---- 收集 ----
 # python-can 按需动态导入后端模块(can/interface.py 的 importlib.import_module),
 # PyInstaller 静态分析不可见, 必须显式收集; 缺失时 CAN 通道扫描为空且无法打开总线。
 # 当前仅用 PCAN 硬件; 换其他硬件(socketcan/vector/...)时需同步追加对应后端。
 hiddenimports = ['serial.tools.list_ports', 'PyQt6.sip', 'PyQt6.QtOpenGLWidgets']
-hiddenimports += collect_submodules('pyqtgraph')
-hiddenimports += collect_submodules('serial')
+hiddenimports += collect_submodules('pyqtgraph', filter=lambda name: not name.startswith(
+    ('pyqtgraph.examples', 'pyqtgraph.tests', 'pyqtgraph.jupyter')))
+hiddenimports += ['serial.serialwin32', 'serial.tools.list_ports_windows']
 hiddenimports += collect_submodules('transport.virtual_engine')
 hiddenimports += collect_submodules('can.interfaces.pcan')
+hiddenimports += collect_submodules('can.interfaces.virtual')
 
 # 未使用的 Qt 模块(排除 .pyd 包装), 与 CLI 一致
 excludes = [
@@ -92,10 +107,10 @@ def _keep_translation(src):
 
 
 a = Analysis(
-    [os.path.join(_ROOT, 'main.py')],
+    [os.path.join(_ROOT, os.environ.get('JM_ENTRY', 'packaging/linux_entry.py'))],
     pathex=[_ROOT],
     binaries=_extra_binaries,
-    datas=[(_RES_USE, 'resources')],
+    datas=_datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -117,7 +132,8 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='JointMotorController',
+    name=os.environ.get('JM_BUILD_NAME', 'JointMotorController'),
+    version=os.environ.get('JM_VERSION_FILE'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

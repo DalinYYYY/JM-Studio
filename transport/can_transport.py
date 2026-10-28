@@ -18,11 +18,12 @@ CAN 传输实现: 基于 python-can + QThread 异步收发
 - _alive(线程生命周期) 与 _running(总线打开) 双标志分离
 - 多帧重组: 基于控制字和 DLC 智能判断, 末帧 CRC16 校验
 
-依赖: python-can>=4.0.0, PCAN 驱动已安装
+依赖: python-can>=4.0.0; Windows 使用 PCAN, Linux 使用系统 SocketCAN
 """
 
 import queue
 import struct
+import sys
 import threading
 import time
 from typing import Optional
@@ -80,15 +81,15 @@ def can_get_motor_id(can_id: int) -> int:
 
 
 class CanTransport(Transport):
-    """CAN 传输(python-can 后端, 默认 PCAN 接口)"""
+    """CAN 传输: Windows 使用 PCAN, Linux 使用 SocketCAN。"""
 
     name = "can"
     _READ_TIMEOUT_S = 0.001
     _IDLE_WAIT_S = 0.0005
     _CLOSED_WAIT_S = 0.01
     _WRITE_TIMEOUT_S = 0.02
-    # python-can 接口名; 未来切换其他硬件改这里或加构造参数
-    _INTERFACE = "pcan"
+    # Linux 的 PCAN-USB 由内核 SocketCAN 驱动提供 can0 等网络接口。
+    _INTERFACE = "socketcan" if sys.platform.startswith("linux") else "pcan"
     # 发送队列容量(满时丢弃, 计入 tx_dropped_count)
     _TX_QUEUE_SIZE = 256
     _TX_THREAD_NAME = "CanTx"
@@ -144,7 +145,7 @@ class CanTransport(Transport):
     # ---------------- 通道枚举 ----------------
     @staticmethod
     def list_channels() -> list:
-        """列出可用 PCAN 通道: [(channel_name, description), ...]
+        """列出当前平台可用 CAN 通道: [(channel_name, description), ...]
 
         channel_name 形如 'PCAN_USBBUS1', 传给 can.Bus(channel=...) 使用。
         description 形如 'PCAN-USB Ch.1' 供 UI 显示。
@@ -188,7 +189,7 @@ class CanTransport(Transport):
     def open(self, channel: str = "", bitrate: int = 1000000,
              motor_id: int = 1, fd: bool = False, data_bitrate: int = 0,
              **_) -> bool:
-        """打开 CAN 总线。fd=True 启用 CAN FD 模式(需 PCAN-USB FD 设备), 打开成功后启动独立发送线程。"""
+        """打开 CAN 总线。Linux 通道的波特率及 FD 能力需预先通过 ip link 配置。"""
         if not 1 <= int(motor_id) <= 127:
             self.error_occurred.emit(f"CAN 节点 ID 越界: {motor_id}, 应在 1~127 范围内")
             return False
@@ -204,8 +205,11 @@ class CanTransport(Transport):
                         pass
                 self._wake_event.set()
 
+            if self._INTERFACE == "socketcan":
+                # SocketCAN 的位时序由内核网络接口管理, 不向后端传 PCAN 参数。
+                bus = can.Bus(interface="socketcan", channel=channel, fd=bool(fd))
             # PCAN FD 模式: 需要驱动 4.x+ 和 PCAN-USB FD 设备
-            if fd:
+            elif fd:
                 try:
                     bus = can.Bus(
                         interface=self._INTERFACE,
@@ -273,7 +277,10 @@ class CanTransport(Transport):
             self.connected.emit(True)
             return True
         except Exception as e:
-            self.error_occurred.emit(f"CAN 打开失败: {e}")
+            hint = ("\nLinux SocketCAN 通道需先配置并启动; "
+                    "波特率由系统 ip link 设置, 然后在此选择 can0 等通道。"
+                    if self._INTERFACE == "socketcan" else "")
+            self.error_occurred.emit(f"CAN 打开失败: {e}{hint}")
             return False
 
     def close(self):

@@ -2,37 +2,37 @@
   "version": 1,
   "settings": {
     "baud": "2000000",
-    "transport_type": "serial",
+    "transport_type": "can",
     "can_bitrate": "1000000",
     "can_motor_id": 1,
-    "can_channel_name": "",
+    "can_channel_name": "PCAN_USBBUS1",
     "display_period_ms": 50,
     "display_buffer_max": 21200,
     "main_window": {
-      "width": 1876,
-      "height": 1238,
-      "x": 341,
-      "y": 102
+      "width": 2560,
+      "height": 1369,
+      "x": 0,
+      "y": -8
     },
     "right_splitter": [
-      1181,
+      1313,
       0
     ],
     "main_splitter": [
       350,
-      1500
+      2184
     ],
     "log_splitter_sizes": [
-      341,
-      127
+      991,
+      179
     ],
     "layout_edit": true,
     "telemetry": {
       "mask": 3583,
-      "period_ms": 2
+      "period_ms": 5
     },
     "feedback_poll": {
-      "enabled": false,
+      "enabled": true,
       "period_ms": 500
     },
     "log_visible": false,
@@ -41,7 +41,7 @@
       "tx": true,
       "rx": true,
       "raw": true,
-      "can_raw": false,
+      "can_raw": true,
       "autoscroll": false,
       "lvl_debug": false,
       "lvl_info": false,
@@ -87,10 +87,10 @@
       "debug_window": {
         "checked": false,
         "geo": [
-          1041,
-          364,
-          1464,
-          825
+          1282,
+          497,
+          1204,
+          769
         ],
         "window_points": 2000,
         "follow": true,
@@ -132,7 +132,7 @@
     "motion": {
       "current_cmd": 20,
       "fields": {
-        "vel_ref": 17.2
+        "vel_ref": 18.2
       }
     },
     "motor_param": {
@@ -190,11 +190,11 @@
     },
     "calib": {
       "task_tab_index": 4,
-      "history_visible": true,
+      "history_visible": false,
       "active_task": [
         148,
-        2,
-        0
+        1,
+        1
       ],
       "config_panel": {
         "column_widths": {

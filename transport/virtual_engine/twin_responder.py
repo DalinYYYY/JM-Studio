@@ -407,6 +407,8 @@ class TwinResponder:
                     self._motor_config_store[48] = 0.0
             if cmd == int(JmCmd.MOTOR_INFO_RESET) and pid in (0xFFFF, 176):
                 self._motor_config_store[176] = 0
+            if cmd == int(JmCmd.MOTOR_INFO_RECALIB_RESET) or pid in (0xFFFF, 16):
+                self._motor_config_store[16] = 0
             return [self._ack(cmd)]
         if cmd == int(JmCmd.MOTOR_INFO_ERASE):
             # 0xED (固化清零): 虚拟引擎同样校验魔数, 防误触语义与下位机一致

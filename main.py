@@ -20,7 +20,7 @@ warnings.filterwarnings("ignore", message=".*uptime library not available.*")
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QFontDatabase
 
 # 启动时加载功能开关(触发单例缓存), 控制是否加载特定功能模块
 from ui import feature_flags
@@ -64,7 +64,16 @@ def main():
     app.setApplicationVersion(APP_VERSION)
 
     # 设置默认字体(等宽字体用于数据显示)
-    font = QFont("Microsoft YaHei UI", 9)
+    font_family = "Microsoft YaHei UI"
+    if sys.platform.startswith("linux"):
+        # Ubuntu 离线包携带中文字体, 不依赖目标机器安装微软雅黑或联网下载字体。
+        font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "resources", "fonts", "NotoSansCJK-Regular.ttc")
+        font_id = QFontDatabase.addApplicationFont(font_path)
+        families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
+        font_family = next((name for name in families if name == "Noto Sans CJK SC"),
+                           families[0] if families else "Noto Sans CJK SC")
+    font = QFont(font_family, 9)
     app.setFont(font)
 
     # 主题: 读取上次选择(默认深色)并铺设全局 QSS, 再建窗口

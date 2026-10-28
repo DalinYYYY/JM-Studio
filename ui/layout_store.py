@@ -17,10 +17,11 @@ p1/p2 可选, 缺失表示该端点用默认块边锚点; 缺整个 edges 节则
 
 import os
 import json
+from runtime_paths import user_resource_path
 
-# 路径定位仿 jmproto/registry.py: 相对本模块上溯到包根的 resources/
-_RES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources")
-_PATH = os.path.join(_RES_DIR, "ui_layout.json")
+# Linux 安装版不能写 /opt; 开发版和 Windows 路径保持原有约定。
+_PATH = user_resource_path("ui_layout.json")
+_RES_DIR = os.path.dirname(_PATH)
 
 _VERSION = 1
 

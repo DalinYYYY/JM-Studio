@@ -29,10 +29,11 @@
 
 import os
 import json
+from runtime_paths import user_resource_path
 
-# 路径定位仿 layout_store.py: 相对本模块上溯到包根的 resources/
-_RES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources")
-_PATH = os.path.join(_RES_DIR, "user_motor_presets.json")
+# Linux 安装版的用户预设与只读的内置预设分开存放。
+_PATH = user_resource_path("user_motor_presets.json")
+_RES_DIR = os.path.dirname(_PATH)
 
 _VERSION = 1
 

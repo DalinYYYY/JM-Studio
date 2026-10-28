@@ -2991,6 +2991,8 @@ class MainWindow(QMainWindow):
         spec = panel.get_param(param_id)
         if val is None:
             disp = value_bytes.hex(' ')
+        elif panel.source() == "motor_config" and param_id == 16:
+            disp = str(val)  # 标定状态显示 0/1，便于手动修改。
         elif spec is not None and spec.dtype == 'u32_bool':
             disp = f'0x{int(val) & 0xFFFFFFFF:08X}'
         elif spec is not None and jp.codec.is_float_type(spec.dtype):
@@ -3036,9 +3038,9 @@ class MainWindow(QMainWindow):
             if self._export_state["collected"] >= self._export_state["total"]:
                 self._finalize_export()
         # Task 5: Index 16 (is_calibrated) 读回值同步到标定面板的已标定徽章
-        # (无论哪个 panel 收到, 都转发给 calib_panel; 写后 ACK 不自动读回时徽章靠乐观更新)
+        # 配置写后按真实读回更新徽章，避免十六进制显示文本影响状态解析。
         if panel.source() == "motor_config" and param_id == 16:
-            self._calib_panel.set_calibrated_value(disp)
+            self._calib_panel.set_calibrated_value(val)
         # 电机本体参数转发到反馈面板的转子示意图(电阻/电感/磁链/转矩常数/极对数等)
         if spec is not None and val is not None and spec.code_name in self._MOTOR_PARAM_KEYS:
             self._motor_params[spec.code_name] = val

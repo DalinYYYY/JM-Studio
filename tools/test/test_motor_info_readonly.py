@@ -21,10 +21,10 @@ from transport.virtual_engine.twin_responder import TwinResponder
 
 app = QApplication([])
 reg = ProtocolRegistry()
-ro = {0, 4, 5, 16, 127}
+ro = {0, 4, 5, 127}
 assert {pid for pid, spec in reg.motor_config_params.items() if not spec.writable} == ro
 assert len(reg.motor_config_params) == 113
-assert all(reg.get_motor_config_param(pid).writable for pid in (20, 28, 49, 64, 176, 184, 185))
+assert all(reg.get_motor_config_param(pid).writable for pid in (16, 20, 28, 49, 64, 176, 184, 185))
 panel = ParamPanel(reg, source='motor_config', show_save=True)
 assert panel._write_buttons[176].isEnabled()
 assert panel._edit_items[176].flags() & Qt.ItemFlag.ItemIsEditable
@@ -75,6 +75,8 @@ with tempfile.TemporaryDirectory(prefix='jointmotor-ro-gui-') as work:
         reader = csv.DictReader(f)
         fields, rows = reader.fieldnames, list(reader)
     for row in rows:
+        if int(row['Index']) == 16:
+            row['Access'] = 'RO'  # 已开放的 ID16 兼容旧权限表。
         if int(row['Index']) in ro:
             row['Access'] = 'RW'
             row['VariableName'] = 'legacy_alias_' + row['VariableName']
@@ -84,6 +86,7 @@ with tempfile.TemporaryDirectory(prefix='jointmotor-ro-gui-') as work:
     old = ProtocolRegistry()
     assert old.reload_motor_config(str(legacy))
     assert all(not old.get_motor_config_param(pid).writable for pid in ro)
+    assert old.get_motor_config_param(16).writable
     assert old.get_motor_config_param(176).writable
     backup = work / 'backup.json'
     backup.write_text(json.dumps({'_meta': {'config_version': 0},
@@ -132,4 +135,4 @@ assert resp._motor_config_value(resp.reg.get_motor_config_param(176)) == 0
 for pid in range(85, 90):
     frame = resp.on_command(int(JmCmd.PARAM_WRITE), codec.wr_u16(pid) + b'\0' * 4)[0]
     assert frame == (int(JmCmd.NACK), bytes((int(JmCmd.PARAM_WRITE), int(JmErr.READ_ONLY))))
-print('PASS five readonly fields remain protected; softstart_valid editable, queued, imported, written/read/reset and range-checked')
+print('PASS four readonly fields remain protected; is_calibrated writable with legacy CSV; softstart_valid editable, queued, imported, written/read/reset and range-checked')
