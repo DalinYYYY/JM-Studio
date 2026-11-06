@@ -1188,12 +1188,14 @@ class MainWindow(QMainWindow):
             lambda: self._on_config_save(0))
         # 故障信息面板: 0xAA/0xAB/0xB0 诊断命令 + PID154~159 使能掩码走 motor_info 通道
         self._fault_info_panel.fault_summary_requested.connect(
-            lambda: self._client.fault_summary_get() if self._client.is_open() else None)
+            lambda: self._client.fault_summary_get()
+            if self._client.is_open() and not self._can_commissioning_required else None)
         self._fault_info_panel.state_requested.connect(
-            lambda: self._client.query_state() if self._client.is_open() else None)
+            lambda: self._client.query_state()
+            if self._client.is_open() and not self._can_commissioning_required else None)
         self._fault_info_panel.fault_detail_requested.connect(
             lambda ftype, idx: self._client.fault_detail_get(ftype, idx)
-            if self._client.is_open() else None)
+            if self._client.is_open() and not self._can_commissioning_required else None)
         self._fault_info_panel.fault_enable_masks_read_requested.connect(
             self._on_fault_enable_masks_read)
         self._fault_info_panel.fault_enable_mask_write_requested.connect(
@@ -2333,7 +2335,7 @@ class MainWindow(QMainWindow):
                 self._log_panel.log(
                     "[PID] 已离开调试页，停止DEBUG租约；设备将在2秒内安全回滚")
         self._active_main_tab_widget = w
-        # 离开故障信息页: 停自动刷新省带宽
+        # 离开故障页时保留后台告警采集，只更新面板可见性。
         if prev is self._fault_info_panel and w is not self._fault_info_panel:
             try:
                 self._fault_info_panel.pause_auto_refresh()

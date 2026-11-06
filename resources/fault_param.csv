@@ -32,7 +32,7 @@
 0x3301,驱动器,警告级,驱动波形畸变,电流纹波比>阈值(原THD判据修订),记录日志,I_RIPPLE,LOG,0,0,ia/ib/ic纹波,i_ripple_pct
 0x3302,驱动器,警告级,风扇故障,风扇转速为0且温度>50℃,记录日志,FAN_FAULT,LOG,0,0,无(无风扇),-
 0x3303,驱动器,警告级,驱动器温度预警,MOSFET结温>过温阈值-temp_warn_offset_d,记录日志,FET_TEMP_WARN,LOG,1,0,temp_fet,temp_warn_offset_d
-0x4101,电机本体,故障级,电机过温熔断,绕组温度>temp_motor_over_d,按缓启动逐渐停机后锁存故障,MOTOR_OVER_TEMP,STOP_RAMP,1,0,temp_motor,temp_motor_over_d
+0x4101,电机本体,故障级,绕组过热故障,绕组温度>temp_motor_over_d,按缓启动渐停后锁存 低于阈值-20℃且停机完成后可人工清障 回差由程序宏设置,MOTOR_OVER_TEMP,STOP_RAMP,1,0,temp_motor,temp_motor_over_d
 0x4102,电机本体,故障级,相间短路,任意两相电阻<0.1Ω(维护模式静态测量),立即停机切断电源,PHASE_SHORT,STOP_POWER,0,0,无(需静态电阻测量),-
 0x4103,电机本体,故障级,电机对地短路,绕组对地绝缘电阻<1MΩ(维护模式),立即停机切断电源,GND_SHORT,STOP_POWER,0,0,无(需绝缘检测电路),-
 0x4104,电机本体,故障级,电机断路,任意一相电阻>100Ω(维护模式静态测量),立即停机切断电源,PHASE_OPEN,STOP_POWER,0,0,无(需静态电阻测量),-

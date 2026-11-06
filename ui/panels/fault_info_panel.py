@@ -3,7 +3,7 @@
 故障管理协议 v1.9 (fault_mgr 分级故障管理) 对接:
   1. 工具栏 — 读取摘要(0xAA) / 自动刷新(1s 周期 0xAA) / 清除故障(0xB0 bit0) / 清除历史(0xB0 bit1) / 加载历史(0xAB type1)
   2. 摘要卡 — 最高优先级故障码+名称 / 活动数 / 降功率% / 三级状态灯(故障级/异常级/警告级)
-  3. 诊断页 — 活动故障表(摘要后自动逐条 0xAB type0 拉取) + 历史记录表(手动加载, ≤100 条)
+  3. 诊断页 — 本机会话告警日志 + 累计接收到的设备历史；恢复、断线、设备重启不删记录
   4. 码表页 — 全量故障码表(实现列可编辑), CSV 可加载/保存/恢复默认, 行号=固件码表序
   5. 保护总览页 — 保护总使能(PID128) + 三层故障级别使能掩码 / 实现期
   6. 参考页 — 虚拟电机 Fault 位(演示模式) + 协议错误码 JmErr
@@ -14,6 +14,7 @@ compat_mask/warn_mask 为压缩位图(信息有损), 仅作摘要灯, 不用于�
 import os
 from collections import deque
 from datetime import datetime
+from itertools import islice
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QBrush, QFont
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (
 import jmproto as jp
 from jmproto import fault_diag as fd
 from ui.theme import theme
+from core.fault_session import FaultSessionLog
 
 
 # ---------- 码表页列定义 ----------
@@ -113,13 +115,19 @@ class FaultInfoPanel(QWidget):
     protect_mask_write_requested = pyqtSignal(int)     # 0xE7 写 PID128 (1/0, RAM 即时生效)
     active_faults_changed = pyqtSignal(list)           # 活动故障名称列表(≤3, 主窗口状态栏摘要)
 
-    _MAX_HISTORY = 50
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self._panel_name = "故障信息"
         self._current_mask = 0           # 遥测 compat_mask(旧 6 故障兼容位)
-        self._history = deque(maxlen=self._MAX_HISTORY)
+        self._history = deque()
+        self._session_log = FaultSessionLog()
+        self._session_rows = {}
+        self._history_rows = {}
+        self._last_hist_count = None
+        self._active_keys_new = None
+        self._active_pull_complete = True
+        self._pull_request = None
+        self._suppressed_history = {}
         self._engine = None              # 虚拟引擎句柄(由主窗口 set_engine 设置)
         self._disable_mask = 0           # 当前虚拟电机故障屏蔽掩码
         self._disable_checks = {}        # bit -> QCheckBox
@@ -138,7 +146,6 @@ class FaultInfoPanel(QWidget):
         self._protect_mask = None        # PID128 protect_enable (None=未读取)
         self._active_codes = set()       # 最近一次 0xAB 活动拉取确认的活动故障码集合
         self._active_codes_new = None    # 重建中的暂存集合(None=非重建态)
-        self._active_wall = {}           # 活动故障码 -> [首次出现时间, 最近一次时间](上位机墙钟, 会话内)
         self._heat_cells = {}            # 码表 index -> 热力图格 QFrame
 
         self._ensure_level_bits()
@@ -179,7 +186,7 @@ class FaultInfoPanel(QWidget):
         self._pull_timer.setInterval(2500)
         self._pull_timer.timeout.connect(self._on_pull_timeout)
 
-        # 自动刷新: 1s 周期 0xAA(仅连接 + 本 tab 可见时运行)
+        # 后台采集: 1s 周期 0xAA，连接且启用时运行，不随页面切换停止。
         self._auto_timer = QTimer(self)
         self._auto_timer.setInterval(1000)
         self._auto_timer.timeout.connect(self._on_auto_tick)
@@ -198,26 +205,33 @@ class FaultInfoPanel(QWidget):
         self._btn_read.setObjectName("primary")
         self._btn_read.clicked.connect(self._on_read_summary)
 
-        self._chk_auto = QCheckBox("自动刷新(1s)")
+        self._chk_auto = QCheckBox("自动采集(1s)")
+        self._chk_auto.setChecked(True)
+        self._chk_auto.setToolTip("连接期间在后台采集所有级别告警及设备历史；取消后只保留已收到的日志")
         self._chk_auto.toggled.connect(self._on_auto_toggled)
 
         self._btn_clear_fault = QPushButton("清除故障")
         self._btn_clear_fault.clicked.connect(
             lambda: self.fault_clear_requested.emit(fd.CLEAR_FLAG_LATCHED))
 
-        self._btn_clear_hist = QPushButton("清除历史")
+        self._btn_clear_hist = QPushButton("清除设备历史")
+        self._btn_clear_hist.setToolTip("仅清除下位机历史，本机已收到的诊断日志继续保留")
         self._btn_clear_hist.clicked.connect(
             lambda: self.fault_clear_requested.emit(fd.CLEAR_FLAG_HISTORY))
 
-        self._btn_load_hist = QPushButton("加载历史")
+        self._btn_load_hist = QPushButton("读取设备历史")
         self._btn_load_hist.clicked.connect(self._on_load_history)
+
+        self._btn_clear_log = QPushButton("清空本机日志")
+        self._btn_clear_log.setToolTip("手动清空本次软件运行的诊断日志；不发送清障或清历史命令")
+        self._btn_clear_log.clicked.connect(self.clear_session_log)
 
         self._lbl_link = QLabel("未连接")
         self._lbl_link.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         for w in (self._btn_read, self._chk_auto, self._btn_clear_fault,
-                  self._btn_clear_hist, self._btn_load_hist):
+                  self._btn_clear_hist, self._btn_load_hist, self._btn_clear_log):
             lay.addWidget(w)
         lay.addStretch()
         lay.addWidget(self._lbl_link)
@@ -446,13 +460,18 @@ class FaultInfoPanel(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(6)
 
-        active_box = QGroupBox("活动故障 (0xAB type=0 优先级序)")
+        active_box = QGroupBox("本机会话告警日志（故障 / 异常 / 警告，恢复后保留）")
         av = QVBoxLayout(active_box)
         av.setContentsMargins(8, 14, 8, 8)
         self._active_table = QTableWidget(0, 11)
         self._active_table.setHorizontalHeaderLabels(
             ["码", "名称", "故障原因", "级别", "状态", "次数",
-             "首次(ms)", "最近(ms)", "首次出现时间", "最近一次时间", "触发值"])
+             "首次(ms)", "最近(ms)", "首次记录时间", "最近记录时间", "触发值"])
+        hint = QLabel("日志仅在手动清空或重启上位机后清除；下位机重启、断线和切换页面均保留。")
+        hint.setObjectName('diag_hint')
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color:{theme.hex('muted')}; font-size:11px; border:none;")
+        av.addWidget(hint)
         self._config_proto_table(self._active_table)
         hdr = self._active_table.horizontalHeader()
         self._active_table.setColumnWidth(AC_CODE, 76)
@@ -460,17 +479,17 @@ class FaultInfoPanel(QWidget):
         # 故障原因列为默认最大列宽(Stretch 吸收窗口多余宽度)
         hdr.setSectionResizeMode(AC_CAUSE, QHeaderView.ResizeMode.Stretch)
         self._active_table.setColumnWidth(AC_LEVEL, 56)
-        self._active_table.setColumnWidth(AC_STATUS, 56)
+        self._active_table.setColumnWidth(AC_STATUS, 76)
         self._active_table.setColumnWidth(AC_COUNT, 52)
         self._active_table.setColumnWidth(AC_FIRST, 76)
         self._active_table.setColumnWidth(AC_LAST, 76)
-        self._active_table.setColumnWidth(AC_FIRST_DT, 128)
-        self._active_table.setColumnWidth(AC_LAST_DT, 128)
+        self._active_table.setColumnWidth(AC_FIRST_DT, 176)
+        self._active_table.setColumnWidth(AC_LAST_DT, 176)
         self._active_table.setColumnWidth(AC_VALUE, 76)
         av.addWidget(self._active_table)
         v.addWidget(active_box, 3)
 
-        hist_box = QGroupBox("历史记录 (0xAB type=1 时间倒序, 最多 100 条)")
+        hist_box = QGroupBox("设备历史（本机累计保留，单次最多读取设备的 100 条）")
         hv = QVBoxLayout(hist_box)
         hv.setContentsMargins(8, 14, 8, 8)
         self._hist_table = QTableWidget(0, 6)
@@ -1601,8 +1620,15 @@ class FaultInfoPanel(QWidget):
         s = self._summary
         missing = self._missing_stop_code()
         if s is not None and s.active_cnt > 0:
-            title = f"● 设备故障状态: 故障 ({s.active_cnt} 项)"
-            color = 'danger'
+            if s.level_active & fd.LEVEL_CRITICAL_BIT:
+                level, color = '故障', 'danger'
+            elif s.level_active & fd.LEVEL_EXCEPTION_BIT:
+                level, color = '异常', 'value_hot'
+            elif s.level_active & fd.LEVEL_WARNING_BIT:
+                level, color = '警告', 'warn'
+            else:
+                level, color = '告警', 'danger'
+            title = f"● 设备故障状态: {level} ({s.active_cnt} 项)"
         elif missing:
             title, color = "● 设备已故障停机，但未上报故障码", 'danger'
         elif self._current_mask:
@@ -1626,7 +1652,8 @@ class FaultInfoPanel(QWidget):
         if s is not None and s.top_code:
             rec = jp.fault_code_lookup(s.top_code)
             name = rec['name'] if rec else f"未知码(0x{s.top_code:04X})"
-            top, top_color = f"最高故障: 0x{s.top_code:04X} {name}", 'danger'
+            top = f"最高故障: 0x{s.top_code:04X} {name}"
+            top_color = _LEVEL_THEME_KEY.get(rec.get('level') if rec else '', 'danger')
         elif missing:
             top, top_color = "最高故障: 未上报", 'danger'
         else:
@@ -1637,14 +1664,46 @@ class FaultInfoPanel(QWidget):
 
     def on_summary_received(self, s: fd.FaultSummary):
         """0xAA 摘要应答(由主窗口转发 client.fault_summary_received)。"""
+        if self._last_hist_count is not None and s.hist_cnt < self._last_hist_count:
+            # 设备重启或设备历史被清空后，ms/计数可能从头开始，不能覆盖旧事件。
+            self._session_log.new_device_epoch()
+            self._pull_timer.stop()
+            self._pull_active = False
+            self._pull_request = None
+            self._pull_queue.clear()
+            self._active_codes.clear()
+            self._active_codes_new = None
+            self._active_keys_new = None
+            self._refresh_session_states()
+        self._last_hist_count = s.hist_cnt
         self._summary = s
+        self._render_summary()
+        # 自动/手动摘要可能在详情拉取途中到达，不能重置正在收集的活动集合。
+        if self._pull_active or self._pull_queue:
+            return
+        self._active_pull_complete = True
+        self._active_codes_new = set()
+        self._active_keys_new = set()
+        if s.active_cnt == 0:
+            self._finalize_active_rebuild()
+        items = [(fd.TYPE_ACTIVE, i) for i in range(s.active_cnt)]
+        # 设备历史补回两次轮询之间已经恢复的短时告警，三个级别都读取。
+        items.extend((fd.TYPE_HISTORY, i) for i in range(min(s.hist_cnt, _MAX_HIST_FETCH)))
+        self._hist_load_pending = False
+        if items:
+            self._queue_pulls(items)
+
+    def _render_summary(self):
+        s = self._summary
+        if s is None:
+            return
         self._refresh_status_card()
         self._refresh_compat()
         self._lbl_active.setText(f"活动数: {s.active_cnt}")
         # derate_pct 为剩余功率百分比(固件 derate×100), 100=不降额
         self._lbl_derate.setText(f"降功率: {s.derate_pct}%"
                                  if s.derate_pct < 100 else "降功率: 无")
-        self._lbl_hist.setText(f"历史: {s.hist_cnt} 条")
+        self._refresh_log_count()
 
         # 三级状态灯
         lamp_map = {'故障级': fd.LEVEL_CRITICAL_BIT,
@@ -1658,39 +1717,23 @@ class FaultInfoPanel(QWidget):
                 f"color:{color}; font-size:12px; "
                 f"font-weight:{'bold' if active else 'normal'}; border:none;")
 
-        # 活动故障表行数对齐摘要, 详情由 0xAB 应答逐行回填;
-        # 活动码集合防闪烁重建: active_cnt>0 时暂存新集合, 拉取完成才替换生效(旧红格保持)
-        if s.active_cnt > 0:
-            self._active_codes_new = set()
-        else:
-            self._active_codes = set()
-            self._active_codes_new = None
-            self._active_wall.clear()
-            self._refresh_active_ui()
-        self._active_table.setRowCount(s.active_cnt)
-        if s.active_cnt > 0 and not self._pull_active and not self._pull_queue:
-            self._queue_pulls([(fd.TYPE_ACTIVE, i) for i in range(s.active_cnt)])
-
-        # 挂起的历史拉取(加载历史时若尚无摘要, 先取摘要再拉)
-        if self._hist_load_pending:
-            self._hist_load_pending = False
-            if s.hist_cnt > 0:
-                self._start_history_pull(s.hist_cnt)
-
     def _refresh_summary(self):
         """无新摘要时按缓存刷新(重连/主题切换后)。"""
         if self._summary is not None:
-            self.on_summary_received(self._summary)
+            self._render_summary()
 
     # ==================== 0xAB 详情拉取队列 ====================
     def _finalize_active_rebuild(self):
         """活动码集合重建收尾: 暂存集合转正并刷新红格/图例(防自动刷新周期红格闪烁)。"""
         if getattr(self, "_active_codes_new", None) is not None:
-            self._active_codes = self._active_codes_new
+            if self._active_pull_complete:
+                self._active_codes = self._active_codes_new
+            else:
+                self._active_codes.update(self._active_codes_new)
             self._active_codes_new = None
-            # 清掉已消失故障的墙钟记录(复现时重新计时)
-            self._active_wall = {c: v for c, v in self._active_wall.items()
-                                 if c in self._active_codes}
+            self._session_log.confirm_active(self._active_keys_new or set(), self._active_pull_complete)
+            self._active_keys_new = None
+            self._refresh_session_states()
             self._refresh_active_ui()
 
     def _queue_pulls(self, items):
@@ -1706,20 +1749,31 @@ class FaultInfoPanel(QWidget):
         if not self._link_active:
             self._pull_queue.clear()
             return
+        if self._pull_queue[0][0] == fd.TYPE_HISTORY:
+            # 活动集合先提交；历史可能有 100 条，不能拖延当前状态灯的更新。
+            self._finalize_active_rebuild()
         ftype, idx = self._pull_queue.popleft()
         self._pull_active = True
+        self._pull_request = (ftype, idx)
         self._pull_timer.start()
         self.fault_detail_requested.emit(ftype, idx)
 
     def _on_pull_timeout(self):
         """单请求超时: 放弃剩余队列, 防止在途标志卡死; 已收到部分转正防红格卡旧值。"""
         self._pull_active = False
+        self._pull_request = None
+        self._active_pull_complete = False
         self._pull_queue.clear()
         self._finalize_active_rebuild()
 
     def on_detail_received(self, ftype: int, idx: int, rec: fd.FaultRecord):
         """0xAB 详情应答(由主窗口转发 client.fault_detail_received)。"""
+        if not self._link_active or ftype not in (fd.TYPE_ACTIVE, fd.TYPE_HISTORY):
+            return
+        if self._pull_request is not None and (ftype, idx) != self._pull_request:
+            return
         self._pull_active = False
+        self._pull_request = None
         self._pull_timer.stop()
         if ftype == fd.TYPE_ACTIVE:
             self._fill_active_row(idx, rec)
@@ -1728,8 +1782,7 @@ class FaultInfoPanel(QWidget):
         self._pump_pulls()
 
     def _fill_active_row(self, idx: int, rec: fd.FaultRecord):
-        table = self._active_table
-        if idx < 0 or idx >= table.rowCount():
+        if idx < 0 or not rec.code:
             return
         self._active_codes.add(rec.code)   # 供使能位仪表盘红格判定
         if self._active_codes_new is not None:
@@ -1737,33 +1790,75 @@ class FaultInfoPanel(QWidget):
             self._active_codes_new.add(rec.code)
         else:
             self._refresh_active_ui()
-        # 墙钟时间(上位机会话内观察): 首次见到该码活动记 first, 之后每拍刷新 last
-        now_str = datetime.now().strftime("%m-%d %H:%M:%S")
-        if rec.code in self._active_wall:
-            self._active_wall[rec.code][1] = now_str
-        else:
-            self._active_wall[rec.code] = [now_str, now_str]
-        first_dt, last_dt = self._active_wall[rec.code]
+        entry = self._session_log.observe(rec, active=True)
+        if self._active_keys_new is not None:
+            self._active_keys_new.add(entry.key)
+        self._render_session_entry(entry)
+
+    def _render_session_entry(self, entry):
+        table = self._active_table
+        row = self._session_rows.get(entry.key)
+        if row is None:
+            row = table.rowCount()
+            table.insertRow(row)
+            self._session_rows[entry.key] = row
+        rec = entry.record
         rec_info = jp.fault_code_lookup(rec.code)
         name = rec_info['name'] if rec_info else "—"
         level = rec_info['level'] if rec_info else ""
         cause = rec_info['condition'] if rec_info else "—"
-        status_color = theme.c('danger') if rec.status == fd.STATUS_ACTIVE else theme.c('muted')
-        self._fill_record_row(table, idx, rec, rec_info, name, level,
+        status_color = theme.c(_LEVEL_THEME_KEY.get(level, 'danger')) if entry.state == '活动' else theme.c('muted')
+        self._fill_record_row(table, row, rec, rec_info, name, level,
                               [f"0x{rec.code:04X}", name, cause, level,
-                               fd.STATUS_CN.get(rec.status, str(rec.status)),
+                               entry.state,
                                str(rec.count), str(rec.first_ms), str(rec.last_ms),
-                               first_dt, last_dt, f"{rec.value:.4g}"],
+                               entry.first_seen, entry.last_seen, f"{rec.value:.4g}"],
                               status_color=status_color,
                               center_cols={AC_CODE, AC_LEVEL, AC_STATUS})
+        self._refresh_log_count()
+
+    def _refresh_session_states(self):
+        for key, row in self._session_rows.items():
+            entry = self._session_log.entries[key]
+            item = self._active_table.item(row, AC_STATUS)
+            if item is not None:
+                item.setText(entry.state)
+                info = jp.fault_code_lookup(entry.record.code) or {}
+                color = _LEVEL_THEME_KEY.get(info.get('level'), 'danger') if entry.state == '活动' else 'muted'
+                item.setForeground(QBrush(theme.c(color)))
+
+    def _refresh_log_count(self):
+        device = str(self._summary.hist_cnt) if self._summary is not None else '—'
+        self._lbl_hist.setText(f"设备历史: {device} 条 / 本机日志: {len(self._session_log.entries)} 条")
+
+    def clear_session_log(self):
+        # 防止下一轮原样读取设备历史，立即把用户刚清空的旧条目重新填回。
+        self._suppressed_history.update({key: self._session_log.fingerprint(entry.record)
+                                        for key, entry in self._session_log.entries.items()
+                                        if entry.history_seen})
+        self._session_log.clear()
+        self._session_rows.clear()
+        self._history_rows.clear()
+        self._active_table.setRowCount(0)
+        self._hist_table.setRowCount(0)
+        self._history.clear()
+        self._refresh_recent()
+        self._refresh_log_count()
 
     def _append_history_row(self, rec: fd.FaultRecord):
-        table = self._hist_table
-        if table.rowCount() >= _MAX_HIST_FETCH:
+        key = self._session_log.epoch, int(rec.code), int(rec.first_ms)
+        if self._suppressed_history.get(key) == self._session_log.fingerprint(rec):
             return
-        row = table.rowCount()
-        table.insertRow(row)
-        table.setRowHeight(row, 24)
+        entry = self._session_log.observe(rec)
+        if entry is None:
+            return
+        self._render_session_entry(entry)
+        table = self._hist_table
+        row = self._history_rows.get(entry.key)
+        if row is None:
+            row = table.rowCount()
+            table.insertRow(row)
+            self._history_rows[entry.key] = row
         rec_info = jp.fault_code_lookup(rec.code)
         name = rec_info['name'] if rec_info else "—"
         level = rec_info['level'] if rec_info else ""
@@ -1802,9 +1897,8 @@ class FaultInfoPanel(QWidget):
                 it.setForeground(QBrush(status_color))
 
     def _start_history_pull(self, hist_cnt: int):
-        self._hist_table.setRowCount(0)
         cnt = min(int(hist_cnt), _MAX_HIST_FETCH)
-        if cnt > 0:
+        if cnt > 0 and not self._pull_active and not self._pull_queue:
             self._queue_pulls([(fd.TYPE_HISTORY, i) for i in range(cnt)])
 
     def _on_load_history(self):
@@ -1815,7 +1909,6 @@ class FaultInfoPanel(QWidget):
             self._on_read_summary()
             return
         if self._summary.hist_cnt <= 0:
-            self._hist_table.setRowCount(0)
             self._append_recent("历史记录为空")
             return
         self._start_history_pull(self._summary.hist_cnt)
@@ -1908,7 +2001,7 @@ class FaultInfoPanel(QWidget):
 
     # ==================== 配置持久化 ====================
     def get_opts(self) -> dict:
-        opts = {"disable_mask": 0, "current_tab": 0, "auto_refresh": False}
+        opts = {"disable_mask": 0, "current_tab": 0, "auto_refresh": True}
         try:
             opts["disable_mask"] = int(self._disable_mask)
         except Exception:
@@ -1919,6 +2012,7 @@ class FaultInfoPanel(QWidget):
             pass
         try:
             opts["auto_refresh"] = bool(self._chk_auto.isChecked())
+            opts['background_capture'] = bool(self._chk_auto.isChecked())
         except Exception:
             pass
         return opts
@@ -1933,7 +2027,8 @@ class FaultInfoPanel(QWidget):
         except Exception:
             pass
         try:
-            self._chk_auto.setChecked(bool(opts.get("auto_refresh", False)))
+            # 旧版“自动刷新”只影响可见页面；新日志默认在后台采集。
+            self._chk_auto.setChecked(bool(opts.get('background_capture', True)))
         except Exception:
             pass
         try:
@@ -1982,7 +2077,10 @@ class FaultInfoPanel(QWidget):
         self._history.appendleft(f"[{ts}] NACK {cmd_str} err={cn}")
         self._refresh_recent()
         if int(cmd) == int(jp.JmCmd.FAULT_DETAIL) and self._pull_active:
+            if self._pull_request is not None and self._pull_request[0] == fd.TYPE_ACTIVE:
+                self._active_pull_complete = False
             self._pull_active = False
+            self._pull_request = None
             self._pull_timer.stop()
             self._pump_pulls()
 
@@ -1995,7 +2093,7 @@ class FaultInfoPanel(QWidget):
         if not self._history:
             self._lbl_recent.setText("最近: —")
             return
-        recent = list(self._history)[:3]
+        recent = list(islice(self._history, 3))
         self._lbl_recent.setText("最近: " + "  |  ".join(recent))
 
     def _refresh_compat(self):
@@ -2025,29 +2123,32 @@ class FaultInfoPanel(QWidget):
 
     # ==================== 连接状态 / tab 可见性 ====================
     def set_link_active(self, active: bool):
-        """连接状态变化(主窗口 _on_connected 调用)。断连停轮询、禁用操作。"""
+        """断连停采集、禁用设备操作，但保留本机会话日志及手动清空入口。"""
         self._link_active = active
         if active:
             # 已连接且本面板可见时读取基础保护掩码(否则等切回本 Tab/子页时读)
             if self._tab_visible:
                 self.protect_mask_read_requested.emit()
+            if self._chk_auto.isChecked():
+                self._auto_timer.start()
         else:
             self._auto_timer.stop()
             self._apply_timer.stop()
             self._apply_queue.clear()
             self._pull_timer.stop()
             self._pull_active = False
+            self._pull_request = None
             self._pull_queue.clear()
             self._summary = None
             self._top_fsm = None
             self._current_mask = 0
             self._hist_load_pending = False
-            self._active_wall.clear()
-            self._active_table.setRowCount(0)
-            self._hist_table.setRowCount(0)
+            self._session_log.disconnected()
+            self._refresh_session_states()
             self._protect_mask = None
             self._active_codes.clear()
             self._active_codes_new = None
+            self._active_keys_new = None
             self.active_faults_changed.emit([])   # 断连清状态栏故障摘要
             self._set_protect_badge(None)
             for pid in self._fault_masks:
@@ -2071,7 +2172,7 @@ class FaultInfoPanel(QWidget):
                 f"color:{theme.hex('text')}; font-size:13px; border:none;")
             self._lbl_active.setText("活动数: —")
             self._lbl_derate.setText("降功率: —")
-            self._lbl_hist.setText("历史: — 条")
+            self._refresh_log_count()
             self._lbl_compat.setText("遥测兼容掩码: —")
             self._lbl_compat.setStyleSheet(
                 f"color:{theme.hex('muted')}; font-size:11px; border:none;")
@@ -2101,9 +2202,8 @@ class FaultInfoPanel(QWidget):
             self._auto_timer.start()
 
     def pause_auto_refresh(self):
-        """切离本 Tab 时由主窗口调用: 停止自动刷新, 省带宽。"""
+        """切离页面只更新可见性，告警日志继续在后台采集。"""
         self._tab_visible = False
-        self._auto_timer.stop()
 
     def refresh_after_clear(self):
         """0xB0 清除成功 ACK 后由主窗口调用: 立即重读摘要刷新计数/历史。"""
@@ -2111,18 +2211,21 @@ class FaultInfoPanel(QWidget):
             self._on_read_summary()
 
     def _on_read_summary(self):
+        if self._pull_active or self._pull_queue:
+            return  # 上一批详情尚在途，避免叠加轮询或打断活动集合重建。
         self.state_requested.emit()
         self.fault_summary_requested.emit()
 
     def _on_auto_toggled(self, checked: bool):
-        if checked and self._link_active and self._tab_visible:
-            self._on_read_summary()
+        if checked and self._link_active:
+            if self._tab_visible:
+                self._on_read_summary()
             self._auto_timer.start()
         else:
             self._auto_timer.stop()
 
     def _on_auto_tick(self):
-        if not (self._link_active and self._tab_visible and self._chk_auto.isChecked()):
+        if not (self._link_active and self._chk_auto.isChecked()):
             self._auto_timer.stop()
             return
         self._on_read_summary()
@@ -2183,6 +2286,7 @@ class FaultInfoPanel(QWidget):
         self._refresh_compat()
         if self._summary is not None:
             self._refresh_summary()
-            self._active_table.setRowCount(self._summary.active_cnt)
         else:
             self._refresh_status_card()
+        for entry in self._session_log.entries.values():
+            self._render_session_entry(entry)

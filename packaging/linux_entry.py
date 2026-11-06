@@ -105,6 +105,35 @@ if os.environ.get("JM_PACKAGE_SMOKE_TEST") == "1":
                 panels = windows[0].findChildren(ConnectionPanel)
                 assert panels and panels[0]._combo_transport.findData("can") >= 0
                 report["can"] = verify_can(self)
+                from ui.feature_flags import is_enabled
+                if is_enabled('fault_info'):
+                    from jmproto import fault_diag as fd, TopFsm
+                    panel = windows[0]._fault_info_panel
+                    panel.set_link_active(True)
+                    panel.update_state(int(TopFsm.IDLE), 0, 0, 0)
+                    warning = fd.FaultRecord(code=0x3303, status=fd.STATUS_ACTIVE,
+                                             count=1, first_ms=100, last_ms=200, value=90.)
+                    panel.on_summary_received(fd.FaultSummary(
+                        top_code=warning.code, active_cnt=1, hist_cnt=1,
+                        level_active=fd.LEVEL_WARNING_BIT))
+                    panel.on_detail_received(fd.TYPE_ACTIVE, 0, warning)
+                    panel.on_detail_received(fd.TYPE_HISTORY, 0, warning)
+                    assert panel._active_table.rowCount() == 1
+                    panel.on_summary_received(fd.FaultSummary(hist_cnt=1))
+                    panel.on_detail_received(fd.TYPE_HISTORY, 0, warning)
+                    assert panel._active_table.rowCount() == 1
+                    panel.set_link_active(False)
+                    assert panel._active_table.rowCount() == 1
+                    panel.set_link_active(True)
+                    panel.on_summary_received(fd.FaultSummary())
+                    assert panel._active_table.rowCount() == 1
+                    assert panel._hist_table.rowCount() == 1
+                    panel.clear_session_log()
+                    assert panel._active_table.rowCount() == panel._hist_table.rowCount() == 0
+                    panel.set_link_active(False)
+                    report['fault_log'] = {'result': 'passed', 'warning_recorded': True,
+                                           'recovery_retained': True, 'disconnect_retained': True,
+                                           'device_history_reset_retained': True, 'manual_clear_verified': True}
                 config = (Path(os.environ["APPDATA"]) / "JMStudio" if sys.platform == "win32"
                           else Path(os.environ["XDG_CONFIG_HOME"]) / "jm-studio")
                 assert Path(layout_store.path()).parent == config

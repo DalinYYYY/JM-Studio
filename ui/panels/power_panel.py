@@ -49,6 +49,7 @@ from PyQt6.QtWidgets import (
 
 from ui.theme import theme
 from ui.panels.plot_panel import _SeriesBuffer
+from ui.curve_export import export_curve_csv, write_curve_csv
 
 try:
     import pyqtgraph as pg
@@ -268,6 +269,7 @@ class PowerPanel(QWidget):
         bar = QWidget()
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(0, 0, 0, 0)
+        view = lay
         lay.setSpacing(6)
 
         tag = QLabel("母线电气量:")
@@ -278,6 +280,7 @@ class PowerPanel(QWidget):
         self._spin_bus_depth = QSpinBox()
         self._spin_bus_depth.setRange(1000, 600000)
         self._spin_bus_depth.setSingleStep(1000)
+        self._spin_bus_depth.setKeyboardTracking(False)
         self._spin_bus_depth.setValue(self._bus_depth)
         self._spin_bus_depth.setFixedWidth(90)
         self._spin_bus_depth.valueChanged.connect(self._on_bus_depth_changed)
@@ -295,24 +298,24 @@ class PowerPanel(QWidget):
 
         self._btn_bus_pause = self._view_button("暂停")
         self._btn_bus_pause.toggled.connect(self._on_bus_pause_toggled)
-        lay.addWidget(self._btn_bus_pause)
+        view.addWidget(self._btn_bus_pause)
 
         self._btn_bus_global = self._view_button("全局", "显示全部存储数据(整条曲线), 再点一次恢复跟随")
         self._btn_bus_global.toggled.connect(self._on_bus_global_toggled)
-        lay.addWidget(self._btn_bus_global)
+        view.addWidget(self._btn_bus_global)
 
         self._btn_bus_follow = self._view_button("跟随", "右端固定最新时刻, 左端随显示窗口滑动")
         self._btn_bus_follow.setChecked(True)
         self._btn_bus_follow.setStyleSheet(self._STYLE_ON)
         self._btn_bus_follow.toggled.connect(self._on_bus_follow_toggled)
-        lay.addWidget(self._btn_bus_follow)
+        view.addWidget(self._btn_bus_follow)
 
         self._btn_bus_auto_y = self._view_button("Y自适应", "电压/电流左轴自动适配可视区")
         self._btn_bus_auto_y.setChecked(True)
         self._btn_bus_auto_y.setStyleSheet(self._STYLE_ON)
         self._btn_bus_auto_y.toggled.connect(
             lambda on: self._set_bus_auto_y(on, style=True))
-        lay.addWidget(self._btn_bus_auto_y)
+        view.addWidget(self._btn_bus_auto_y)
 
         self._btn_bus_auto_power_y = self._view_button(
             "功率Y自适应", "功率右轴自动适配可视区(在功率轴上滚轮缩放/拖拽平移后自动停)")
@@ -320,7 +323,16 @@ class PowerPanel(QWidget):
         self._btn_bus_auto_power_y.setStyleSheet(self._STYLE_ON)
         self._btn_bus_auto_power_y.toggled.connect(
             lambda on: self._set_bus_auto_power_y(on, style=True))
-        lay.addWidget(self._btn_bus_auto_power_y)
+        view.addWidget(self._btn_bus_auto_power_y)
+        self._btn_bus_export = self._view_button("导出CSV", "导出母线电压、电流、功率的全部缓存历史")
+        self._btn_bus_export.setCheckable(False)
+        self._btn_bus_export.clicked.connect(lambda: export_curve_csv(
+            self, self._btn_bus_export, '母线功率', self._bus_csv_snapshot, 'time_s'))
+        lay.addWidget(self._btn_bus_export)
+        self._btn_bus_clear = self._view_button("清空历史", "清空母线图的历史数据和波形")
+        self._btn_bus_clear.setCheckable(False)
+        self._btn_bus_clear.clicked.connect(self.clear_bus)
+        lay.addWidget(self._btn_bus_clear)
         return bar
 
     def _build_temp_bar(self) -> QWidget:
@@ -328,6 +340,7 @@ class PowerPanel(QWidget):
         bar = QWidget()
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(0, 0, 0, 0)
+        view = lay
         lay.setSpacing(6)
 
         tag = QLabel("温度监控:")
@@ -355,6 +368,7 @@ class PowerPanel(QWidget):
         self._spin_temp_depth = QSpinBox()
         self._spin_temp_depth.setRange(100, 600000)
         self._spin_temp_depth.setSingleStep(100)
+        self._spin_temp_depth.setKeyboardTracking(False)
         self._spin_temp_depth.setValue(self._temp_depth)
         self._spin_temp_depth.setFixedWidth(90)
         self._spin_temp_depth.valueChanged.connect(self._on_temp_depth_changed)
@@ -372,24 +386,33 @@ class PowerPanel(QWidget):
 
         self._btn_temp_pause = self._view_button("暂停")
         self._btn_temp_pause.toggled.connect(self._on_temp_pause_toggled)
-        lay.addWidget(self._btn_temp_pause)
+        view.addWidget(self._btn_temp_pause)
 
         self._btn_temp_global = self._view_button("全局", "显示全部存储数据(整条曲线), 再点一次恢复跟随")
         self._btn_temp_global.toggled.connect(self._on_temp_global_toggled)
-        lay.addWidget(self._btn_temp_global)
+        view.addWidget(self._btn_temp_global)
 
         self._btn_temp_follow = self._view_button("跟随", "右端固定最新时刻, 左端随显示窗口滑动")
         self._btn_temp_follow.setChecked(True)
         self._btn_temp_follow.setStyleSheet(self._STYLE_ON)
         self._btn_temp_follow.toggled.connect(self._on_temp_follow_toggled)
-        lay.addWidget(self._btn_temp_follow)
+        view.addWidget(self._btn_temp_follow)
 
         self._btn_temp_auto_y = self._view_button("Y自适应", "温度轴自动适配可视区")
         self._btn_temp_auto_y.setChecked(True)
         self._btn_temp_auto_y.setStyleSheet(self._STYLE_ON)
         self._btn_temp_auto_y.toggled.connect(
             lambda on: self._set_temp_auto_y(on, style=True))
-        lay.addWidget(self._btn_temp_auto_y)
+        view.addWidget(self._btn_temp_auto_y)
+        self._btn_temp_export = self._view_button("导出CSV", "导出电机、MOS 温度的全部缓存历史")
+        self._btn_temp_export.setCheckable(False)
+        self._btn_temp_export.clicked.connect(lambda: export_curve_csv(
+            self, self._btn_temp_export, '温度曲线', self._temp_csv_snapshot, 'time_s'))
+        lay.addWidget(self._btn_temp_export)
+        self._btn_temp_clear = self._view_button("清空历史", "清空温度图的历史数据和波形")
+        self._btn_temp_clear.setCheckable(False)
+        self._btn_temp_clear.clicked.connect(self.clear_temperature)
+        lay.addWidget(self._btn_temp_clear)
         return bar
 
     def _build_plots(self):
@@ -427,6 +450,8 @@ class PowerPanel(QWidget):
         self._vb_power.setMouseEnabled(False, False)
         self._power_axis.bind(self._vb_power)
         self._curve_power = pg.PlotDataItem(pen=pen_power, name="Power (W)")
+        self._curve_power.setClipToView(True)
+        self._curve_power.setDownsampling(auto=True, method='peak')
         self._vb_power.addItem(self._curve_power)
         if self._bus_plot.legend is not None:
             self._bus_plot.legend.addItem(self._curve_power, "Power (W)")
@@ -449,10 +474,12 @@ class PowerPanel(QWidget):
 
         self._apply_axis_labels()
         for plot in (self._bus_plot, self._temp_plot):
+            plot.disableAutoRange()
             for ax_name in ('left', 'right', 'bottom'):
                 ax = plot.getAxis(ax_name)
                 ax.setPen(axis_pen)
                 ax.setTextPen(text_col)
+        self._vb_power.disableAutoRange()
 
         # 手动缩放/拖拽检测: 被改动的轴自动退出对应图的自动模式
         self._bus_plot.vb.sigRangeChangedManually.connect(
@@ -693,6 +720,7 @@ class PowerPanel(QWidget):
         if step <= 0:
             step = 0.001
 
+        latest = {}
         for i, fb in enumerate(fb_list):
             t_monotonic = t_start + step * (i + 1)
             if self._t0 is None:
@@ -706,11 +734,11 @@ class PowerPanel(QWidget):
                                  fb.ibus if 'ibus' in filled else float('nan'),
                                  fb.power if 'power' in filled else float('nan'))
                 if 'vbus' in filled:
-                    self._update_rt('vbus', fb.vbus, "{:.2f}")
+                    latest['vbus'] = (fb.vbus, "{:.2f}")
                 if 'ibus' in filled:
-                    self._update_rt('ibus', fb.ibus, "{:.3f}")
+                    latest['ibus'] = (fb.ibus, "{:.3f}")
                 if 'power' in filled:
-                    self._update_rt('power', fb.power, "{:.2f}")
+                    latest['power'] = (fb.power, "{:.2f}")
 
             if 'temp_fet' in filled or 'temp_motor' in filled:
                 # 降采样: 与上一入库点间隔 >= 采集周期/2 才入库, 统一存储节拍
@@ -721,14 +749,53 @@ class PowerPanel(QWidget):
                     self._buf_temp_fet.append(
                         t, fb.temp_fet if 'temp_fet' in filled else float('nan'))
                 if 'temp_fet' in filled:
-                    self._update_rt('temp_fet', fb.temp_fet, "{:.1f}")
+                    latest['temp_fet'] = (fb.temp_fet, "{:.1f}")
                 if 'temp_motor' in filled:
-                    self._update_rt('temp_motor', fb.temp_motor, "{:.1f}")
+                    latest['temp_motor'] = (fb.temp_motor, "{:.1f}")
+        for key, (value, fmt) in latest.items():
+            self._update_rt(key, value, fmt)
 
     def _append_bus(self, t: float, vbus: float, ibus: float, power: float):
         self._buf_vbus.append(t, vbus)
         self._buf_ibus.append(t, ibus)
         self._buf_power.append(t, power)
+
+    def _bus_csv_snapshot(self):
+        return [(name, buf.arrays_view()) for name, buf in (
+            ('vbus_V', self._buf_vbus), ('ibus_A', self._buf_ibus), ('power_W', self._buf_power))]
+
+    def _temp_csv_snapshot(self):
+        return [(name, buf.arrays_view()) for name, buf in (
+            ('temp_motor_C', self._buf_temp_motor), ('temp_fet_C', self._buf_temp_fet))]
+
+    def _write_bus_csv(self, path):
+        write_curve_csv(path, self._bus_csv_snapshot(), 'time_s')
+
+    def _write_temperature_csv(self, path):
+        write_curve_csv(path, self._temp_csv_snapshot(), 'time_s')
+
+    def clear_bus(self):
+        for buf in (self._buf_vbus, self._buf_ibus, self._buf_power):
+            buf.clear()
+        for key in ('vbus', 'ibus', 'power'):
+            self._rt_labels[key][0].setText('--')
+        if pg is not None:
+            for curve in (self._curve_vbus, self._curve_ibus, self._curve_power):
+                curve.setData([], [])
+        self._set_bus_follow(True)
+        self._refresh(force=True)
+
+    def clear_temperature(self):
+        self._last_temp_t = None
+        for buf in (self._buf_temp_motor, self._buf_temp_fet):
+            buf.clear()
+        for key in ('temp_motor', 'temp_fet'):
+            self._rt_labels[key][0].setText('--')
+        if pg is not None:
+            self._curve_temp_motor.setData([], [])
+            self._curve_temp_fet.setData([], [])
+        self._set_temp_follow(True)
+        self._refresh(force=True)
 
     def _update_rt(self, key: str, value, fmt: str):
         entry = self._rt_labels.get(key)
@@ -764,13 +831,8 @@ class PowerPanel(QWidget):
 
     # ==================== 刷新 ====================
     def _set_data(self, curve, buf, t_min: float, t_max: float):
-        ts, ys = buf.arrays(t_min if t_min > 0 else None)
-        if len(ts) == 0:
-            return
-        try:
-            curve.setData(ts, ys, avoidCopy=True)
-        except TypeError:
-            curve.setData(ts, ys)
+        ts, ys = buf.arrays_view(t_min, t_max)
+        curve.setData(ts, ys)
 
     def _refresh(self, force: bool = False):
         # 可见性兜底: 后台运行时数据只入库不绘图(timer 已停, 此处防初始未激活等场景)
@@ -812,11 +874,11 @@ class PowerPanel(QWidget):
                 else:
                     # 手动浏览: 数据起点取可视起点与窗口起点的较早者, 窗口外也有数据
                     t_bus_start = min(self._bus_plot.viewRange()[0][0], win_start)
-                self._set_data(self._curve_vbus, self._buf_vbus, t_bus_start, t_bus_end)
-                self._set_data(self._curve_ibus, self._buf_ibus, t_bus_start, t_bus_end)
-                self._set_data(self._curve_power, self._buf_power, t_bus_start, t_bus_end)
                 # Y 自适应基于本帧最新可视范围(setXRange 之后)
                 vx0, vx1 = self._bus_plot.viewRange()[0]
+                self._set_data(self._curve_vbus, self._buf_vbus, vx0, vx1)
+                self._set_data(self._curve_ibus, self._buf_ibus, vx0, vx1)
+                self._set_data(self._curve_power, self._buf_power, vx0, vx1)
                 if self._bus_auto_y and do_auto_y:
                     self._auto_range_y_bus(vx0, vx1)
                 # 功率右轴独立自适应可视区(Ctrl+滚轮手动缩放后自动停)
@@ -842,11 +904,9 @@ class PowerPanel(QWidget):
                     self._temp_set_x = tuple(self._temp_plot.viewRange()[0])
                 else:
                     t_temp_start = min(self._temp_plot.viewRange()[0][0], win_start)
-                self._set_data(self._curve_temp_motor, self._buf_temp_motor,
-                               t_temp_start, t_temp_end)
-                self._set_data(self._curve_temp_fet, self._buf_temp_fet,
-                               t_temp_start, t_temp_end)
                 vx0, vx1 = self._temp_plot.viewRange()[0]
+                self._set_data(self._curve_temp_motor, self._buf_temp_motor, vx0, vx1)
+                self._set_data(self._curve_temp_fet, self._buf_temp_fet, vx0, vx1)
                 if self._temp_auto_y and do_auto_y:
                     self._auto_range_y_temp(vx0, vx1)
             self._buf_temp_motor.dirty = False
@@ -854,14 +914,10 @@ class PowerPanel(QWidget):
 
     @staticmethod
     def _y_range(buf, t_min: float, t_max: float = None):
-        ts, ys = buf.arrays(t_min if t_min > 0 else None)
+        ts, ys = buf.arrays_view(t_min, t_max)
         if not len(ys):
             return None
-        if t_max is not None:
-            ys = ys[ts <= t_max]
-            if not len(ys):
-                return None
-        finite = ys[~np.isnan(ys)]
+        finite = ys[np.isfinite(ys)]
         if not len(finite):
             return None
         y0, y1 = float(finite.min()), float(finite.max())

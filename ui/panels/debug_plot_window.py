@@ -135,6 +135,7 @@ class DebugPlotWindow(QWidget):
         self._curves: dict[str, pg.PlotDataItem] = {}
         self._latest_idx: float | None = None
         self._auto_range_counter: int = 0
+        self._setting_x = False
 
         self._build()
 
@@ -238,6 +239,7 @@ class DebugPlotWindow(QWidget):
         self._plot.vb.setMenuEnabled(False)
         self._plot.setClipToView(True)
         self._plot.setDownsampling(auto=True, mode='peak')
+        self._plot.disableAutoRange()
         self._plot.setDefaultPadding(0.01)
         self._plot.addLegend(offset=(4, 4))
         if self._plot.legend is not None:
@@ -262,14 +264,14 @@ class DebugPlotWindow(QWidget):
 
         # 鼠标移动信号
         self._mouse_proxy = pg.SignalProxy(
-            self._glw.scene().sigMouseMoved, rateLimit=60,
+            self._glw.scene().sigMouseMoved, rateLimit=30,
             slot=self._on_mouse_moved)
 
         # 刷新定时器
         self._timer = QTimer(self)
-        self._timer.setInterval(30)
+        self._timer.setInterval(40)
         self._timer.timeout.connect(self._refresh)
-        self._timer.start()
+        self._plot.vb.sigRangeChangedManually.connect(self._on_manual_range)
 
     # ------------------------------------------------------------------
     # 数据喂入
@@ -499,14 +501,10 @@ class DebugPlotWindow(QWidget):
     @staticmethod
     def _slice_x_range(buf: _SeriesBuffer, x_min=None, x_max=None):
         """读取指定 X 范围的数据，支持非跟随模式回看历史。"""
-        ts, ys = buf.arrays_view(x_min)
-        if x_max is not None and len(ts):
-            end = int(np.searchsorted(ts, float(x_max), side='right'))
-            ts, ys = ts[:end], ys[:end]
-        return ts, ys
+        return buf.arrays_view(x_min, x_max)
 
     def _refresh(self, force: bool = False):
-        if pg is None or (self._paused and not force):
+        if pg is None or not self.isVisible() or (self._paused and not force):
             return
         if not self._any_dirty() and not force:
             return
@@ -531,11 +529,10 @@ class DebugPlotWindow(QWidget):
         for name, buf in self._buffers.items():
             if force or buf.dirty:
                 curve = self._curves.get(name)
-                if curve is None:
+                if curve is None or not curve.isVisible():
                     continue
                 ts, ys = self._slice_x_range(
-                    buf, tail_min if follow else None,
-                    None)
+                    buf, view_min, view_max)
                 if len(ts) == 0:
                     curve.setData([], [])
                     buf.dirty = False
@@ -547,7 +544,11 @@ class DebugPlotWindow(QWidget):
                 buf.dirty = False
 
         if follow:
-            self._plot.setXRange(view_min, view_max, padding=0.02)
+            self._setting_x = True
+            try:
+                self._plot.setXRange(view_min, view_max, padding=0.02)
+            finally:
+                self._setting_x = False
 
         if self._chk_auto_y.isChecked():
             self._auto_range_counter += 1
@@ -556,6 +557,11 @@ class DebugPlotWindow(QWidget):
                 self._auto_range_y(
                     tail_min if follow else view_min,
                     view_max if not follow else view_max)
+
+    def _on_manual_range(self, *_):
+        if not self._setting_x:
+            self._chk_follow.setChecked(False)
+            self._refresh(force=True)
 
     def _auto_range_y(self, idx_min: float | None, idx_max: float | None = None):
         y0 = None
@@ -706,6 +712,17 @@ class DebugPlotWindow(QWidget):
     # ------------------------------------------------------------------
     # 窗口关闭
     # ------------------------------------------------------------------
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, '_timer'):
+            self._timer.start()
+            self._refresh(force=True)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if hasattr(self, '_timer'):
+            self._timer.stop()
 
     def closeEvent(self, event):
         if hasattr(self, '_timer') and self._timer is not None:

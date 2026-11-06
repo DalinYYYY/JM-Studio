@@ -4,12 +4,7 @@
 位置、速度、电流、机械角度。
 支持窗口点数、暂停、跟随、Y 轴自适应、曲线显隐与鼠标悬停读数。
 
-性能优化要点:
-- _SeriesBuffer 使用预分配 numpy 环形缓冲区, 零分配追加, 惰性时间顺序缓存
-- _refresh() 通过脏标记跳过无新数据时的重绘
-- _latest_idx 增量更新, 避免每帧扫描全部 buffer
-- Y 轴自适应每 ~300ms 计算一次(10 帧 @ 30ms)
-- interpolate() 复用缓存数组, 避免鼠标悬停时的重复转换
+采集与绘图解耦；仅复制可视区数据，隐藏时保留采集并停止绘图。
 """
 
 from dataclasses import dataclass
@@ -25,6 +20,7 @@ from PyQt6.QtWidgets import (
 
 from ui.theme import theme
 from ui.display_filter import MovingAverageAngle, MovingAverage
+from ui.curve_export import export_curve_csv, write_curve_csv
 
 try:
     import pyqtgraph as pg
@@ -33,27 +29,20 @@ except Exception:  # pragma: no cover - fallback for environments without pyqtgr
 
 
 if pg is not None:
-    # 大数据量性能优化: 关闭抗锯齿(绘制耗时降低 2-5 倍), 尝试启用 OpenGL(GPU 加速)
-    try:
-        pg.setConfigOptions(antialias=False, useOpenGL=True)
-    except Exception:
-        pg.setConfigOptions(antialias=False)
+    # 双 ViewBox、虚线和填充曲线统一使用软件绘制，避免全局 GL 配置影响其他窗口。
+    pg.setConfigOptions(antialias=False, useOpenGL=False)
 
 
 @dataclass
 class _SeriesBuffer:
-    """预分配 numpy 环形缓冲区, append O(1) 无内存分配, 惰性时间顺序缓存.
-
-    性能优化:
-      - float32 替代 float64 (带宽减半, 精度对电机反馈足够)
-      - append_batch 批量写入 (向量化, 单次失效缓存)
-      - arrays_view 零拷贝读取 (供 pyqtgraph setData avoidCopy)
-    """
+    """预分配环形缓冲；按范围生成稳定快照，追加时失效快照。"""
 
     maxlen: int
 
     def __post_init__(self):
         n = int(self.maxlen)
+        if n <= 0:
+            raise ValueError("buffer capacity must be positive")
         # float32: 精度对电机反馈(rad/A/V)足够, 带宽减半
         self._ts = np.full(n, np.nan, dtype=np.float32)
         self._ys = np.full(n, np.nan, dtype=np.float32)
@@ -82,6 +71,8 @@ class _SeriesBuffer:
             ts_arr, ys_arr: 长度相同的一维数组, 顺序写入
         """
         n_in = len(ts_arr)
+        if n_in != len(ys_arr):
+            raise ValueError("timestamps and values must have equal length")
         if n_in == 0:
             return
         # 确保输入是 float32 (必要时拷贝转换, 但通常已是 float32)
@@ -91,6 +82,14 @@ class _SeriesBuffer:
             ys_arr = ys_arr.astype(np.float32)
         cap = self._maxlen
         head = self._head
+        if n_in >= cap:
+            self._ts[:] = ts_arr[-cap:]
+            self._ys[:] = ys_arr[-cap:]
+            self._head = 0
+            self._count = cap
+            self._cache_ts = self._cache_ys = None
+            self.dirty = True
+            return
         # 情况1: 一次写满不超过尾部, 直接切片拷贝
         if head + n_in <= cap:
             self._ts[head:head + n_in] = ts_arr
@@ -101,19 +100,8 @@ class _SeriesBuffer:
             self._ts[head:cap] = ts_arr[:first]
             self._ys[head:cap] = ys_arr[:first]
             second = n_in - first
-            if second <= cap:
-                self._ts[:second] = ts_arr[first:]
-                self._ys[:second] = ys_arr[first:]
-            else:
-                # 输入超过容量: 只保留最后 cap 个
-                self._ts[:] = ts_arr[n_in - cap:]
-                self._ys[:] = ys_arr[n_in - cap:]
-                self._head = 0
-                self._count = cap
-                self._cache_ts = None
-                self._cache_ys = None
-                self.dirty = True
-                return
+            self._ts[:second] = ts_arr[first:]
+            self._ys[:second] = ys_arr[first:]
         self._head = (head + n_in) % cap
         new_count = min(self._count + n_in, cap)
         self._count = new_count
@@ -131,81 +119,44 @@ class _SeriesBuffer:
         self._cache_ys = None
         self.dirty = True
 
-    def _build_cache(self):
-        """惰性构建时间顺序数组.
+    def arrays(self, idx_min: float = None, idx_max: float = None):
+        """返回 (ts, ys) 拷贝, 安全用于 pyqtgraph setData."""
+        ts, ys = self.arrays_view(idx_min, idx_max)
+        return ts.copy(), ys.copy()
 
-        优化:
-          - 未满缓冲时返回 view (零拷贝)
-          - 满缓冲时用 np.concatenate 拼接两段 (比 fancy-index 快 6 倍:
-            0.23ms vs 1.48ms @ 30万点)
+    def arrays_view(self, idx_min: float = None, idx_max: float = None):
+        """从环形缓冲的两段有序区间二分裁剪，只复制需要显示的点。
+
+        返回独立快照，后续 append/覆盖不影响 pyqtgraph 持有的数据。
+        同一批数据、同一范围复用快照，Y 自适应无需重复复制。
         """
-        c = self._count
-        if c == 0:
+        bounds = (idx_min, idx_max)
+        if self._cache_ts is not None and getattr(self, '_cache_bounds', None) == bounds:
+            return self._cache_ts, self._cache_ys
+        start = (self._head - self._count) % self._maxlen
+        first = min(self._count, self._maxlen - start)
+        ts_parts, ys_parts = [], []
+        for offset, count in ((start, first), (0, self._count - first)):
+            if not count:
+                continue
+            ts = self._ts[offset:offset + count]
+            # 与缓冲 dtype 一致，避免 numpy 为 float64 标量临时转换整段 float32。
+            lo = 0 if idx_min is None else int(np.searchsorted(ts, np.float32(idx_min), side='left'))
+            hi = count if idx_max is None else int(np.searchsorted(ts, np.float32(idx_max), side='right'))
+            if lo < hi:
+                ts_parts.append(ts[lo:hi])
+                ys_parts.append(self._ys[offset + lo:offset + hi])
+        if not ts_parts:
             self._cache_ts = np.empty(0, dtype=np.float32)
             self._cache_ys = np.empty(0, dtype=np.float32)
-            return
-        if c < self._maxlen:
-            # 未满: 直接切片 view, 零拷贝
-            self._cache_ts = self._ts[:c]
-            self._cache_ys = self._ys[:c]
+        elif len(ts_parts) == 1:
+            self._cache_ts = ts_parts[0].copy()
+            self._cache_ys = ys_parts[0].copy()
         else:
-            # 满缓冲: concatenate 两段 (head: 和 :head), 时间顺序正确
-            # 比 fancy-index (idx = (head+arange)%cap; ts[idx]) 快 6 倍
-            # 注: concatenate 总是返回新数组 (独立内存), 安全供 avoidCopy 使用
-            h = self._head
-            self._cache_ts = np.concatenate([self._ts[h:], self._ts[:h]])
-            self._cache_ys = np.concatenate([self._ys[h:], self._ys[:h]])
-
-    @property
-    def _ts_view(self):
-        """返回时间顺序数组(惰性构建, 无额外拷贝)."""
-        if self._cache_ts is None:
-            self._build_cache()
-        return self._cache_ts
-
-    @property
-    def _ys_view(self):
-        if self._cache_ys is None:
-            self._build_cache()
-        return self._cache_ys
-
-    def arrays(self, idx_min: float = None):
-        """返回 (ts, ys) 拷贝, 安全用于 pyqtgraph setData."""
-        ts = self._ts_view
-        ys = self._ys_view
-        if len(ts) == 0:
-            return ts, ys
-        if idx_min is None:
-            return ts.copy(), ys.copy()
-        i = int(np.searchsorted(ts, idx_min, side='left'))
-        if i >= len(ts):
-            return np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float32)
-        return ts[i:].copy(), ys[i:].copy()
-
-    def arrays_view(self, idx_min: float = None):
-        """返回 (ts, ys) 视图 (零拷贝), 仅供主线程同步调用且不修改返回数组.
-
-        优化策略:
-          - 满缓冲时 _ts_view 是 fancy-index 出的独立数组 (setData 安全, avoidCopy 可用)
-          - 未满缓冲时切片 view 指向底层 ring buffer, 后续 append 会修改该内存,
-            故此时退化为 copy (避免 setData 后数据被改写)
-        """
-        ts = self._ts_view
-        ys = self._ys_view
-        if len(ts) == 0:
-            return ts, ys
-        # 满缓冲时 cache 是独立数组, 未满时是切片 view (不安全, 需 copy)
-        need_copy = self._count < self._maxlen
-        if idx_min is None:
-            if need_copy:
-                return ts.copy(), ys.copy()
-            return ts, ys
-        i = int(np.searchsorted(ts, idx_min, side='left'))
-        if i >= len(ts):
-            return np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float32)
-        if need_copy:
-            return ts[i:].copy(), ys[i:].copy()
-        return ts[i:], ys[i:]
+            self._cache_ts = np.concatenate(ts_parts)
+            self._cache_ys = np.concatenate(ys_parts)
+        self._cache_bounds = bounds
+        return self._cache_ts, self._cache_ys
 
     def last_time(self):
         """返回最新时间戳, O(1)."""
@@ -222,20 +173,25 @@ class _SeriesBuffer:
         return float(self._ts[self._head])
 
     def interpolate(self, t: float):
-        """在时间 t 处线性插值, 复用缓存数组."""
-        ts = self._ts_view
-        ys = self._ys_view
-        if len(ts) == 0:
+        """在环形缓冲上直接二分，仅访问相邻两点。"""
+        count = self._count
+        if not count:
             return None
-        if len(ts) == 1:
-            return float(ys[0])
-        if t <= ts[0]:
-            return float(ys[0])
-        if t >= ts[-1]:
-            return float(ys[-1])
-        i = int(np.searchsorted(ts, t, side='left'))
-        x0, x1 = ts[i - 1], ts[i]
-        y0, y1 = ys[i - 1], ys[i]
+        start = (self._head - count) % self._maxlen
+        lo, hi = 0, count
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self._ts[(start + mid) % self._maxlen] < t:
+                lo = mid + 1
+            else:
+                hi = mid
+        if lo == 0:
+            return float(self._ys[start])
+        if lo == count:
+            return float(self._ys[(self._head - 1) % self._maxlen])
+        i0, i1 = (start + lo - 1) % self._maxlen, (start + lo) % self._maxlen
+        x0, x1 = self._ts[i0], self._ts[i1]
+        y0, y1 = self._ys[i0], self._ys[i1]
         if x1 == x0:
             return float(y0)
         k = (t - x0) / (x1 - x0)
@@ -247,9 +203,8 @@ class PlotPanel(QWidget):
 
     debug_window_toggled = pyqtSignal(bool)  # 调试通道复选框状态变化
 
-    # 缓冲区容量: 30 万点/曲线 (30 万 × 9 曲线 × 8B = 21.6 MB, 内存可接受)
-    # 以 1kHz 采样可保留 300 秒历史, 以 10kHz 保留 30 秒
-    MAX_POINTS = 300_000
+    MAX_POINTS = 2_000_000
+    _DEFAULT_BUFFER_POINTS = 300_000
     _AUTO_RANGE_EVERY = 10       # Y 轴自适应节流: 每 N 帧执行一次
 
     def __init__(self, parent=None):
@@ -257,23 +212,12 @@ class PlotPanel(QWidget):
         self._point_index = 0       # 全局数据点编号计数器
         self._paused = False
         self._window_points = 2000  # 窗口显示的数据点数
+        self._buffer_points = self._DEFAULT_BUFFER_POINTS
         self._syncing_x = False
         self._plot_states = {}
-        self._buffers = {
-            'pos': _SeriesBuffer(self.MAX_POINTS),
-            'pos_ref': _SeriesBuffer(self.MAX_POINTS),
-            'vel': _SeriesBuffer(self.MAX_POINTS),
-            'vel_ref': _SeriesBuffer(self.MAX_POINTS),
-            'id': _SeriesBuffer(self.MAX_POINTS),
-            'id_ref': _SeriesBuffer(self.MAX_POINTS),
-            'iq': _SeriesBuffer(self.MAX_POINTS),
-            'iq_ref': _SeriesBuffer(self.MAX_POINTS),
-            'ibus': _SeriesBuffer(self.MAX_POINTS),
-            'ia': _SeriesBuffer(self.MAX_POINTS),
-            'ib': _SeriesBuffer(self.MAX_POINTS),
-            'ic': _SeriesBuffer(self.MAX_POINTS),
-            'angle': _SeriesBuffer(self.MAX_POINTS),
-        }
+        self._buffers = {name: _SeriesBuffer(self._buffer_points) for name in (
+            'pos', 'pos_ref', 'vel', 'vel_ref', 'id', 'id_ref', 'iq', 'iq_ref',
+            'ibus', 'ia', 'ib', 'ic', 'angle')}
         self._plots = {}
         self._extra_buffers = {}
         self._current_series_order = (
@@ -312,8 +256,13 @@ class PlotPanel(QWidget):
             return
 
         toolbar = QWidget()
-        bar = QHBoxLayout(toolbar)
-        bar.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout = QVBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(2)
+        bar = QHBoxLayout()
+        toolbar_layout.addLayout(bar)
+        current_bar = QHBoxLayout()
+        toolbar_layout.addLayout(current_bar)
         bar.setSpacing(4)
 
         self._btn_pause = QPushButton("暂停")
@@ -332,19 +281,34 @@ class PlotPanel(QWidget):
 
         bar.addWidget(QLabel("窗口(点):"))
         self._spin_window = QSpinBox()
-        self._spin_window.setRange(100, 50000)
+        self._spin_window.setRange(100, self._buffer_points)
+        self._spin_window.setAccelerated(True)
+        self._spin_window.setKeyboardTracking(False)
         self._spin_window.setValue(self._window_points)
         self._spin_window.setFixedWidth(108)
         self._spin_window.valueChanged.connect(self._on_window_changed)
         bar.addWidget(self._spin_window)
 
-        bar.addWidget(QLabel("电流:"))
+        bar.addWidget(QLabel("缓存(点):"))
+        self._spin_buffer = QSpinBox()
+        self._spin_buffer.setRange(1000, self.MAX_POINTS)
+        self._spin_buffer.setSingleStep(10000)
+        self._spin_buffer.setAccelerated(True)
+        self._spin_buffer.setKeyboardTracking(False)
+        self._spin_buffer.setValue(self._buffer_points)
+        self._spin_buffer.setFixedWidth(108)
+        self._spin_buffer.setToolTip("每条曲线的历史容量；调整后保留尾部数据，最高 200 万点")
+        self._spin_buffer.valueChanged.connect(self._on_buffer_changed)
+        bar.addWidget(self._spin_buffer)
+
+        current_bar.addWidget(QLabel("电流:"))
         for name in self._current_series_order:
             chk = QCheckBox(self._current_series_labels[name])
             chk.setChecked(True)
             chk.toggled.connect(self._sync_current_visibility)
             self._current_checks[name] = chk
-            bar.addWidget(chk)
+            current_bar.addWidget(chk)
+        current_bar.addStretch()
 
         self._btn_reset = QPushButton("重置视图")
         self._btn_reset.setFixedHeight(22)
@@ -361,6 +325,13 @@ class PlotPanel(QWidget):
         self._btn_clear.clicked.connect(self.clear)
         bar.addWidget(self._btn_clear)
 
+        self._btn_export = QPushButton("导出CSV")
+        self._btn_export.setFixedHeight(22)
+        self._btn_export.setToolTip("导出全部缓存历史，包含隐藏曲线与目标值；横轴为数据点编号")
+        self._btn_export.clicked.connect(lambda: export_curve_csv(
+            self, self._btn_export, '实时曲线', self._csv_snapshot))
+        bar.addWidget(self._btn_export)
+
         bar.addStretch()
         layout.addWidget(toolbar)
 
@@ -375,17 +346,17 @@ class PlotPanel(QWidget):
         layout.addWidget(self._glw, 1)
 
         self._build_plots()
+        self._chk_follow.toggled.connect(lambda _: self._refresh(force=True))
         for cfg in self._plots.values():
-            cfg['plot'].vb.sigXRangeChanged.connect(self._on_plot_x_range_changed)
+            cfg['plot'].vb.sigRangeChangedManually.connect(self._on_plot_range_changed_manually)
         self._mouse_proxy = pg.SignalProxy(
-            self._glw.scene().sigMouseMoved, rateLimit=60, slot=self._on_mouse_moved)
+            self._glw.scene().sigMouseMoved, rateLimit=30, slot=self._on_mouse_moved)
         self._click_proxy = pg.SignalProxy(
             self._glw.scene().sigMouseClicked, rateLimit=60, slot=self._on_mouse_clicked)
 
         self._timer = QTimer(self)
-        self._timer.setInterval(30)   # ~33 FPS, 优化后单次刷新极轻量
+        self._timer.setInterval(40)
         self._timer.timeout.connect(self._refresh)
-        self._timer.start()
 
         self._sync_current_visibility()
 
@@ -403,7 +374,7 @@ class PlotPanel(QWidget):
         style = (Qt.PenStyle.DashLine
                  if name == 'ibus' or name.endswith('_ref')
                  else Qt.PenStyle.SolidLine)
-        return pg.mkPen(theme.hex(self._PEN_KEY[name]), width=2, style=style)
+        return pg.mkPen(theme.hex(self._PEN_KEY[name]), width=1, style=style)
 
     def _build_plots(self):
         pos_pen = self._pen('pos')
@@ -489,11 +460,12 @@ class PlotPanel(QWidget):
         plot.showAxis('bottom', show_bottom)
         plot.showAxis('left', show_left)
         plot.getAxis('left').setWidth(50)
-        plot.getAxis('bottom').setHeight(20)
+        plot.getAxis('bottom').setHeight(34)
         plot.setMenuEnabled(False)
         plot.vb.setMenuEnabled(False)
         plot.setClipToView(True)
         plot.setDownsampling(auto=True, mode='peak')
+        plot.disableAutoRange()  # 由本面板按可视范围节流计算，避免 setData 再全量自适应
         plot.setDefaultPadding(0.01)
         plot.addLegend(offset=(4, 4))
 
@@ -598,7 +570,9 @@ class PlotPanel(QWidget):
             act_legend.setChecked(cfg['legend'].isVisible())
 
         def _set_x_scale(factor):
+            self._chk_follow.setChecked(False)
             cfg['plot'].getViewBox().scaleBy((factor, 1.0))
+            self._refresh(force=True)
 
         def _set_y_scale(factor):
             cfg['plot'].getViewBox().scaleBy((1.0, factor))
@@ -627,6 +601,31 @@ class PlotPanel(QWidget):
 
     def _on_window_changed(self, value: int):
         self._window_points = max(100, int(value))
+        self._refresh(force=True)
+
+    def _on_buffer_changed(self, value: int):
+        capacity = max(1000, min(int(value), self.MAX_POINTS))
+        if capacity == self._buffer_points:
+            return
+        self._buffer_points = capacity
+        for buffers in (self._buffers, self._extra_buffers):
+            for name, old in buffers.items():
+                ts, ys = old.arrays_view()
+                new = _SeriesBuffer(self._buffer_points)
+                new.append_batch(ts[-self._buffer_points:], ys[-self._buffer_points:])
+                buffers[name] = new
+        if pg is not None:
+            self._spin_window.setMaximum(self._buffer_points)
+        self._window_points = min(self._window_points, self._buffer_points)
+        self._refresh(force=True)
+
+    def _csv_snapshot(self):
+        units = {'pos': 'rad', 'pos_ref': 'rad', 'vel': 'rad_s', 'vel_ref': 'rad_s', 'angle': 'rad'}
+        return [(f"{name}_{units.get(name, 'A')}", buf.arrays_view())
+                for name, buf in self._buffers.items()]
+
+    def _write_csv(self, path):
+        write_curve_csv(path, self._csv_snapshot())
 
     def _set_plot_auto_y(self, plot_key: str, enabled: bool):
         cfg = self._plots.get(plot_key)
@@ -650,6 +649,7 @@ class PlotPanel(QWidget):
             chk = self._current_checks.get(name)
             if curve is not None and chk is not None:
                 curve.setVisible(chk.isChecked())
+                self._buffers[name].dirty = True
 
     def set_debug_checkbox(self, checked: bool):
         """外部（MainWindow）同步调试通道复选框状态，不触发信号。"""
@@ -679,14 +679,16 @@ class PlotPanel(QWidget):
         self._refresh(force=True)
 
     def add_series(self, name: str):
-        self._extra_buffers.setdefault(name, _SeriesBuffer(self.MAX_POINTS))
+        if name not in self._extra_buffers:
+            self._extra_buffers[name] = _SeriesBuffer(self._buffer_points)
 
     def append(self, name: str, value: float):
         idx = float(self._point_index)
         if name in self._buffers:
             self._buffers[name].append(idx, value)
         else:
-            self._extra_buffers.setdefault(name, _SeriesBuffer(self.MAX_POINTS)).append(idx, value)
+            self.add_series(name)
+            self._extra_buffers[name].append(idx, value)
         if self._latest_idx is None or idx > self._latest_idx:
             self._latest_idx = idx
 
@@ -714,9 +716,10 @@ class PlotPanel(QWidget):
     def get_opts(self) -> dict:
         """收集可持久化的 UI 配置 (关闭时由主窗口调用)."""
         if pg is None:
-            return {"window_points": int(self._window_points)}
+            return {"window_points": int(self._window_points), "buffer_points": self._buffer_points}
         opts = {
             "window_points": int(self._window_points),
+            "buffer_points": self._buffer_points,
             "follow": self._chk_follow.isChecked(),
             "auto_y": self._chk_auto_y.isChecked(),
             "current_visibility": {
@@ -744,8 +747,16 @@ class PlotPanel(QWidget):
         if not isinstance(opts, dict):
             return
         try:
+            capacity = max(1000, min(int(opts.get('buffer_points', self._buffer_points)), self.MAX_POINTS))
+            if capacity != self._buffer_points:
+                self._on_buffer_changed(capacity)
+            if pg is not None:
+                self._spin_buffer.setValue(capacity)
+        except (ValueError, TypeError):
+            pass
+        try:
             wp = int(opts.get("window_points", self._window_points))
-            if 100 <= wp <= 50000:
+            if 100 <= wp <= self._buffer_points:
                 self._window_points = wp
         except Exception:
             pass
@@ -895,8 +906,19 @@ class PlotPanel(QWidget):
                 return True
         return False
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, '_timer'):
+            self._timer.start()
+            self._refresh(force=True)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if hasattr(self, '_timer'):
+            self._timer.stop()
+
     def _refresh(self, force=False):
-        if pg is None or (self._paused and not force):
+        if pg is None or not self.isVisible() or (self._paused and not force):
             return
         if not self._any_dirty() and not force:
             return
@@ -904,7 +926,12 @@ class PlotPanel(QWidget):
         idx_end = self._latest_idx
         if idx_end is None:
             return
-        idx_min = max(0.0, idx_end - float(self._window_points))
+        if self._chk_follow.isChecked():
+            idx_min = max(0.0, idx_end - float(self._window_points))
+            idx_max = max(idx_end, idx_min + 1.0)
+            self._set_all_x_range(idx_min, idx_max)
+        else:
+            idx_min, idx_max = self._plots['pos']['plot'].viewRange()[0]
 
         # P2 优化: 曲线级脏标记, 仅重绘有新数据的曲线 (避免全量重绘)
         for name in (
@@ -913,26 +940,23 @@ class PlotPanel(QWidget):
                 'ibus', 'ia', 'ib', 'ic', 'angle'):
             buf = self._buffers[name]
             if force or buf.dirty:
-                self._update_curve(name, idx_min)
+                self._update_curve(name, idx_min, idx_max)
                 buf.dirty = False
 
         # 额外曲线 (extra_buffers)
         for name, buf in self._extra_buffers.items():
             if force or buf.dirty:
-                self._update_curve(name, idx_min)
+                self._update_curve(name, idx_min, idx_max)
                 buf.dirty = False
-
-        if self._chk_follow.isChecked() or force:
-            self._set_all_x_range(idx_min, max(idx_end, idx_min + 1.0))
 
         # Y 轴自适应节流: 每 _AUTO_RANGE_EVERY 帧或 force 时执行
         if self._chk_auto_y.isChecked():
             self._auto_range_counter += 1
             if self._auto_range_counter >= self._AUTO_RANGE_EVERY or force:
                 self._auto_range_counter = 0
-                self._auto_range_y(idx_min)
+                self._auto_range_y(idx_min, idx_max)
 
-    def _update_curve(self, name: str, idx_min: float):
+    def _update_curve(self, name: str, idx_min: float, idx_max: float = None):
         if name in self._current_series_order:
             cfg = self._plots.get('current')
         elif name == 'pos_ref':
@@ -946,47 +970,29 @@ class PlotPanel(QWidget):
         buf = self._buffers.get(name) if name in self._buffers else self._extra_buffers.get(name)
         if buf is None:
             return
-        # P3 优化: 零拷贝读取 (arrays_view), avoidCopy=True 让 pyqtgraph 直接使用该数组
-        ts, ys = buf.arrays_view(idx_min)
-        if len(ts) == 0:
+        curve = cfg['curves'].get(name)
+        if curve is None or not curve.isVisible():
             return
-        try:
-            cfg['curves'][name].setData(ts, ys, avoidCopy=True)
-        except TypeError:
-            # 兼容旧版 pyqtgraph (无 avoidCopy 参数)
-            cfg['curves'][name].setData(ts, ys)
+        ts, ys = buf.arrays_view(idx_min, idx_max)
+        curve.setData(ts, ys)
 
     def _set_all_x_range(self, idx_min: float, idx_max: float):
         if pg is None:
             return
         self._syncing_x = True
         try:
-            for cfg in self._plots.values():
-                cfg['plot'].setXRange(idx_min, idx_max, padding=0.02)
+            # 其余三个视图已 setXLink，设置锚点一次即可。
+            self._plots['pos']['plot'].setXRange(idx_min, idx_max, padding=0.02)
         finally:
             self._syncing_x = False
 
-    def _on_plot_x_range_changed(self, *args):
+    def _on_plot_range_changed_manually(self, *args):
         if pg is None or self._syncing_x:
             return
-        sender = self.sender()
-        if sender is None:
-            return
-        try:
-            x0, x1 = sender.viewRange()[0]
-        except Exception:
-            return
-        self._syncing_x = True
-        try:
-            for cfg in self._plots.values():
-                vb = cfg['plot'].vb
-                if vb is sender:
-                    continue
-                vb.setXRange(x0, x1, padding=0)
-        finally:
-            self._syncing_x = False
+        self._chk_follow.setChecked(False)
+        self._refresh(force=True)
 
-    def _auto_range_y(self, idx_min: float):
+    def _auto_range_y(self, idx_min: float, idx_max: float = None):
         def _range_from(names):
             # P5 优化: 使用 arrays_view (满缓冲时零拷贝) + 增量 min/max
             # 避免 np.concatenate 分配大临时数组 (6 曲线 × 30万点 = 7.2MB)
@@ -994,7 +1000,7 @@ class PlotPanel(QWidget):
             y1 = None
             for n in names:
                 buf = self._buffers[n]
-                _ts, ys = buf.arrays_view(idx_min)
+                _ts, ys = buf.arrays_view(idx_min, idx_max)
                 if not len(ys):
                     continue
                 finite = ys[np.isfinite(ys)]

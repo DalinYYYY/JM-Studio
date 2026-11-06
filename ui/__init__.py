@@ -5,7 +5,7 @@
 """
 
 APP_NAME = "JM Studio"
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.4"
 
 from .main_window import MainWindow
 

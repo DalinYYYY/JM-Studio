@@ -8,7 +8,6 @@
 """
 
 from bisect import bisect_left
-from collections import deque
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -20,6 +19,7 @@ from core.pid_debug_profile import (
     PID_WAVEFORM_DEFAULT_SOURCE, PID_WAVEFORM_SOURCES, get_waveform_source_def,
 )
 from ui.theme import theme
+from ui.plot_history import PointHistory
 
 try:
     import pyqtgraph as pg
@@ -112,7 +112,7 @@ class PidWaveformWindow(QWidget):
         self._history_rate_hz = 0.0
         self._x_view_initialized = False
         self._suppress_view_signal = False
-        self._points = deque(maxlen=self._buffer_max)
+        self._points = PointHistory(maxlen=self._buffer_max)
         self._source = PID_WAVEFORM_DEFAULT_SOURCE
         self._rate_ceiling = 5000
         self._status_color_key = "muted"
@@ -435,7 +435,8 @@ class PidWaveformWindow(QWidget):
             self._vb2.linkedViewChanged(pi.vb, self._vb2.XAxis)
         _update_vb2()
         pi.vb.sigResized.connect(_update_vb2)
-        pi.vb.sigRangeChanged.connect(lambda *_: self._schedule_render())
+        pi.vb.sigRangeChanged.connect(
+            lambda *_: None if self._suppress_view_signal else self._schedule_render())
 
         # 十字光标 (跟随鼠标)
         self._cursor_v = pg.InfiniteLine(
@@ -451,7 +452,9 @@ class PidWaveformWindow(QWidget):
         self._cursor_v.hide()
         self._cursor_h.hide()
         self._graphics_scene = self._plot.scene()
-        self._graphics_scene.sigMouseMoved.connect(self._on_mouse_moved)
+        self._mouse_proxy = pg.SignalProxy(
+            self._graphics_scene.sigMouseMoved, rateLimit=30,
+            slot=lambda event: self._on_mouse_moved(event[0]))
         self._plot.scene().sigMouseClicked.connect(self._on_plot_click)
 
         # 就近数据点坐标提示 (跟随鼠标, 显示在最近数据点旁)
@@ -572,12 +575,12 @@ class PidWaveformWindow(QWidget):
     # ========================================================================
     def set_points(self, points):
         """面板全量重置 (清空/换源/换率时调用)。"""
-        self._points = deque(points or [], maxlen=self._buffer_max)
+        self._points = PointHistory(points or [], maxlen=self._buffer_max)
         self._schedule_render()
 
     def set_history_points(self, points):
         """同步面板历史到窗口，不改变当前 X 轴视口。"""
-        self._points = deque(points or [], maxlen=self._buffer_max)
+        self._points = PointHistory(points or [], maxlen=self._buffer_max)
         self._schedule_render()
 
     def append_points(self, points):
@@ -597,7 +600,7 @@ class PidWaveformWindow(QWidget):
         self._schedule_render()
 
     def _schedule_render(self):
-        if self._plot is None:
+        if self._plot is None or not self.isVisible():
             return
         if self._render_timer is not None and not self._render_timer.isActive():
             self._render_timer.start()
@@ -608,7 +611,7 @@ class PidWaveformWindow(QWidget):
     def _visible_points(self):
         if not self._points:
             return []
-        points = list(self._points)
+        points = self._points
         first, last = points[0][0], points[-1][0]
         view = self._plot.viewRange()[0] if self._plot is not None else (first, last)
         span = max(1.0, float(view[1] - view[0]))
@@ -670,14 +673,20 @@ class PidWaveformWindow(QWidget):
 
     def _render(self):
         self._update_history_label()
-        if self._plot is None or not self._points:
+        if self._plot is None or not self.isVisible():
+            return
+        if not self._points:
+            for curve in (self._target_curve, self._feedback_curve, self._error_curve):
+                curve.setData([], [])
+            self._update_stats([], [], [], [])
             return
         visible = self._visible_points()
         if not visible:
             return
         width = max(64, int(self._plot.width()))
-        visible = self._envelope(
-            visible, width, max_points=self._MAX_DISPLAY_POINTS)
+        if len(visible) > min(width * 4, self._MAX_DISPLAY_POINTS):
+            visible = self._envelope(
+                visible, width, max_points=self._MAX_DISPLAY_POINTS)
         xs = [p[0] for p in visible]
         tgt = [p[1] for p in visible]
         fb = [p[2] for p in visible]
@@ -702,9 +711,13 @@ class PidWaveformWindow(QWidget):
         if self._follow and xs:
             view = self._plot.viewRange()[0]
             span = max(1.0, float(view[1] - view[0]))
-            self._plot.setXRange(
-                max(0, xs[-1] - span), max(span / 10.0, xs[-1]),
-                padding=0)
+            self._suppress_view_signal = True
+            try:
+                self._plot.setXRange(
+                    max(0, xs[-1] - span), max(span / 10.0, xs[-1]),
+                    padding=0)
+            finally:
+                self._suppress_view_signal = False
 
         self._update_error_highlight(err)
         self._update_stats(xs, tgt, fb, err)
@@ -769,9 +782,13 @@ class PidWaveformWindow(QWidget):
         """按横坐标(采样点编号)找最近的数据点 (n, target, feedback, error)。"""
         if not self._points:
             return None
-        xs = [p[0] for p in self._points]
-        idx = min(range(len(xs)), key=lambda i: abs(xs[i] - at_x))
-        return self._points[idx]
+        idx = bisect_left(self._points, (at_x,))
+        if idx == 0:
+            return self._points[0]
+        if idx == len(self._points):
+            return self._points[-1]
+        before, after = self._points[idx - 1], self._points[idx]
+        return before if at_x - before[0] <= after[0] - at_x else after
 
     def _on_mouse_moved(self, pos):
         if self._plot is None:
@@ -1040,7 +1057,7 @@ class PidWaveformWindow(QWidget):
         """存储总量变化: 立即裁剪旧数据。"""
         self._buffer_max = max(self._MIN_BUFFER_POINTS,
                                min(int(points), self._MAX_BUFFER_POINTS))
-        self._points = deque(self._points, maxlen=self._buffer_max)
+        self._points = PointHistory(self._points, maxlen=self._buffer_max)
         self.buffer_changed.emit(self._buffer_max)
         self._schedule_render()
 
@@ -1137,6 +1154,17 @@ class PidWaveformWindow(QWidget):
                 pass
         self._sym_opt = self._build_sym_opt()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._schedule_render()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if self._render_timer is not None:
+            self._render_timer.stop()
+
     def closeEvent(self, event):
+        if self._render_timer is not None:
+            self._render_timer.stop()
         self.window_closed.emit()
         event.accept()
